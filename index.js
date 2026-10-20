@@ -25,10 +25,19 @@ const defaultSettings = Object.freeze({
     contextMessages: 20,
     maxTokens: 4000,
     includeCard: true,
+    // Tags whose whole block (tag + content) is removed from chat messages before they reach the community prompt
+    excludeTags: 'status, statusbar, status_bar, status-bar, statusblock, statuspanel, state, stats, hud, infobar, info_bar, details, UpdateVariable, update_variable, variable, variables, vars, mvu, thinking, think, reasoning, analysis, cot, options, choices, 상태창, 상태, 状态栏, 状态, 变量更新',
+    excludeSkipNarrator: true,   // also skip narrator / system notes (/sys)
     includeWorldInfo: true,      // default WI mode for new chats: true → auto, false → off
     wiMaxChars: 12000,
-    autoEnabled: false,
+    autoEnabled: false,          // new posts / threads every N AI replies
     autoEvery: 5,
+    autoReplyEnabled: false,     // new comments / reses on watched posts every N AI replies
+    autoReplyEvery: 1,
+    autoReplyMax: 2,             // watched posts continued per turn (round-robin)
+    autoWatchNew: false,         // posts made by automatic generation are watched right away
+    crossRef: false,             // let every generation see other recent posts of the same community
+    crossRefCount: 6,
     autoPlatform: 'last',        // last | random | <platform id>
     pinDepth: 4,
     extraInstruction: '',
@@ -127,6 +136,8 @@ Author: {{author}}
 - If a draft is given, keep its intent and improve or expand it rather than replacing it with something unrelated.
 Output ONLY a JSON object, no code fences: {"title": "post title, or empty when the platform has none / for comments", "body": "text, use \\n for line breaks"}`,
 
+    cross_ref: `Other recent posts on this community are listed below for awareness. Posters may naturally mention, quote, link, compare or argue about them (e.g. "saw this in the other thread", "the OP of that post again"), but do not copy them and do not force references into every post.`,
+
     amount_posts: `Write {{count}} posts. Each post has roughly {{comments}} comments (vary it: popular posts more, boring ones fewer). Add replies to some comments where natural, unless the platform style says otherwise.`,
 
     continue: `Continue the post/thread shown in <thread>. Write {{count}} NEW comments that naturally follow the existing ones, in chronological order. Earlier posters may come back with the same voice; new posters may join. React to the most recent comments first. Do not repeat or paraphrase earlier comments. Keep the platform's culture and the same mode rules.`,
@@ -201,6 +212,7 @@ const PROMPT_LABELS = {
     topic_mix: '글 주제: 섞어서 쓸 때 ({{topics}}=주제 목록)',
     thread_next: '후속 스레 작성 지시 ({{cap}}=상한, {{part}}=몇 번째)',
     player_write: 'AI로 쓰기 (내 신분으로 대신 쓰기)',
+    cross_ref: '다른 게시글 참고 지시',
     amount_posts: '새 글 생성: 개수 지시',
     continue: '이어서 생성 지시',
     react_focus: '내 글/댓글에 반응하라는 지시',
@@ -532,6 +544,63 @@ function esc(str) {
         .replace(/'/g, '&apos;');
 }
 
+function escapeRegex(str) {
+    return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+let excludeCache = { src: null, re: null, selfRe: null, openRe: null };
+
+/** Regexes for the user's tag blocklist (cached until the setting changes). */
+function excludeRegexes() {
+    const src = String(getSettings().excludeTags ?? '');
+    if (excludeCache.src === src) return excludeCache;
+    const names = src.split(/[,\n]/).map(t => t.trim().replace(/^<\/?|\/?>$/g, '')).filter(Boolean).map(escapeRegex);
+    if (!names.length) {
+        excludeCache = { src, re: null, selfRe: null, openRe: null };
+        return excludeCache;
+    }
+    const alt = names.join('|');
+    excludeCache = {
+        src,
+        // <tag ...> ... </tag>   (tag names compared case-insensitively)
+        // innermost first: the body may not contain another opening of the same tag (outer ones go on the next pass)
+        re: new RegExp(`<\\s*(${alt})(?=[\\s>/])[^>]*>(?:(?!<\\s*\\1(?=[\\s>/]))[\\s\\S])*?<\\s*\\/\\s*\\1\\s*>`, 'giu'),
+        // <tag ... />
+        selfRe: new RegExp(`<\\s*(?:${alt})(?=[\\s>/])[^>]*\\/\\s*>`, 'giu'),
+        // an opening tag that is never closed (status block cut at the end of a message): drop to the end
+        openRe: new RegExp(`<\\s*(?:${alt})(?=[\\s>/])[^>]*>[\\s\\S]*$`, 'iu'),
+    };
+    return excludeCache;
+}
+
+/** Chat message → plain story text for the community prompt (no status bars, code, HTML). */
+function cleanStoryText(text) {
+    let t = String(text ?? '');
+    t = t.replace(/<!--[\s\S]*?-->/g, ' ');
+    t = t.replace(/```[\s\S]*?```/g, ' ');
+    const { re, selfRe, openRe } = excludeRegexes();
+    if (re) {
+        // repeat for nested blocks of listed tags
+        for (let i = 0; i < 8; i++) {
+            const before = t;
+            t = t.replace(re, ' ');
+            if (t === before) break;
+        }
+        t = t.replace(selfRe, ' ');
+        t = t.replace(openRe, ' ');
+    }
+    return stripMarkup(t);
+}
+
+/** Messages that must not be read: hidden (/hide), system, and optionally narrator notes. */
+function isReadableMessage(m) {
+    if (!m || !m.mes) return false;
+    if (m.is_system) return false;                       // hidden messages and system messages
+    if (m.extra?.isSmallSys) return false;
+    if (getSettings().excludeSkipNarrator && m.extra?.type === 'narrator') return false;
+    return true;
+}
+
 function stripMarkup(text) {
     return String(text ?? '')
         .replace(/```[\s\S]*?```/g, ' ')
@@ -669,15 +738,18 @@ async function buildContextBlock() {
         }
     }
 
-    const chat = (c.chat ?? []).filter(m => !m.is_system && m.mes);
-    const recent = chat.slice(-Math.max(1, s.contextMessages));
+    const recent = (c.chat ?? [])
+        .filter(isReadableMessage)
+        .map(m => ({ name: m.name, text: cleanStoryText(m.mes) }))
+        .filter(m => m.text)
+        .slice(-Math.max(1, s.contextMessages));
 
     const wiParts = [];
     const wiMode = getChatStore()?.wi?.mode ?? (s.includeWorldInfo ? 'auto' : 'off');
     if ((wiMode === 'auto' || wiMode === 'both') && typeof c.getWorldInfoPrompt === 'function') {
         try {
             const f = c.getCharacterCardFields?.() ?? {};
-            const chatForWI = recent.map(m => `${m.name}: ${m.mes}`).reverse();
+            const chatForWI = recent.map(m => `${m.name}: ${m.text}`).reverse();
             const wi = await c.getWorldInfoPrompt(chatForWI, c.maxContext || 8192, true, {
                 personaDescription: f.persona ?? '',
                 characterDescription: f.description ?? '',
@@ -702,7 +774,7 @@ async function buildContextBlock() {
     if (wiParts.length) parts.push(`[World information]\n${truncate(wiParts.join('\n\n'), Number(s.wiMaxChars) || 12000)}`);
 
     const log = recent
-        .map(m => `${m.name}: ${truncate(stripMarkup(m.mes), 1500)}`)
+        .map(m => `${m.name}: ${truncate(m.text, 1500)}`)
         .join('\n\n');
     parts.push(`[Story so far — most recent messages, oldest first]\n${log || '(no messages yet)'}`);
 
@@ -779,6 +851,33 @@ function buildTopicBlock(count, background) {
     };
 }
 
+// ---------------------------------------------------------------------------
+// Cross-reference: other recent posts of the same community (same platform + mode in this chat)
+// ---------------------------------------------------------------------------
+function crossRefOn(post) {
+    return !!(getSettings().crossRef || post?.crossRef);
+}
+
+function buildCrossRefBlock(platformId, mode, excludePost = null) {
+    const store = getChatStore();
+    const limit = Math.max(1, Math.min(20, Number(getSettings().crossRefCount) || 6));
+    const items = [];
+    const feeds = (store?.feeds ?? []).filter(f => f.platform === platformId && f.mode === mode);
+    for (let fi = feeds.length - 1; fi >= 0 && items.length < limit; fi--) {
+        const posts = feeds[fi].data.posts;
+        for (let pi = posts.length - 1; pi >= 0 && items.length < limit; pi--) {
+            const p = posts[pi];
+            if (p === excludePost) continue;
+            const lines = [`- ${p.title ? `"${truncate(p.title, 80)}" — ` : ''}${authorLabel(p)}: ${truncate(p.body, 220)}`];
+            for (const c of p.comments.slice(-2)) lines.push(`    ↳ ${authorLabel(c)}: ${truncate(c.body, 100)}`);
+            if (feeds[fi].data.board) lines[0] += `  [${truncate(feeds[fi].data.board, 40)}]`;
+            items.push(lines.join('\n'));
+        }
+    }
+    if (!items.length) return '';
+    return `<other_posts>\n${fillTpl(getPrompt('cross_ref'), baseVars(platformId))}\n${items.join('\n')}\n</other_posts>`;
+}
+
 /** Prompt for brand new posts (optionally avoiding titles already in a feed). */
 async function buildPostsPrompt({ mode, platformId, topic, avoidFeed, background = false }) {
     const s = getSettings();
@@ -799,6 +898,7 @@ async function buildPostsPrompt({ mode, platformId, topic, avoidFeed, background
         `<language>\n${b.language}\n</language>`,
         prevTitles.length ? `<avoid_repetition>\nThese posts already exist; write new, different ones:\n- ${prevTitles.slice(-15).join('\n- ')}\n</avoid_repetition>` : '',
         topicBlock ? `<topics>\n${topicBlock.text}\n</topics>` : '',
+        getSettings().crossRef ? buildCrossRefBlock(platformId, mode) : '',
         topic ? `<user_request>\nThe user asked to focus on the following (it may be written in any language; follow its intent):\n${topic}\n</user_request>` : '',
         b.extra ? `<extra_instructions>\n${b.extra}\n</extra_instructions>` : '',
         getPrompt('format_posts'),
@@ -876,6 +976,7 @@ async function buildContinuePrompt({ feed, postIdx, count, playerJustPosted }) {
         `<story_context>\n${storyText}\n</story_context>`,
         `<task>\n${b.task}\n</task>`,
         `<platform_style>\n${b.style}\n</platform_style>`,
+        crossRefOn(post) ? buildCrossRefBlock(feed.platform, feed.mode, post) : '',
         `<thread>\n${serializeThread(feed, postIdx)}\n</thread>`,
         playerNotes.length ? `<player>\n${playerNotes.join('\n')}\n</player>` : '',
         `<continue>\n${fillTpl(getPrompt('continue'), { ...b.vars, count })}\n</continue>`,
@@ -1212,17 +1313,17 @@ function isThreadFull(feed, post) {
     return threadCount(post) >= threadCap(feed.platform);
 }
 
-async function generateNextThread(feedId, postIdx) {
+async function generateNextThread(feedId, postIdx, { background = false } = {}) {
     const feed = getFeed(feedId);
     const prev = feed?.data.posts[postIdx];
     if (!prev) return null;
     if (prev.nextIdx != null && feed.data.posts[prev.nextIdx]) {
-        scrollToPostSmooth(prev.nextIdx);
+        if (!background) scrollToPostSmooth(prev.nextIdx);
         return feed;
     }
     const part = (Number(prev.part) || 1) + 1;
     const count = Math.max(1, Number(getSettings().continueCount) || 5);
-    return runJob('후속 스레를 세우는 중…', false, async ({ signal, stillSameChat }) => {
+    return runJob('후속 스레를 세우는 중…', background, async ({ signal, stillSameChat }) => {
         if (prev.nextIdx != null && feed.data.posts[prev.nextIdx]) return feed;   // made meanwhile
         const b = commonBlocks(feed.mode, feed.platform);
         const storyText = await buildContextBlock();
@@ -1230,6 +1331,7 @@ async function generateNextThread(feedId, postIdx) {
             `<story_context>\n${storyText}\n</story_context>`,
             `<task>\n${b.task}\n</task>`,
             `<platform_style>\n${b.style}\n</platform_style>`,
+            crossRefOn(prev) ? buildCrossRefBlock(feed.platform, feed.mode, prev) : '',
             `<thread>\n${serializeThread(feed, postIdx)}\n</thread>`,
             `<continue>\n${fillTpl(getPrompt('thread_next'), { ...b.vars, count, part, cap: threadCap(feed.platform) })}\n</continue>`,
             `<language>\n${b.language}\n</language>`,
@@ -1247,25 +1349,28 @@ async function generateNextThread(feedId, postIdx) {
         next.part = part;
         next.prevIdx = postIdx;
         if (!next.title) next.title = `${prev.title || ''} Part${part}`.trim();
+        // settings carry over to the new thread; watching moves along
+        if (prev.watch) { next.watch = true; delete prev.watch; }
+        if (prev.crossRef) next.crossRef = true;
         feed.data.posts.push(next);
         prev.nextIdx = feed.data.posts.length - 1;
         await saveChatStore();
-        showFeed(feed.id, { keepScroll: true });
-        toastr.success('후속 스레가 섰어요. "다음 스레" 링크로 이동할 수 있어요.', '', { timeOut: 2000 });
+        if (isOpen() && view === 'feed' && currentFeedId === feed.id) showFeed(feed.id, { keepScroll: true });
+        toastr.success(background ? `후속 스레가 섰어요: ${esc(truncate(next.title, 40))}` : '후속 스레가 섰어요. "다음 스레" 링크로 이동할 수 있어요.', '', { timeOut: 2500 });
         return feed;
     });
 }
 
 /** Append more comments to a post (continuation, or reaction to the player). */
-async function generateMoreComments(feedId, postIdx, { playerJustPosted = false } = {}) {
+async function generateMoreComments(feedId, postIdx, { playerJustPosted = false, background = false } = {}) {
     const feed = getFeed(feedId);
     if (!feed?.data.posts[postIdx]) return null;
-    if (isThreadFull(feed, feed.data.posts[postIdx])) return generateNextThread(feedId, postIdx);
+    if (isThreadFull(feed, feed.data.posts[postIdx])) return generateNextThread(feedId, postIdx, { background });
     const room = threadCap(feed.platform) - threadCount(feed.data.posts[postIdx]);
     const count = Math.max(1, Math.min(room, Number(getSettings().continueCount) || 5));
     const label = playerJustPosted ? '반응을 기다리는 중…' : (PLATFORMS[feed.platform].thread ? '스레드를 이어가는 중…' : '댓글을 더 불러오는 중…');
     const postRef = feed.data.posts[postIdx];
-    return runJob(label, false, async ({ signal, stillSameChat }) => {
+    return runJob(label, background, async ({ signal, stillSameChat }) => {
         const { system, user } = await buildContinuePrompt({ feed, postIdx, count, playerJustPosted });
         const raw = await callModel(system, user, signal);
         if (!stillSameChat()) return null;
@@ -1286,8 +1391,10 @@ async function generateMoreComments(feedId, postIdx, { playerJustPosted = false 
                 post.comments.push({ ...item, replies: [] });
             }
         }
+        postRef.autoAt = Date.now();
+        if (background && !isOpen()) { const st = getChatStore(); st.unread = (st.unread || 0) + 1; updateBadge(); }
         await saveChatStore();
-        updatePost(feed.id, postIdx);
+        if (!background || (isOpen() && view === 'feed' && currentFeedId === feed.id)) updatePost(feed.id, postIdx);
         return feed;
     });
 }
@@ -1436,6 +1543,8 @@ async function aiWrite({ kind, mode, platformId, identity, instruction, draft, f
             `<task>\n${b.task}\n</task>`,
             `<platform_style>\n${b.style}\n</platform_style>`,
         ];
+        if (feed && postIdx != null && crossRefOn(feed.data.posts[postIdx])) parts.push(buildCrossRefBlock(platformId, mode, feed.data.posts[postIdx]));
+        else if (!(feed && postIdx != null) && getSettings().crossRef) parts.push(buildCrossRefBlock(platformId, mode));
         if (feed && postIdx != null) {
             parts.push(`<thread>\n${serializeThread(feed, postIdx)}\n</thread>`);
             const target = replyTo != null ? feed.data.posts[postIdx].comments[replyTo] : null;
@@ -1635,6 +1744,8 @@ function postActions(feed, i) {
         ${full
             ? `<button data-act="more" data-feed="${esc(feed.id)}" data-idx="${i}" class="stcm-next"><i class="fa-solid fa-arrow-turn-down"></i>${hasNext ? '후속 스레로 이동' : '후속 스레 작성'}</button>`
             : `<button data-act="more" data-feed="${esc(feed.id)}" data-idx="${i}"><i class="fa-solid fa-angles-down"></i>${thread ? '스레드 이어가기' : '댓글 더 보기'}</button>`}
+        <button class="stcm-tog ${post.watch ? 'on' : ''}" data-act="watch" data-feed="${esc(feed.id)}" data-idx="${i}" title="${post.watch ? '자동 이어가기 끄기' : '본 채팅이 진행되면 이 글에 자동으로 레스/댓글 달기'}"><i class="fa-solid fa-eye"></i><span class="lbl">${post.watch ? '지켜보는 중' : '지켜보기'}</span></button>
+        <button class="stcm-tog icon ${crossRefOn(post) ? 'on' : ''}" data-act="crossref" data-feed="${esc(feed.id)}" data-idx="${i}" title="${getSettings().crossRef ? '전체 설정에서 켜져 있어요' : (post.crossRef ? '이 글만 다른 글 참고 끄기' : '이 글을 이어갈 때 다른 게시글도 참고')}"><i class="fa-solid fa-link"></i></button>
         <button class="stcm-pin ${on ? 'on' : ''}" data-act="pin" data-feed="${esc(feed.id)}" data-idx="${i}" title="본편에 반영"><i class="fa-solid fa-thumbtack"></i>${on ? '반영 중' : '반영'}</button>
         ${post.isMe ? `<button data-act="del-post" data-feed="${esc(feed.id)}" data-idx="${i}" title="내 글 삭제"><i class="fa-solid fa-trash-can"></i></button>` : ''}
     </div>`;
@@ -2384,6 +2495,27 @@ async function onFeedClick(e) {
         updatePost(feedId, idx);
         return;
     }
+    if (act === 'watch' || act === 'crossref') {
+        if (!(await ensureFeedsReady())) return;
+        const post = getFeed(feedId)?.data.posts[idx];
+        if (!post) return;
+        if (act === 'watch') {
+            post.watch = !post.watch;
+            if (!post.watch) delete post.watch;
+            const s = getSettings();
+            toastr.info(post.watch
+                ? (s.autoReplyEnabled ? `AI 답변 ${s.autoReplyEvery}번마다 이 글을 자동으로 이어가요.` : '지켜보기를 켰어요. 설정에서 "레스·댓글 자동 생성"을 켜면 이어가기 시작해요.')
+                : '지켜보기를 껐어요.', '', { timeOut: 2500 });
+        } else {
+            if (getSettings().crossRef) { toastr.info('설정에서 "모든 생성에서 다른 게시글 참고"가 켜져 있어서 모든 글이 참고해요.'); return; }
+            post.crossRef = !post.crossRef;
+            if (!post.crossRef) delete post.crossRef;
+            toastr.info(post.crossRef ? '이 글을 이어갈 때 같은 커뮤니티의 다른 글도 참고해요.' : '이 글은 다른 글을 참고하지 않아요.', '', { timeOut: 2000 });
+        }
+        await saveChatStore();
+        updatePost(feedId, idx);
+        return;
+    }
     // Opening/closing the composer re-renders only the posts involved
     const switchComposer = (next) => {
         captureDraft();
@@ -3003,6 +3135,8 @@ function importFeed(f, chatLen) {
             replies: (Array.isArray(c?.replies) ? c.replies : []).slice(0, 2000).map(importItem),
         }));
         if (p?.part != null) post.part = intOr(p.part, 1);
+        if (p?.watch === true) post.watch = true;
+        if (p?.crossRef === true) post.crossRef = true;
         for (const k of ['prevIdx', 'nextIdx']) if (Number.isInteger(p?.[k])) post[k] = p[k];
         return post;
     });
@@ -3211,13 +3345,26 @@ function addSettingsPanel() {
           </div>
 
           <label class="checkbox_label"><input id="stcm_set_card" type="checkbox"><span>캐릭터·페르소나 설명 포함</span></label>
+          <label>본 채팅에서 읽지 않을 태그 <small>(쉼표로 구분, 태그와 안의 내용을 통째로 빼요. 숨긴 메시지는 항상 빼요)</small></label>
+          <textarea id="stcm_set_excludetags" class="text_pole" rows="3"></textarea>
+          <label class="checkbox_label"><input id="stcm_set_skipnarr" type="checkbox"><span>내레이터·시스템 메모(/sys)도 읽지 않기</span></label>
           <label class="checkbox_label"><input id="stcm_set_wi" type="checkbox"><span>새 채팅에서 월드 인포 자동 참고 <small>(채팅별 선택은 커뮤니티 창의 📚 버튼)</small></span></label>
           <label>월드 인포 최대 글자 수 <input id="stcm_set_wimax" type="number" min="1000" max="100000" step="1000" class="text_pole"></label>
 
           <hr>
-          <label class="checkbox_label"><input id="stcm_set_auto" type="checkbox"><span>자동 생성 켜기</span></label>
+          <label><b>본 채팅 진행에 맞춰 자동 생성</b> <small>(AI 답변이 올 때마다 셉니다)</small></label>
+          <label class="checkbox_label"><input id="stcm_set_auto" type="checkbox"><span>새 글·새 스레 자동 생성</span></label>
           <div class="stcm-set-grid">
             <label>AI 답변 몇 번마다 <input id="stcm_set_every" type="number" min="1" max="100" class="text_pole"></label>
+            <label class="checkbox_label" style="flex-direction:row"><input id="stcm_set_watchnew" type="checkbox"><span>자동으로 만든 글은 바로 지켜보기</span></label>
+          </div>
+          <label class="checkbox_label"><input id="stcm_set_autoreply" type="checkbox"><span>지켜보는 글에 레스·댓글 자동 생성 <small>(글 아래 <i class="fa-solid fa-eye"></i> 지켜보기)</small></span></label>
+          <div class="stcm-set-grid">
+            <label>AI 답변 몇 번마다 <input id="stcm_set_replyevery" type="number" min="1" max="100" class="text_pole"></label>
+            <label>한 번에 이어갈 글 수 <input id="stcm_set_replymax" type="number" min="1" max="10" class="text_pole"></label>
+          </div>
+          <small class="stcm-help">지켜보는 글이 많으면 오래 안 이어간 글부터 차례로 돌아가요. 1000레스가 찬 2ch·레딧 스레는 후속 스레를 세우고 지켜보기를 그쪽으로 옮겨요.</small>
+          <div class="stcm-set-grid">
             <label>자동 생성 커뮤니티
               <select id="stcm_set_autopf" class="text_pole">
                 <option value="last">마지막으로 고른 곳</option>
@@ -3252,6 +3399,10 @@ function addSettingsPanel() {
               </select>
             </label>
           </div>
+
+          <hr>
+          <label class="checkbox_label"><input id="stcm_set_crossref" type="checkbox"><span>모든 생성에서 다른 게시글 참고 <small>(꺼 두면 글 아래 <i class="fa-solid fa-link"></i>로 그 글만 켤 수 있어요)</small></span></label>
+          <label>참고할 다른 글 수 <input id="stcm_set_crossrefcount" type="number" min="1" max="20" class="text_pole"></label>
 
           <label>추가 지시 <small>(모든 생성에 붙어요. 아무 언어나 OK)</small></label>
           <textarea id="stcm_set_extra" class="text_pole" rows="3"></textarea>
@@ -3307,11 +3458,20 @@ function addSettingsPanel() {
     bind('stcm_set_ctx', 'contextMessages');
     bind('stcm_set_tokens', 'maxTokens');
     bind('stcm_set_card', 'includeCard', 'checked');
+    bind('stcm_set_excludetags', 'excludeTags');
+    bind('stcm_set_skipnarr', 'excludeSkipNarrator', 'checked');
     bind('stcm_set_wi', 'includeWorldInfo', 'checked');
     bind('stcm_set_wimax', 'wiMaxChars');
     bind('stcm_set_auto', 'autoEnabled', 'checked');
     bind('stcm_set_every', 'autoEvery');
     bind('stcm_set_autopf', 'autoPlatform');
+    bind('stcm_set_watchnew', 'autoWatchNew', 'checked');
+    bind('stcm_set_autoreply', 'autoReplyEnabled', 'checked');
+    bind('stcm_set_replyevery', 'autoReplyEvery');
+    bind('stcm_set_replymax', 'autoReplyMax');
+    bind('stcm_set_crossref', 'crossRef', 'checked');
+    bind('stcm_set_crossrefcount', 'crossRefCount');
+    document.getElementById('stcm_set_crossref')?.addEventListener('change', () => { if (isOpen() && view === 'feed') showFeed(currentFeedId, { keepScroll: true }); });
     bind('stcm_set_depth', 'pinDepth');
     bind('stcm_set_cap', 'threadCap');
     bind('stcm_set_theme', 'theme');
@@ -3382,32 +3542,77 @@ function addSettingsPanel() {
 // ---------------------------------------------------------------------------
 // Auto generation + events
 // ---------------------------------------------------------------------------
+// Background jobs run one after another and wait for any manual generation to finish
+let autoChain = Promise.resolve();
+
+function queueAuto(job) {
+    const chatId = ctx().getCurrentChatId?.();
+    autoChain = autoChain.then(async () => {
+        for (let waited = 0; busy && waited < 180000; waited += 500) await new Promise(r => setTimeout(r, 500));
+        if (busy || ctx().getCurrentChatId?.() !== chatId) return;   // still busy or chat changed: skip this round
+        try { await job(); } catch (e) { console.error(`[${MODULE}] auto job failed`, e); }
+    });
+    return autoChain;
+}
+
+/** Watched posts of this chat, least recently continued first. */
+function watchedPosts() {
+    const out = [];
+    for (const feed of getChatStore()?.feeds ?? []) {
+        feed.data.posts.forEach((post) => { if (post.watch) out.push({ feed, post }); });
+    }
+    return out.sort((a, b) => (a.post.autoAt ?? 0) - (b.post.autoAt ?? 0));
+}
+
 async function onMessageReceived(messageId, type) {
     const s = getSettings();
-    if (!s.autoEnabled || !hasChat()) return;
+    if ((!s.autoEnabled && !s.autoReplyEnabled) || !hasChat()) return;
     if (['quiet', 'impersonate', 'swipe', 'continue'].includes(type)) return;
     const msg = ctx().chat?.[messageId];
     if (!msg || msg.is_user || msg.is_system) return;
 
     const store = getChatStore();
-    store.counter = (store.counter || 0) + 1;
-    if (store.counter < Math.max(1, Number(s.autoEvery) || 5)) {
-        const c = ctx();
-        if (c.saveMetadataDebounced) c.saveMetadataDebounced(); else await saveChatStore();
-        return;
+    let runNew = false;
+    let runReplies = false;
+    if (s.autoEnabled) {
+        store.counter = (store.counter || 0) + 1;
+        if (store.counter >= Math.max(1, Number(s.autoEvery) || 5)) { store.counter = 0; runNew = true; }
     }
-    store.counter = 0;
-    await saveChatStore();
+    if (s.autoReplyEnabled) {
+        store.counterReply = (store.counterReply || 0) + 1;
+        if (store.counterReply >= Math.max(1, Number(s.autoReplyEvery) || 1)) { store.counterReply = 0; runReplies = true; }
+    }
+    const c = ctx();
+    if (c.saveMetadataDebounced) c.saveMetadataDebounced(); else await c.saveMetadata();
 
-    let platformId = s.autoPlatform;
-    if (platformId === 'random') {
-        const ids = Object.keys(PLATFORMS);
-        platformId = ids[Math.floor(Math.random() * ids.length)];
-    } else if (platformId === 'last' || !PLATFORMS[platformId]) {
-        platformId = store.lastPlatform ?? s.defaultPlatform;
+    if (runReplies) {
+        // watched posts first, so a full thread gets its follow-up before brand-new threads
+        queueAuto(async () => {
+            if (!(await ensureFeedsReady())) return;
+            const max = Math.max(1, Math.min(10, Number(s.autoReplyMax) || 2));
+            for (const { feed, post } of watchedPosts().slice(0, max)) {
+                const idx = feed.data.posts.indexOf(post);
+                if (idx >= 0) await generateMoreComments(feed.id, idx, { background: true });
+            }
+        });
     }
-    const mode = store.lastMode ?? s.defaultMode;
-    setTimeout(() => generateFeed({ mode, platformId, background: true }), 300);
+    if (runNew) {
+        let platformId = s.autoPlatform;
+        if (platformId === 'random') {
+            const ids = Object.keys(PLATFORMS);
+            platformId = ids[Math.floor(Math.random() * ids.length)];
+        } else if (platformId === 'last' || !PLATFORMS[platformId]) {
+            platformId = store.lastPlatform ?? s.defaultPlatform;
+        }
+        const mode = store.lastMode ?? s.defaultMode;
+        queueAuto(async () => {
+            const feed = await generateFeed({ mode, platformId, background: true });
+            if (feed && s.autoWatchNew) {
+                for (const p of feed.data.posts) p.watch = true;
+                await saveChatStore();
+            }
+        });
+    }
 }
 
 async function onChatChanged() {

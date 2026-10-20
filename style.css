@@ -442,6 +442,8 @@
 .stcm-actions button i { margin-right: 4px; }
 .stcm-actions .stcm-pin { margin-left: auto; min-width: 74px; text-align: center; }
 .stcm-actions button { white-space: nowrap; }
+.stcm-actions .stcm-tog.on { color: var(--k-accent); border-color: var(--k-accent); font-weight: 700; }
+.stcm-actions .stcm-tog.icon i { margin-right: 0; }
 .stcm-actions .stcm-next { color: var(--k-accent); border-color: var(--k-accent); font-weight: 700; }
 .stcm-pin.on { background: #ffb300 !important; color: #222 !important; border-color: #ffb300 !important; }
 .stcm-count { font-size: 11px; color: var(--k-sub); font-variant-numeric: tabular-nums; }
@@ -645,6 +647,10 @@
     .stcm-cp-row select { max-width: none; flex: 1 1 100%; }
     /* iOS/Android zoom in on inputs smaller than 16px — that zoom is a big "jump" */
     #stcm_overlay input, #stcm_overlay textarea, #stcm_overlay select { font-size: 16px !important; }
+}
+@media (max-width: 480px) {
+    .stcm-actions .stcm-tog .lbl { display: none; }
+    .stcm-actions .stcm-tog i { margin-right: 0; }
 }
 @media (max-width: 380px) {
     .stcm-title-text { display: none; }
