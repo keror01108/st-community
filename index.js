@@ -1576,7 +1576,11 @@ async function deletePlayerItem(feedId, postIdx, ci, ri) {
         store.pins = store.pins
             .filter(p => !(p.feedId === feedId && p.postIdx === postIdx))
             .map(p => (p.feedId === feedId && p.postIdx > postIdx) ? { ...p, postIdx: p.postIdx - 1 } : p);
-        // view state keyed by post index (Discord pane, 투디갤 expanded rows)
+        if (composer?.feedId === feedId) {
+            if (composer.postIdx === postIdx) composer = null;
+            else if (composer.postIdx > postIdx) composer.postIdx -= 1;
+        }
+        // view state keyed by post index (Discord pane, expanded rows)
         const sel = dsSel.get(feedId);
         if (Number.isInteger(sel) && sel >= postIdx) dsSel.set(feedId, Math.max(0, sel - (sel > postIdx ? 1 : 0)));
         for (const key of [...openPosts]) {
@@ -1959,7 +1963,7 @@ function foldable(feed) {
 }
 
 function isPostOpen(feed, i) {
-    return openPosts.has(`${feed.id}:${i}`) || (composer && composer.feedId === feed.id && composer.postIdx === i);
+    return openPosts.has(`${feed.id}:${i}`);
 }
 
 function postSummaryHtml(feed, p, i) {
@@ -2011,10 +2015,8 @@ function setPostOpen(feedId, idx, open) {
 
 function togglePost(feedId, idx) {
     const open = !openPosts.has(`${feedId}:${idx}`);
-    if (!open && composer && composer.feedId === feedId && composer.postIdx === idx) {
-        captureDraft();
-        composer = null;   // closing the post also closes its comment box (draft text was saved)
-    }
+    // a comment box inside stays (hidden) with its text; it is there again when the post reopens
+    if (!open) captureDraft();
     setPostOpen(feedId, idx, open);
     if (!open) {
         // keep the folded title in view when the reader was further down inside the post
@@ -2025,8 +2027,8 @@ function togglePost(feedId, idx) {
 }
 
 function setAllOpen(feed, open) {
+    if (!open) captureDraft();
     feed.data.posts.forEach((_, i) => setPostOpen(feed.id, i, open));
-    if (!open && composer?.feedId === feed.id) { captureDraft(); composer = null; }
     updateFoldAllButton(feed);
 }
 
@@ -2991,14 +2993,14 @@ function buildOverlay() {
     document.getElementById('stcm_modes').addEventListener('click', (e) => {
         const b = e.target.closest('button[data-mode]');
         if (!b) return;
-        if (selMode === b.dataset.mode && view === 'feed') return;
+        if (selMode === b.dataset.mode && (view === 'feed' || view === 'compose')) return;
         selMode = b.dataset.mode;
         onSelectorChange();
     });
     document.getElementById('stcm_platforms').addEventListener('click', (e) => {
         const b = e.target.closest('button[data-platform]');
         if (!b) return;
-        if (selPlatform === b.dataset.platform && view === 'feed') return;
+        if (selPlatform === b.dataset.platform && (view === 'feed' || view === 'compose')) return;
         selPlatform = b.dataset.platform;
         onSelectorChange();
     });
@@ -3131,6 +3133,7 @@ async function onFeedClick(e) {
         const prevPost = composer && composer.feedId === feedId ? composer.postIdx : null;
         const keepDraft = composer && next && composer.feedId === next.feedId && composer.postIdx === next.postIdx ? composer.draft : null;
         composer = next ? { ...next, draft: next.draft ?? keepDraft } : null;
+        if (composer) openPosts.add(`${feedId}:${idx}`);
         if (prevPost != null && prevPost !== idx) updatePost(feedId, prevPost);
         updatePost(feedId, idx, { focusComposer: !!composer });
     };
@@ -3323,7 +3326,17 @@ async function onFeedClick(e) {
         return;
     }
 
-    if (el.dataset.openFeed) { showFeed(el.dataset.openFeed); return; }
+    if (el.dataset.openFeed) {
+        // from the pinned list: open that very post (unfolded / its channel selected)
+        const postIdx = el.dataset.openPost != null ? Number(el.dataset.openPost) : null;
+        const target = getFeed(el.dataset.openFeed);
+        if (target && postIdx != null && target.data.posts[postIdx]) {
+            openPosts.add(`${target.id}:${postIdx}`);
+            if (PLATFORMS[target.platform]?.chat) dsSel.set(target.id, postIdx);
+            showFeed(target.id, { scrollToPost: postIdx });
+        } else showFeed(el.dataset.openFeed);
+        return;
+    }
 
     if (el.dataset.delFeed) {
         const store = getChatStore();
@@ -3575,6 +3588,7 @@ function showFeed(feedId, opts = {}) {
     if (!el) return;
     const prevScroll = el.scrollTop;
     const anchor = sameView ? captureAnchor(el) : null;
+    if (sameView) captureDraft();   // a half-written comment survives switching boards and coming back
     document.getElementById('stcm_errbox')?.classList.remove('show');
     syncSelectors();
 
@@ -3594,14 +3608,12 @@ function showFeed(feedId, opts = {}) {
         feed = latestFeedFor(selPlatform, selMode);
     }
     if (!feed) {
-        if (composer) { captureDraft(); composer = null; }
         currentFeedId = null;
         bar.innerHTML = `<span class="stcm-fb-info"><b>${esc(PLATFORMS[selPlatform]?.label)}</b> · ${esc(MODES[selMode]?.label)}</span>`;
         el.innerHTML = `<div class="stcm-empty"><i class="fa-solid fa-comments"></i><br>${store.feeds.length ? `아직 <b>${esc(PLATFORMS[selPlatform]?.label)}</b> · ${esc(MODES[selMode]?.label)} 글이 없어요.` : '아직 글이 없어요.'}<br><b>생성</b>을 누르거나 <i class="fa-solid fa-pen"></i> 버튼으로 직접 글을 써 보세요.${store.feeds.length ? '<br><small>다른 커뮤니티 글은 <i class="fa-solid fa-clock-rotate-left"></i> 지난 피드에서 볼 수 있어요.</small>' : ''}</div>`;
         el.scrollTop = 0;
         return;
     }
-    if (feed.id !== currentFeedId && composer?.feedId !== feed.id) composer = null;
     currentFeedId = feed.id;
     const hasTr = feed.data.posts.some(p => p.body_tr || p.body_ko || p.comments.some(c => c.body_tr || c.body_ko));
     const when = new Date(feed.createdAt).toLocaleString();
@@ -4272,7 +4284,7 @@ function setNote(el, text, ok = null) {
 async function onApiClick(act, el) {
     const s = getSettings();
     if (act === 'api-test') { await testApi(el); return true; }
-    if (act === 'api-add') { apiEdit = { id: '' }; apiModelCache.delete('form'); showApi({ keepScroll: true }); el.closest('#stcm_feed')?.querySelector('.stcm-af-name')?.focus(); return true; }
+    if (act === 'api-add') { apiEdit = { id: '' }; apiModelCache.delete('form'); showApi({ keepScroll: true }); document.querySelector('#stcm_feed .stcm-af-name')?.focus({ preventScroll: true }); return true; }
     if (act === 'api-edit') { apiEdit = { id: el.dataset.api }; showApi({ keepScroll: true }); return true; }
     if (act === 'af-cancel') { apiEdit = null; showApi({ keepScroll: true }); return true; }
     if (act === 'api-use') { setConnection(`api:${el.dataset.api}`); showApi({ keepScroll: true }); return true; }
@@ -4322,7 +4334,7 @@ async function onApiClick(act, el) {
             el.disabled = true;
             setNote(note, '확인 중…');
             try {
-                const reply = await callCustomApi({ ...f, name: f.name }, 'This is a connection test.', 'Reply with exactly: OK');
+                const reply = await callCustomApi(f, 'This is a connection test.', 'Reply with exactly: OK');
                 setNote(note, reply.trim() ? `응답 받음: ${truncate(reply.trim(), 40)}` : '빈 응답이 왔어요.', !!reply.trim());
             } catch (e) {
                 setNote(note, `실패: ${truncate(String(e?.message ?? e), 160)}`, false);
@@ -4456,7 +4468,7 @@ function showPins() {
     if (!pins.length) { el.innerHTML = `<div class="stcm-empty">반영 중인 글이 없어요.<br>글 아래의 <i class="fa-solid fa-thumbtack"></i> 반영 버튼으로 골라보세요.</div>`; return; }
     el.innerHTML = `<div class="stcm-list">${pins.map(p => `
         <div class="stcm-li">
-            <div class="stcm-li-main" data-open-feed="${esc(p.feedId)}">
+            <div class="stcm-li-main" data-open-feed="${esc(p.feedId)}" data-open-post="${Number(p.postIdx)}">
                 <b>${esc(PLATFORMS[p.platform]?.label)}</b> · ${esc(p.mode === 'world' ? '세계관 소문' : '독자 반응')}
                 <small>${esc(truncate(p.text, 140))}</small>
             </div>
