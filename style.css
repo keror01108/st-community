@@ -41,18 +41,40 @@
 }
 
 /* ---------- shell ---------- */
-#stcm_overlay {
+/* The overlay is a modal <dialog> (top layer). Reset every UA / theme dialog style explicitly. */
+dialog#stcm_overlay {
     position: fixed;
     inset: 0;
     z-index: 9999;
     display: none;
     align-items: center;
     justify-content: center;
+    box-sizing: border-box;
+    width: 100vw;
+    width: 100dvw;
+    height: 100vh;
+    height: 100dvh;
+    max-width: none;
+    max-height: none;
+    min-width: 0;
+    min-height: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    outline: none;
+    box-shadow: none;
+    transform: none;
     background: rgba(0, 0, 0, 0.55);
-    backdrop-filter: blur(2px);
+    color: var(--s-text);
+    overflow: hidden;
 }
-#stcm_overlay.open { display: flex; }
+dialog#stcm_overlay.open,
+dialog#stcm_overlay[open] { display: flex; }
+dialog#stcm_overlay::backdrop { background: transparent; }
+dialog#stcm_overlay #toast-container { position: fixed; }
 
+.stcm-modal:focus { outline: none; }
 .stcm-modal {
     position: relative;
     width: min(760px, 96vw);
@@ -222,7 +244,7 @@
 .stcm-feed * { min-width: 0; }
 .stcm-body, .stcm-feed h3, .stcm-li-main, .stcm-wi-preview { overflow-wrap: anywhere; word-break: normal; }
 .stcm-controls, .stcm-header { flex: 0 0 auto; }
-#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; }
+dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; }
 /* folded: keep only the generate row */
 #stcm_overlay.folded .stcm-controls > :not(.stcm-genrow) { display: none; }
 #stcm_overlay.folded .stcm-controls { padding-top: 6px; padding-bottom: 6px; }

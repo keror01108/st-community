@@ -51,7 +51,7 @@ const defaultSettings = Object.freeze({
     topicScope: 'all',           // all: manual + auto generation | auto: auto generation only
     threadCap: 1000,             // max posts per thread on capped platforms (2ch, Reddit)
     theme: 'theme',              // light | dark | theme (follow SillyTavern theme)
-    foldControls: null,          // collapse the control rows; null = automatic (short screens)
+    foldPrefs: {},               // { short?: bool, tall?: bool } — unset: folded on short screens only
 });
 
 // Languages shown in the selectors. Value = English name used in prompts.
@@ -2154,6 +2154,15 @@ async function showWorldInfo() {
             ? '항목을 골라 두면 <b>직접 고른 항목</b> 방식으로 바꿨을 때 쓰여요.'
             : '고른 항목은 키워드와 상관없이 항상 내용 전체가 들어가요. 실리태번 본편의 켜짐/꺼짐은 바뀌지 않아요.'}</p>
         <input id="stcm_wi_filter" type="text" placeholder="책·항목 검색" value="${esc(wiFilter)}">
+        ${(() => {
+            // picks for books that were renamed or deleted in SillyTavern
+            const known = new Set(names);
+            const orphans = Object.keys(picks).filter(b => !known.has(b) && picks[b]?.length);
+            return orphans.length && names.length ? `<div class="stcm-import">
+                <div><i class="fa-solid fa-triangle-exclamation"></i> 목록에 없는 책에서 고른 항목이 있어요 (이름이 바뀌었거나 지워진 책): <b>${orphans.map(esc).join(', ')}</b></div>
+                <div class="stcm-cp-foot"><button data-act="wi-orphans">그 선택 지우기</button></div>
+            </div>` : '';
+        })()}
         ${names.length ? rows : '<div class="stcm-empty">월드 인포 목록을 찾지 못했어요.</div>'}
     </div>`;
     const f = document.getElementById('stcm_wi_filter');
@@ -2222,6 +2231,14 @@ async function onWorldInfoClick(el) {
         document.getElementById('stcm_feed').scrollTop = scroll;
         return true;
     }
+    if (act === 'wi-orphans') {
+        const store = getChatStore();
+        const known = new Set(getWorldNames());
+        for (const b of Object.keys(store.wi.picks)) if (!known.has(b)) delete store.wi.picks[b];
+        await saveChatStore();
+        await showWorldInfo();
+        return true;
+    }
     if (act === 'wi-all' || act === 'wi-none' || act === 'wi-enabled') {
         const book = el.dataset.book;
         const entries = await loadBookEntries(book);
@@ -2268,10 +2285,16 @@ function applyTheme() {
     if (sel) sel.value = t;
 }
 
+/** Folding is remembered separately for short (phone landscape, small window) and tall screens. */
+function screenClass() {
+    return window.innerHeight < 600 ? 'short' : 'tall';
+}
+
 function isFolded() {
-    const f = getSettings().foldControls;
-    if (f === true || f === false) return f;
-    return window.innerHeight < 600;
+    const s = getSettings();
+    const pref = s.foldPrefs?.[screenClass()];
+    if (pref === true || pref === false) return pref;
+    return screenClass() === 'short';
 }
 
 function applyFold() {
@@ -2297,8 +2320,8 @@ function languageOptions(includeNative, includeOff) {
 function buildOverlay() {
     if (document.getElementById('stcm_overlay')) return;
     const html = `
-    <div id="stcm_overlay">
-      <div class="stcm-modal" role="dialog" aria-label="커뮤니티">
+    <dialog id="stcm_overlay" aria-label="커뮤니티">
+      <div class="stcm-modal" tabindex="-1">
         <div class="stcm-header">
           <div class="stcm-title"><i class="fa-solid fa-comments"></i><span class="stcm-title-text"> 커뮤니티</span></div>
           <div class="stcm-hbtns">
@@ -2334,17 +2357,19 @@ function buildOverlay() {
         <input type="file" id="stcm_import_file" accept=".json,application/json" hidden>
         <div class="stcm-busy" id="stcm_busy"><i class="fa-solid fa-spinner fa-spin"></i> <span></span></div>
       </div>
-    </div>`;
+    </dialog>`;
     document.body.insertAdjacentHTML('beforeend', html);
 
     const ov = document.getElementById('stcm_overlay');
     ov.addEventListener('click', (e) => { if (e.target === ov) closePanel(); });
+    // Esc on a modal <dialog> fires "cancel"; our keydown handler decides what Esc does
+    ov.addEventListener('cancel', (e) => e.preventDefault());
     document.getElementById('stcm_btn_close').addEventListener('click', closePanel);
     document.getElementById('stcm_btn_history').addEventListener('click', showHistory);
     document.getElementById('stcm_btn_pins').addEventListener('click', showPins);
     document.getElementById('stcm_btn_fold').addEventListener('click', () => {
         const s = getSettings();
-        s.foldControls = !isFolded();
+        s.foldPrefs = { ...(s.foldPrefs ?? {}), [screenClass()]: !isFolded() };
         saveSettings();
         applyFold();
     });
@@ -2423,7 +2448,9 @@ function buildOverlay() {
     document.getElementById('stcm_feedbar').addEventListener('click', onFeedClick);
     document.addEventListener('keydown', (e) => {
         if (e.key !== 'Escape' || !isOpen()) return;
-        if (document.querySelector('dialog[open], .popup[open]')) return;   // let SillyTavern popups close first
+        // let SillyTavern popups (also <dialog>s) on top of ours close first
+        const ours = document.getElementById('stcm_overlay');
+        if ([...document.querySelectorAll('dialog[open], .popup[open]')].some(d => d !== ours)) return;
         if (e.target?.closest?.('#stcm_overlay input, #stcm_overlay textarea')) { e.target.blur(); return; }
         closePanel();
     });
@@ -2431,8 +2458,7 @@ function buildOverlay() {
     window.addEventListener('resize', () => {
         clearTimeout(resizeTimer);
         resizeTimer = setTimeout(() => {
-            const f = getSettings().foldControls;
-            if (isOpen() && f !== true && f !== false) applyFold();
+            if (isOpen()) applyFold();   // the remembered choice for this screen size
         }, 150);
     });
 }
@@ -3118,7 +3144,7 @@ function exportFeeds() {
     const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
     a.href = url;
     a.download = `community-feed_${safeFileName(payload.chat)}_${stamp}.json`;
-    document.body.appendChild(a);
+    (document.getElementById('stcm_overlay') ?? document.body).appendChild(a);
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 5000);
@@ -3272,7 +3298,7 @@ function openPanel(feedId) {
     if (!MODES[selMode]) selMode = 'meta';
     applyTheme();
     applyFold();
-    document.getElementById('stcm_overlay').classList.add('open');
+    showOverlay();
     if (store && store.unread) {
         store.unread = 0;
         saveChatStore();
@@ -3286,10 +3312,48 @@ function openPanel(feedId) {
     showFeed(feedId);
 }
 
+/**
+ * The panel is a modal <dialog>: the browser puts it in the top layer, so themes, custom CSS or
+ * other extensions (transforms, z-index, containers) can't push it off screen.
+ */
+let savedToastTarget = null;
+
+function showOverlay() {
+    const ov = document.getElementById('stcm_overlay');
+    if (!ov) return;
+    ov.classList.add('open');
+    if (!ov.open) {
+        try { ov.showModal(); } catch { ov.setAttribute('open', ''); }   // very old browsers: plain open
+        // showModal focuses the first button (visible ring); focus the panel itself instead
+        try { ov.querySelector('.stcm-modal')?.focus({ preventScroll: true }); } catch { /* ignore */ }
+    }
+    // toasts must sit inside the top layer too, or they'd be hidden behind the dialog
+    try {
+        if (window.toastr?.options) {
+            savedToastTarget = toastr.options.target ?? 'body';
+            toastr.options.target = '#stcm_overlay';
+        }
+        const tc = document.getElementById('toast-container');
+        if (tc && tc.parentElement !== ov) ov.appendChild(tc);
+    } catch { /* ignore */ }
+}
+
+function hideOverlay() {
+    const ov = document.getElementById('stcm_overlay');
+    if (!ov) return;
+    ov.classList.remove('open');
+    try { if (ov.open) ov.close(); } catch { ov.removeAttribute('open'); }
+    try {
+        if (window.toastr?.options) toastr.options.target = savedToastTarget ?? 'body';
+        const tc = document.getElementById('toast-container');
+        if (tc && tc.parentElement === ov) document.body.appendChild(tc);
+    } catch { /* ignore */ }
+}
+
 function closePanel() {
     captureDraft();
     leaveFeed();
-    document.getElementById('stcm_overlay')?.classList.remove('open');
+    hideOverlay();
 }
 
 function updateBadge() {
