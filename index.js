@@ -25,6 +25,8 @@ const defaultSettings = Object.freeze({
     commentCount: 5,
     continueCount: 5,
     contextMessages: 20,
+    npcPosts: 'auto',            // story side characters posting themselves: auto | on | off
+    translateConn: '',           // '' = translate in the same call · 'main' · ST profile id · 'api:<id>'
     extMemory: true,             // read memory / summaries other extensions inject (Memoria, VectFox, …)
     extMemoryChoice: {},         // injection key → true/false (unset: memory-looking keys on, others off)
     extMemoryMax: 8000,
@@ -166,7 +168,10 @@ Output ONLY a JSON object, no code fences: {"title": "post title, or empty when 
     language_fixed: `Write all posts and comments in {{language}}, while keeping the platform's culture, formatting and slang flavor, naturally adapted into {{language}}. Every word must be {{language}}: never mix in words, set phrases, slang or parenthetical originals from another language (for example no "绝了", "(原文)" or "姊妹快跑 (…)"); only personal names and brand names may stay as they are.`,
     language_foreign: `This is a {{language}}-localized version of {{platform}}, whose users normally write in {{native}}. The platform guide's example words, slang and emoji tags are written in {{native}} — never copy them; express the same nuance with natural {{language}} (emoji tags too, e.g. [눈물] or [tears] instead of [泪]). Do not borrow slang that belongs to {{language}}-speaking sites either (for Korean: 원덬, 덬, 글쓴덬, 갤러, 념글, 개추, ㅇㅇ and similar terms from Korean communities). Write the way a skilled translator would localize these posts, so it still reads as {{platform}} culture.`,
 
-    translation: `ALSO fill "body_tr" for every post and comment with a natural {{translation}} translation that keeps the tone and slang. If the original is already in {{translation}}, leave "body_tr" empty.`,
+    npc_on: `Named side characters (NPCs) from the story — friends, family, classmates, coworkers, rivals and other people who appear in the story or the world information, but not {{char}} or {{user}} — DO use this community. Let one or two of them post or comment as themselves under fitting handles, in their own voice, knowing only what they would know. They may talk about {{char}}/{{user}} from their own point of view.`,
+    npc_off: `Named side characters (NPCs) from the story — anyone who appears in the story or the world information besides {{char}} and {{user}} — do NOT post or comment themselves. Every poster is an ordinary member with no name in the story; story characters may only be mentioned, rumored about or described by others.`,
+    translate_separate: `Translate the "text" of every item into natural {{translation}}. Keep the tone, slang, emoji, line breaks (\n) and formatting such as >>12 anchors, #hashtags#, [emoji] tags and @mentions. Keep personal names as they are, or transliterate them only when that is how {{translation}} speakers would write them. If a text is already in {{translation}}, return "" for it. Reply with JSON only, in this exact shape: {"items":[{"id":0,"text":"..."}]}`,
+    translation: `ALSO fill "body_tr" for every post and comment with a natural {{translation}} translation that keeps the tone and slang. If the original is already in {{translation}}, leave "body_tr" empty. Likewise fill "title_tr" with the translated post title (empty when the post has no title or the title is already in {{translation}}).`,
 
     inject_authored: `[Online posts that story characters wrote themselves. Each name before "(posting as ...)" is the story character who actually wrote that post or comment on that community, and they remember doing it. Other lines are replies from other users, which those characters may have read. Let this shape the characters' knowledge, mood and dialogue when relevant (they may mention it, check the reactions, regret it, or be confronted about it by someone who saw it).]`,
 
@@ -182,6 +187,7 @@ Output ONLY a JSON object, no code fences: {"title": "post title, or empty when 
       "author": "display name or nickname",
       "handle": "username, @id, IP fragment, or poster ID (may be empty)",
       "title": "post title (empty for X/Twitter and Weibo)",
+      "title_tr": "",
       "body": "post text; use \\n for line breaks",
       "body_tr": "",
       "time": "relative time as shown on the platform, written in the output language",
@@ -236,7 +242,10 @@ const PROMPT_LABELS = {
     language_native: '언어: 커뮤니티 원어',
     language_fixed: '언어: 지정 언어',
     language_foreign: '언어: 외국 커뮤니티를 다른 언어로 쓸 때',
-    translation: '번역 지시',
+    translation: '번역 지시 (글 만들 때 같이)',
+    translate_separate: '번역: 따로 번역할 때',
+    npc_on: '주변 인물(NPC): 직접 글 쓰기',
+    npc_off: '주변 인물(NPC): 글 쓰지 않기',
     inject_authored: '본편 반영: 캐릭터/유저가 쓴 글',
     inject_world: '본편 반영: 세계관 속 글',
     inject_meta: '본편 반영: 독자 반응',
@@ -792,8 +801,8 @@ function languageRules(platformId, fixed) {
 function languageInstruction(platformId, fixed = resolvedLanguage()) {
     const tr = resolvedTranslation();
     const parts = languageRules(platformId, fixed);
-    if (tr) parts.push(fillTpl(getPrompt('translation'), { translation: tr }));
-    else parts.push('Leave "body_tr" empty.');
+    if (tr && !translateSeparately()) parts.push(fillTpl(getPrompt('translation'), { translation: tr }));
+    else parts.push('Leave "body_tr" empty.');   // no translation, or another model translates afterwards
     return parts.join('\n');
 }
 
@@ -963,11 +972,20 @@ async function buildContextBlock() {
     return parts.join('\n\n');
 }
 
+/** Whether named side characters of the story post themselves (world mode only: readers are outside the story). */
+function npcRule(mode, vars) {
+    const v = getSettings().npcPosts;
+    if (mode !== 'world' || (v !== 'on' && v !== 'off')) return '';
+    return fillTpl(getPrompt(v === 'on' ? 'npc_on' : 'npc_off'), vars);
+}
+
 function commonBlocks(mode, platformId, lang = resolvedLanguage()) {
     const vars = baseVars(platformId);
+    const npc = npcRule(mode, vars);
     return {
         system: fillTpl(getPrompt('system'), vars),
-        task: fillTpl(getPrompt(mode === 'world' ? 'mode_world' : 'mode_meta'), vars),
+        task: fillTpl(getPrompt(mode === 'world' ? 'mode_world' : 'mode_meta'), vars) + (npc ? `\n${npc}` : ''),
+        taskBase: fillTpl(getPrompt(mode === 'world' ? 'mode_world' : 'mode_meta'), vars),   // without the NPC rule (the player writes)
         style: fillTpl(getPrompt(`guide_${platformId}`), vars),
         language: languageInstruction(platformId, lang),
         extra: getSettings().extraInstruction?.trim() || '',
@@ -1214,10 +1232,10 @@ async function buildContinuePrompt({ feed, postIdx, count, playerJustPosted }) {
 // ---------------------------------------------------------------------------
 // Model call + parsing
 // ---------------------------------------------------------------------------
-async function callModel(system, user, signal) {
+async function callModel(system, user, signal, connValue) {
     const c = ctx();
     const s = getSettings();
-    const conn = resolveConnection();
+    const conn = resolveConnection(connValue);
 
     if (conn.type === 'api') {
         if (!conn.api) throw new Error('골라 둔 API가 지워졌어요. 커뮤니티 창의 API 설정에서 다시 골라 주세요.');
@@ -1355,6 +1373,7 @@ function normPost(p) {
     return {
         ...normItem(p),
         title: String(p?.title ?? '').slice(0, 500),
+        title_tr: String(p?.title_tr ?? '').slice(0, 500),
         views: toInt(p?.views),
         shares: toInt(p?.shares),
         tags: Array.isArray(p?.tags) ? p.tags.slice(0, 10).map(t => String(t).slice(0, 60)) : [],
@@ -1422,10 +1441,12 @@ async function runJob(label, background, job) {
     abortCtl = new AbortController();
     setBusyUI(true, label);
     try {
-        return await job({
+        const res = await job({
             signal: abortCtl.signal,
             stillSameChat: () => ctx().getCurrentChatId() === chatIdAtStart,
         });
+        if (res?.id && res?.data?.posts) scheduleTranslate(res.id);   // runs after the lock is released
+        return res;
     } catch (e) {
         if (abortCtl?.signal.aborted) {
             toastr.info('생성을 멈췄어요.');
@@ -1444,6 +1465,85 @@ async function runJob(label, background, job) {
         busy = false;
         abortCtl = null;
         setBusyUI(false);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Separate translation: another connection translates new posts after they are generated
+// ---------------------------------------------------------------------------
+function translateSeparately() {
+    return !!resolvedTranslation() && !!getSettings().translateConn;
+}
+
+const trTried = new WeakSet();   // items already sent once this session (empty answer = already in that language)
+const trTriedTitle = new WeakSet();   // same for post titles
+let trChain = Promise.resolve();
+
+function scheduleTranslate(feedId) {
+    if (!translateSeparately()) return;
+    trChain = trChain.then(() => translateFeed(feedId)).catch((e) => {
+        console.warn(`[${MODULE}] translation failed`, e);
+        toastr.error(`번역 실패: ${esc(truncate(String(e?.message ?? e), 120))}`, '커뮤니티');
+    });
+}
+
+async function translateFeed(feedId) {
+    const feed = getFeed(feedId);
+    const target = resolvedTranslation();
+    if (!feed || !target || !translateSeparately()) return;
+    const chatId = ctx().getCurrentChatId?.();
+    const todo = [];   // { o, postIdx, field: 'body' | 'title' }
+    feed.data.posts.forEach((p, i) => {
+        if (String(p.title ?? '').trim() && !p.title_tr && !trTriedTitle.has(p)) todo.push({ o: p, postIdx: i, field: 'title' });
+        for (const o of [p, ...p.comments, ...p.comments.flatMap(c => c.replies)]) {
+            if (o && String(o.body ?? '').trim() && !o.body_tr && !o.body_ko && !trTried.has(o)) todo.push({ o, postIdx: i, field: 'body' });
+        }
+    });
+    if (!todo.length) return;
+    const system = fillTpl(getPrompt('translate_separate'), { translation: target });
+    // small batches keep each answer short enough to come back whole
+    const batches = [];
+    let cur = [];
+    let size = 0;
+    for (const t of todo) {
+        const len = String(t.o[t.field]).length;
+        if (cur.length && (size + len > 5000 || cur.length >= 30)) { batches.push(cur); cur = []; size = 0; }
+        cur.push(t);
+        size += len;
+    }
+    if (cur.length) batches.push(cur);
+    for (const batch of batches) {
+        if (ctx().getCurrentChatId?.() !== chatId || !getFeed(feedId)) return;
+        const mark = (t, on) => { const set = t.field === 'title' ? trTriedTitle : trTried; if (on) set.add(t.o); else set.delete(t.o); };
+        batch.forEach(t => mark(t, true));
+        const user = JSON.stringify({ items: batch.map((t, id) => ({ id, text: t.o[t.field] })) });
+        let raw;
+        try {
+            raw = await callModel(system, user, null, getSettings().translateConn);
+        } catch (e) {
+            batch.forEach(t => mark(t, false));   // the request failed: try these again next time
+            throw e;
+        }
+        if (ctx().getCurrentChatId?.() !== chatId) return;
+        let data;
+        try { data = extractJson(raw); } catch { data = null; }
+        const list = Array.isArray(data) ? data : (Array.isArray(data?.items) ? data.items : []);
+        const touched = new Set();
+        for (const r of list) {
+            const t = batch[Number(r?.id)];
+            const text = typeof r?.text === 'string' ? r.text.trim() : '';
+            if (!t || !text || text === String(t.o[t.field]).trim()) continue;
+            if (t.field === 'title') t.o.title_tr = text.slice(0, 500);
+            else t.o.body_tr = text.slice(0, 8000);
+            touched.add(t.postIdx);
+        }
+        if (!touched.size) continue;
+        await saveChatStore();
+        if (isOpen() && view === 'feed' && currentFeedId === feedId) {
+            // the 번역 button appears with the first translation; afterwards update only the posts that changed
+            if (!document.getElementById('stcm_tr_toggle')) showFeed(feedId, { keepScroll: true });
+            else for (const i of touched) updatePost(feedId, i);
+        }
     }
 }
 
@@ -1749,14 +1849,14 @@ async function submitPlayerComment({ feedId, postIdx, replyTo, body, identity, r
     if (react) await generateMoreComments(feed.id, postIdx, { playerJustPosted: true });
 }
 
-async function deletePlayerItem(feedId, postIdx, ci, ri) {
+async function deleteItem(feedId, postIdx, ci, ri) {
     const feed = getFeed(feedId);
     const post = feed?.data.posts[postIdx];
     if (!post) return;
     const target = ci == null ? post : (ri == null ? post.comments[ci] : post.comments[ci]?.replies[ri]);
-    if (!target?.isMe && !(ci == null && post.kind === 'dm')) return;
+    if (!target) return;   // generated posts / comments can be deleted as well as your own
     if (ci == null) {
-        // Delete the whole post (only allowed for player posts); drop pins pointing at it and shift later ones
+        // Delete the whole post (generated or your own); drop pins pointing at it and shift later ones
         feed.data.posts.splice(postIdx, 1);
         for (const p of feed.data.posts) {
             for (const k of ['prevIdx', 'nextIdx']) {
@@ -1785,6 +1885,11 @@ async function deletePlayerItem(feedId, postIdx, ci, ri) {
         refreshInjection();
     } else if (ri == null) {
         post.comments.splice(ci, 1);
+        // an open comment box that answers a comment below keeps pointing at the same one
+        if (composer?.feedId === feedId && composer.postIdx === postIdx && composer.replyTo != null) {
+            if (composer.replyTo === ci) { composer.replyTo = null; composer.place = 'end'; }
+            else if (composer.replyTo > ci) { composer.replyTo -= 1; composer.place = 'end'; }
+        }
         // Discord replies point at comments by index: drop / shift them
         for (const c of post.comments) {
             if (c.ref == null) continue;
@@ -1794,12 +1899,12 @@ async function deletePlayerItem(feedId, postIdx, ci, ri) {
     } else {
         post.comments[ci]?.replies.splice(ri, 1);
     }
+    // a box placed under a specific comment / res may now sit on the wrong one: move it to the end
+    if (ci != null && composer?.feedId === feedId && composer.postIdx === postIdx && !['end', 'op'].includes(composer.place ?? 'end')) composer.place = 'end';
     await saveChatStore();
-    if (ci == null) showFeed(feedId, { keepScroll: true });
-    else {
-        updatePost(feedId, postIdx);
-        if (isPinned(feedId, postIdx)) refreshInjection();
-    }
+    if (ci == null) { showFeed(feedId, { keepScroll: true }); return; }
+    updatePost(feedId, postIdx);
+    if (isPinned(feedId, postIdx)) refreshInjection();
 }
 
 // ---------------------------------------------------------------------------
@@ -1838,7 +1943,7 @@ async function aiWrite({ kind, mode, platformId, identity, instruction, draft, f
             : ({ post: platformId === 'fivech' ? 'thread (title + opening post)' : 'post', comment: 'comment', reply: 'reply' }[kind] ?? kind);
         const parts = [
             `<story_context>\n${storyText}\n</story_context>`,
-            `<task>\n${b.task}\n</task>`,
+            `<task>\n${b.taskBase}\n</task>`,
             `<platform_style>\n${b.style}\n</platform_style>`,
         ];
         if (feed && postIdx != null && crossRefOn(feed.data.posts[postIdx])) parts.push(buildCrossRefBlock(platformId, mode, feed.data.posts[postIdx]));
@@ -2006,6 +2111,11 @@ function isPinned(feedId, postIdx) {
 // Rendering helpers
 // ---------------------------------------------------------------------------
 let showTr = false;
+
+/** Post title as shown: the translation while 번역 보기 is on (when there is one). */
+function ttl(p) {
+    return showTr && p?.title_tr ? p.title_tr : (p?.title ?? '');
+}
 let composer = null;   // { feedId, postIdx, replyTo }
 
 function txt(o, platform) {
@@ -2026,6 +2136,15 @@ function meBadge(o) {
 }
 
 /** Small "reply" / "delete" links on a comment. ci = top-level index, ri = reply index. */
+/** "DM" / "채널" / "스레" / "글" — what one post is called on this platform. */
+function postKindLabel(feed, post) {
+    if (post?.kind === 'dm') return 'DM';
+    const pf = PLATFORMS[feed?.platform];
+    if (pf?.chat) return '채널';
+    if (feed?.platform === 'fivech') return '스레';
+    return '글';
+}
+
 function itemLinks(feed, i, ci, ri, o, n = null) {
     const links = [];
     if (ri == null && feed.platform !== 'fivech') {
@@ -2035,7 +2154,7 @@ function itemLinks(feed, i, ci, ri, o, n = null) {
         const place = ci == null ? 'op' : (ri == null ? `c${ci}` : `r${ci}.${ri}`);
         links.push(`<a class="stcm-link" data-act="anchor" data-feed="${esc(feed.id)}" data-idx="${i}" data-n="${n}" data-place="${place}">&gt;&gt;${n}</a>`);
     }
-    if (o?.isMe) {
+    if (o && ci != null) {   // any comment / reply / message can be removed, generated ones too
         links.push(`<a class="stcm-link danger" data-act="del-item" data-feed="${esc(feed.id)}" data-idx="${i}" data-ci="${ci}"${ri != null ? ` data-ri="${ri}"` : ''}>삭제</a>`);
     }
     return links.length ? `<span class="stcm-links">${links.join('')}</span>` : '';
@@ -2058,7 +2177,7 @@ function postActions(feed, i) {
         <button class="stcm-tog ${post.watch ? 'on' : ''}" data-act="watch" data-feed="${esc(feed.id)}" data-idx="${i}" title="${post.watch ? '자동 이어가기 끄기' : '본 채팅이 진행되면 이 글에 자동으로 레스/댓글 달기'}"><i class="fa-solid fa-eye"></i><span class="lbl">${post.watch ? '지켜보는 중' : '지켜보기'}</span></button>
         ${post.kind === 'dm' ? '' : `<button class="stcm-tog icon ${crossRefOn(post) ? 'on' : ''}" data-act="crossref" data-feed="${esc(feed.id)}" data-idx="${i}" title="${getSettings().crossRef ? '전체 설정에서 켜져 있어요' : (post.crossRef ? '이 글만 다른 글 참고 끄기' : '이 글을 이어갈 때 다른 게시글도 참고')}"><i class="fa-solid fa-link"></i></button>`}
         <button class="stcm-pin ${on ? 'on' : ''}" data-act="pin" data-feed="${esc(feed.id)}" data-idx="${i}" title="본편에 반영"><i class="fa-solid fa-thumbtack"></i>${on ? '반영 중' : '반영'}</button>
-        ${post.isMe || post.kind === 'dm' ? `<button data-act="del-post" data-feed="${esc(feed.id)}" data-idx="${i}" title="${post.kind === 'dm' ? 'DM 삭제' : '내 글 삭제'}"><i class="fa-solid fa-trash-can"></i></button>` : ''}
+        <button data-act="del-post" data-feed="${esc(feed.id)}" data-idx="${i}" title="${esc(postKindLabel(feed, post))} 삭제"><i class="fa-solid fa-trash-can"></i></button>
     </div>`;
 }
 
@@ -2160,7 +2279,7 @@ function postSummaryHtml(feed, p, i) {
     const pf = feed.platform;
     const n = p.comments.reduce((a, c) => a + 1 + c.replies.length, 0);
     const titled = !!String(p.title ?? '').trim() && pf !== 'twitter';
-    const title = titled ? p.title : truncate(p.body, 90);
+    const title = titled ? ttl(p) : truncate((showTr && p.body_tr) || p.body, 90);
     let tag = '';
     if (pf === 'naver') tag = p.tags?.[0] || '';
     if (pf === 'reddit') tag = p.tags?.[0] || '';
@@ -2241,7 +2360,7 @@ const renderers = {
             ${d.posts.map((p, i) => `
             <article class="stcm-n-post" data-post="${i}">
                 <div class="stcm-n-board">${esc(p.tags?.[0] || '자유게시판')}</div>
-                <h3>${esc(p.title)}</h3>
+                <h3>${esc(ttl(p))}</h3>
                 <div class="stcm-n-meta">${avatar(p.author)}<b>${esc(p.author)}</b>${meBadge(p)}<span>${esc(p.time)}</span><span>조회 ${num(p.views, 'ko')}</span></div>
                 <div class="stcm-body">${txt(p, 'naver')}</div>
                 <div class="stcm-n-foot"><span><i class="fa-regular fa-heart"></i> 좋아요 ${num(p.likes, 'ko')}</span><span><i class="fa-regular fa-comment"></i> 댓글 ${p.comments.reduce((a, c) => a + 1 + c.replies.length, 0)}</span></div>
@@ -2264,7 +2383,7 @@ const renderers = {
             <div class="stcm-dc-top">${esc(d.board || '갤러리')}</div>
             ${d.posts.map((p, i) => `
             <article class="stcm-dc-post" data-post="${i}">
-                <h3>${esc(p.title)} <span class="stcm-dc-cnt">[${p.comments.reduce((a, c) => a + 1 + c.replies.length, 0)}]</span></h3>
+                <h3>${esc(ttl(p))} <span class="stcm-dc-cnt">[${p.comments.reduce((a, c) => a + 1 + c.replies.length, 0)}]</span></h3>
                 <div class="stcm-dc-meta"><span>${who(p)}</span><span>${esc(p.time)}</span><span>조회 ${num(p.views)}</span><span>추천 ${num(p.likes)}</span></div>
                 <div class="stcm-body">${txt(p, 'dcinside')}</div>
                 <div class="stcm-dc-rec"><span class="up">개추 ${num(p.likes)}</span><span class="down">비추 ${Math.floor((Number(p.likes) || 0) / 7)}</span></div>
@@ -2296,7 +2415,7 @@ const renderers = {
             ${d.posts.map((p, i) => `
             <article class="stcm-r-post" data-post="${i}">
                 <div class="stcm-r-meta"><b>${esc(sub)}</b> · Posted by ${esc(uname(p))}${meBadge(p)} · ${esc(p.time)}</div>
-                <h3>${esc(p.title)}${p.tags?.[0] ? ` <span class="stcm-flair">${esc(p.tags[0])}</span>` : ''}</h3>
+                <h3>${esc(ttl(p))}${p.tags?.[0] ? ` <span class="stcm-flair">${esc(p.tags[0])}</span>` : ''}</h3>
                 <div class="stcm-body">${txt(p, 'reddit')}</div>
                 <div class="stcm-r-act"><span class="vote"><i class="fa-solid fa-arrow-up"></i> ${num(p.likes)} <i class="fa-solid fa-arrow-down"></i></span><span><i class="fa-regular fa-comment"></i> ${p.comments.reduce((a, c) => a + 1 + c.replies.length, 0)} Comments</span></div>
                 <div class="stcm-r-comments">${p.comments.map((c, ci) => comment(c, i, ci, null)).join('')}</div>
@@ -2355,7 +2474,7 @@ const renderers = {
                     });
                 });
                 return `<article class="stcm-5-thread" data-post="${i}">
-                    <h3>${esc(p.title)} <small>(${n})</small></h3>
+                    <h3>${esc(ttl(p))} <small>(${n})</small></h3>
                     ${all.join('')}
                     ${postFooter(feed, i)}
                 </article>`;
@@ -2370,7 +2489,7 @@ const renderers = {
             ${d.posts.map((p, i) => `
             <article class="stcm-w-post" data-post="${i}">
                 <div class="stcm-w-head">${avatar(p.author)}<div><b>${esc(p.author)}</b>${meBadge(p)}<small>${esc(p.time)} ${esc(uiWords('weibo', feed.lang)?.via ?? '来自 微博客户端')}</small></div></div>
-                ${p.title ? `<h3>${esc(p.title)}</h3>` : ''}
+                ${p.title ? `<h3>${esc(ttl(p))}</h3>` : ''}
                 <div class="stcm-body">${txt(p, 'weibo')}</div>
                 <div class="stcm-w-act"><span><i class="fa-solid fa-share"></i> ${num(p.shares, 'zh')}</span><span><i class="fa-regular fa-comment"></i> ${num(p.comments.length, 'zh')}</span><span><i class="fa-regular fa-thumbs-up"></i> ${num(p.likes, 'zh')}</span></div>
                 <div class="stcm-w-comments">
@@ -2391,7 +2510,7 @@ const renderers = {
         const chans = [];
         const dms = [];
         d.posts.forEach((p, i) => (p.kind === 'dm' ? dms : chans).push(i));
-        const nameOf = (p) => (p.kind === 'dm' ? dmPartnerLabel(p) : String(p.title || '일반').replace(/^#\s*/, ''));
+        const nameOf = (p) => (p.kind === 'dm' ? dmPartnerLabel(p) : String(ttl(p) || '일반').replace(/^#\s*/, ''));
         const msgHtml = (o, i, ci, ri, p) => {
             const refTo = p && o.ref != null ? p.comments[o.ref] : null;
             const canDm = !o.isMe && o.author && p?.kind !== 'dm';
@@ -2453,7 +2572,7 @@ const renderers = {
                 <div class="stcm-td-row" data-act="td-toggle" data-feed="${fid}" data-idx="${i}">
                     <span class="no">${base + i + 1}</span>
                     <span class="cat">${esc(cat)}</span>
-                    <span class="tt">${p.isMe ? '<i class="fa-solid fa-pen-nib stcm-td-mine"></i>' : ''}${esc(p.title || truncate(p.body, 40))}${n ? ` <em>[${n}]</em>` : ''}</span>
+                    <span class="tt">${p.isMe ? '<i class="fa-solid fa-pen-nib stcm-td-mine"></i>' : ''}${esc(ttl(p) || truncate(p.body, 40))}${n ? ` <em>[${n}]</em>` : ''}</span>
                     <span class="au">${esc(p.author || 'ㅇㅇ')}</span>
                     <span class="tm">${esc(p.time)}</span>
                     <span class="vw">${num(p.views, 'ko')}</span>
@@ -2462,7 +2581,7 @@ const renderers = {
                 <div class="stcm-td-detail">
                     <div class="stcm-td-dhead">
                         <span class="stcm-td-badge">${esc(cat)}</span>
-                        <h3>${esc(p.title)}</h3>
+                        <h3>${esc(ttl(p))}</h3>
                         <div class="stcm-td-meta">${who(p)}<span>${esc(p.time)}</span><span>조회 ${num(p.views, 'ko')}</span><span>추천 ${num(p.likes)}</span><span>댓글 ${n}</span></div>
                     </div>
                     <div class="stcm-body">${txt(p, 'tdgall')}</div>
@@ -2482,7 +2601,7 @@ const renderers = {
         const bestPost = best[bi];
         const banner = best.length ? `<div class="stcm-td-best">
                 <span class="lbl"><i class="fa-solid fa-star"></i> 개념글</span>
-                <a class="tt" data-act="td-open" data-feed="${fid}" data-idx="${bestPost.i}">${esc(bestPost.p.title || truncate(bestPost.p.body, 40))}${tdCount(bestPost.p) ? ` <em>[${tdCount(bestPost.p)}]</em>` : ''}</a>
+                <a class="tt" data-act="td-open" data-feed="${fid}" data-idx="${bestPost.i}">${esc(ttl(bestPost.p) || truncate(bestPost.p.body, 40))}${tdCount(bestPost.p) ? ` <em>[${tdCount(bestPost.p)}]</em>` : ''}</a>
                 <span class="pager"><button data-act="td-best" data-feed="${fid}" data-dir="-1" aria-label="이전"><i class="fa-solid fa-chevron-left"></i></button>${bi + 1}/${best.length}<button data-act="td-best" data-feed="${fid}" data-dir="1" aria-label="다음"><i class="fa-solid fa-chevron-right"></i></button></span>
             </div>` : '';
         return `<div class="stcm-skin stcm-tdgall">
@@ -2525,7 +2644,7 @@ const renderers = {
             ${d.posts.map((p, i) => {
                 let floor = 1;
                 return `<article class="stcm-tb-thread" data-post="${i}">
-                <h3>${esc(p.title)}</h3>
+                <h3>${esc(ttl(p))}</h3>
                 <div class="stcm-tb-floor op">
                     <div class="stcm-tb-user">${avatar(p.author)}<b>${esc(p.author)}</b><span class="lz">${esc(w.lz)}</span>${meBadge(p)}</div>
                     <div class="stcm-body">${txt(p, 'tieba')}</div>
@@ -2585,7 +2704,7 @@ function tdVisible(feed, p) {
         if ((p.likes || 0) < cut || !(p.likes > 0)) return false;
     }
     const q = st.q.trim().toLowerCase();
-    if (q && !`${p.title} ${p.body}`.toLowerCase().includes(q)) return false;
+    if (q && !`${p.title} ${p.title_tr ?? ''} ${p.body} ${p.body_tr ?? ''}`.toLowerCase().includes(q)) return false;
     return true;
 }
 
@@ -3506,15 +3625,34 @@ async function onFeedClick(e) {
     }
     if (act === 'del-post') {
         const { Popup, POPUP_RESULT } = ctx();
-        const isDm = getFeed(feedId)?.data.posts[idx]?.kind === 'dm';
+        const f = getFeed(feedId);
+        const post = f?.data.posts[idx];
+        if (!post) return;
+        const kind = postKindLabel(f, post);
+        const name = post.kind === 'dm' ? dmPartnerLabel(post) : (post.title || truncate(post.body, 30));
+        const what = kind === 'DM' ? `이 DM 대화(${name})를 모두` : kind === '채널' ? `#${name} 채널과 메시지를 모두` : `"${name}" ${kind === '스레' ? '스레와 레스를' : '글과 댓글을'} 모두`;
         const ok = Popup?.show?.confirm
-            ? (await Popup.show.confirm(isDm ? 'DM 삭제' : '내 글 삭제', isDm ? '이 DM 대화를 모두 지울까요?' : '이 글과 달린 댓글을 모두 지울까요?')) === POPUP_RESULT.AFFIRMATIVE
-            : confirm('지울까요?');
-        if (ok) await deletePlayerItem(feedId, idx, null, null);
+            ? (await Popup.show.confirm(`${kind} 삭제`, esc(`${what} 지울까요?`) + (isPinned(feedId, idx) ? '<br><small>본 채팅에 반영 중인 내용도 함께 빠져요.</small>' : ''))) === POPUP_RESULT.AFFIRMATIVE
+            : confirm(`${what} 지울까요?`);
+        if (ok) await deleteItem(feedId, idx, null, null);
         return;
     }
     if (act === 'del-item') {
-        await deletePlayerItem(feedId, idx, Number(el.dataset.ci), el.dataset.ri != null ? Number(el.dataset.ri) : null);
+        const ci = Number(el.dataset.ci);
+        const ri = el.dataset.ri != null ? Number(el.dataset.ri) : null;
+        const f = getFeed(feedId);
+        const post = f?.data.posts[idx];
+        const item = ri == null ? post?.comments[ci] : post?.comments[ci]?.replies[ri];
+        if (!item) return;
+        const pf = PLATFORMS[f.platform];
+        const kind = pf?.chat ? '메시지' : f.platform === 'fivech' ? '레스' : (ri == null ? '댓글' : '답글');
+        const obj = { 댓글: '댓글을', 답글: '답글을', 레스: '레스를', 메시지: '메시지를' }[kind];
+        const extra = ri == null && item.replies?.length && !pf?.flat ? `<br><small>달린 답글 ${item.replies.length}개도 함께 지워져요.</small>` : '';
+        const { Popup, POPUP_RESULT } = ctx();
+        const ok = Popup?.show?.confirm
+            ? (await Popup.show.confirm(`${kind} 삭제`, esc(`${item.author || '익명'}: ${truncate(item.body, 60)}`) + `<br>이 ${obj} 지울까요?` + extra)) === POPUP_RESULT.AFFIRMATIVE
+            : confirm(`이 ${obj} 지울까요?`);
+        if (ok) await deleteItem(feedId, idx, ci, ri);
         return;
     }
     if (act === 'submit-post') {
@@ -3620,9 +3758,10 @@ function boardsFor(platform, mode) {
         if (f.platform !== platform || f.mode !== mode) continue;
         const key = feedBoardKey(f);
         if (key && !key.split('|').every(n => known.has(n))) continue;   // a topic of it was deleted
-        const b = map.get(key) ?? { key, posts: 0, last: 0 };
-        b.posts += f.data?.posts?.length ?? 0;
-        b.last = Math.max(b.last, Number(f.createdAt) || 0);
+        // the board shows its newest feed, so count that one's posts (older ones live in 🕘 history)
+        const b = map.get(key) ?? { key, posts: 0, last: -1 };
+        const t = Number(f.createdAt) || 0;
+        if (t >= b.last) { b.last = t; b.posts = f.data?.posts?.length ?? 0; }
         map.set(key, b);
     }
     return [...map.values()].sort((a, b) => b.last - a.last);
@@ -3867,7 +4006,7 @@ function showFeed(feedId, opts = {}) {
         return;
     }
     currentFeedId = feed.id;
-    const hasTr = feed.data.posts.some(p => p.body_tr || p.body_ko || p.comments.some(c => c.body_tr || c.body_ko));
+    const hasTr = feed.data.posts.some(p => p.body_tr || p.body_ko || p.title_tr || p.comments.some(c => c.body_tr || c.body_ko));
     const when = new Date(feed.createdAt).toLocaleString();
     bar.innerHTML = `<span class="stcm-fb-info"><b>${esc(PLATFORMS[feed.platform]?.label)}</b> · ${esc(MODES[feed.mode]?.label)} · #${feed.atMessage} 시점 · ${esc(when)}${currentBoardKey() !== null ? ` · ${esc(boardName(feedBoardKey(feed), feed.platform))}` : (feed.topics?.length ? ` · 주제: ${esc(feed.topics.join(', '))}` : '')}${feed.topic ? ` · “${esc(truncate(feed.topic, 30))}”` : ''}</span>
         ${foldable(feed) && feed.data.posts.length ? '<button id="stcm_fold_all" data-act="fold-all"></button>' : ''}
@@ -4164,6 +4303,7 @@ function importFeed(f, chatLen) {
     const posts = f.data.posts.slice(0, 500).map((p) => {
         const post = { ...normPost(p), ...importItem(p) };
         post.title = String(p?.title ?? '').slice(0, 500);
+        post.title_tr = String(p?.title_tr ?? '').slice(0, 500);
         post.comments = (Array.isArray(p?.comments) ? p.comments : []).slice(0, 5000).map(c => ({
             ...importItem(c),
             replies: (Array.isArray(c?.replies) ? c.replies : []).slice(0, 2000).map(importItem),
@@ -4322,8 +4462,8 @@ function apiHost(url) {
 }
 
 /** What "profileId" points at: '' main API · '<uuid>' an ST profile · 'api:<id>' an API added here. */
-function resolveConnection() {
-    const id = getSettings().profileId || '';
+function resolveConnection(value = getSettings().profileId) {
+    const id = value === 'main' ? '' : (value || '');
     if (!id) return { type: 'main' };
     if (id.startsWith('api:')) return { type: 'api', api: customApis().find(a => a.id === id.slice(4)) ?? null };
     return { type: 'profile', profile: connectionProfiles().find(p => p.id === id) ?? null };
@@ -4362,6 +4502,25 @@ function connOptionsHtml() {
         ${missing ? `<option value="${esc(cur)}" selected>${missing}</option>` : ''}
         ${apis.length ? `<optgroup label="직접 추가한 API">${apis.map(a => `<option value="api:${esc(a.id)}" ${cur === `api:${a.id}` ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</optgroup>` : ''}
         ${profiles.length ? `<optgroup label="실리태번 연결 프로필">${profiles.map(p => `<option value="${esc(p.id)}" ${cur === p.id ? 'selected' : ''}>${esc(p.name || p.id)}</option>`).join('')}</optgroup>` : ''}`;
+}
+
+/** <option>s for the translation connection ('' = in the same generation call). */
+function trConnOptionsHtml() {
+    const cur = getSettings().translateConn || '';
+    const profiles = connectionProfiles();
+    const apis = customApis();
+    const known = cur === '' || cur === 'main' || apis.some(a => `api:${a.id}` === cur) || profiles.some(p => p.id === cur);
+    return `<option value="" ${cur === '' ? 'selected' : ''}>(따로 안 함 — 글 만들 때 같이 번역)</option>
+        <option value="main" ${cur === 'main' ? 'selected' : ''}>(메인 API로 따로 번역)</option>
+        ${known ? '' : `<option value="${esc(cur)}" selected>(지워진 연결 — 다시 골라 주세요)</option>`}
+        ${apis.length ? `<optgroup label="직접 추가한 API">${apis.map(a => `<option value="api:${esc(a.id)}" ${cur === `api:${a.id}` ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</optgroup>` : ''}
+        ${profiles.length ? `<optgroup label="실리태번 연결 프로필">${profiles.map(p => `<option value="${esc(p.id)}" ${cur === p.id ? 'selected' : ''}>${esc(p.name || p.id)}</option>`).join('')}</optgroup>` : ''}`;
+}
+
+function setTranslateConnection(value) {
+    getSettings().translateConn = String(value ?? '');
+    saveSettings();
+    if (!resolvedTranslation() && value) toastr.info('번역할 언어를 먼저 골라야 번역이 돼요 (설정 → 번역 함께 생성).', '', { timeOut: 3000 });
 }
 
 /** Re-fill the extension settings dropdown (and the panel's API view when it is open and idle). */
@@ -4569,6 +4728,13 @@ function showApi({ keepScroll = false } = {}) {
             <button data-act="api-test" ${apiTesting ? 'disabled' : ''}><i class="fa-solid fa-plug-circle-check"></i> 연결 테스트</button>
         </div>
     </div>
+    <div class="stcm-compose-view stcm-api-view">
+        <label class="stcm-cp-check">번역에 쓸 연결</label>
+        <select class="stcm-api-trconn">${trConnOptionsHtml()}</select>
+        <p class="stcm-cp-hint">${resolvedTranslation()
+            ? `번역 언어: <b>${esc(resolvedTranslation())}</b>. 따로 고르면 글을 먼저 만들고, 그 연결이 뒤이어 번역해요 (생성 프롬프트가 짧아지고, 번역은 싼 모델에 맡길 수 있어요). 모델은 위와 같은 방식으로 그 연결의 모델을 써요.`
+            : '지금은 번역을 안 해요. ⚙ 설정의 "번역 함께 생성"에서 언어를 고르면 번역이 켜져요.'}</p>
+    </div>
     <div class="stcm-compose-view stcm-api-view stcm-api-custom">
         <label class="stcm-cp-check">직접 추가한 API</label>
         <p class="stcm-cp-hint">실리태번 API 설정과 따로, 커뮤니티에서만 쓸 API를 추가할 수 있어요. OpenAI 호환 주소, 리버스 프록시, Claude·Gemini 프록시를 지원해요.</p>
@@ -4614,6 +4780,7 @@ async function onApiClick(act, el) {
         s.customApis = s.customApis.filter(x => x.id !== a.id);
         apiModelCache.delete(`api:${a.id}`);
         if (s.profileId === `api:${a.id}`) s.profileId = '';
+        if (s.translateConn === `api:${a.id}`) s.translateConn = '';   // back to translating in the same call
         if (apiEdit?.id === a.id) apiEdit = null;
         saveSettings();
         refreshConnSelectors();
@@ -4702,6 +4869,10 @@ function onApiChange(e) {
     const box = t.closest?.('.stcm-api-view');
     if (!box) return false;
     const s = getSettings();
+    if (t.classList.contains('stcm-api-trconn')) {
+        if (e.type === 'change') setTranslateConnection(t.value);
+        return true;
+    }
     if (t.classList.contains('stcm-api-modelsel') || t.classList.contains('stcm-af-modelsel')) {
         if (e.type !== 'change' || !t.value) return true;
         const input = t.classList.contains('stcm-af-modelsel') ? t.closest('.stcm-api-form')?.querySelector('.stcm-af-model') : box.querySelector('.stcm-api-model');
@@ -4919,7 +5090,7 @@ function addSettingsPanel() {
           <select id="stcm_set_language" class="text_pole">${languageOptions(true, false)}</select>
           <input id="stcm_set_custom_lang" class="text_pole" type="text" placeholder="언어 이름 (예: Catalan, Brazilian Portuguese)">
 
-          <label>번역 함께 생성 <small>(피드에서 번역 보기로 전환, 토큰 많이 씀)</small></label>
+          <label>번역 함께 생성 <small>(피드에서 번역 보기로 전환, 토큰 많이 씀 — 번역만 다른 API로 하려면 커뮤니티 창의 🔌 API 설정에서)</small></label>
           <select id="stcm_set_translate" class="text_pole">${languageOptions(false, true)}</select>
           <input id="stcm_set_custom_tr" class="text_pole" type="text" placeholder="번역할 언어 이름">
 
@@ -4933,6 +5104,12 @@ function addSettingsPanel() {
             <label>반영 글 삽입 깊이 <input id="stcm_set_depth" type="number" min="0" max="50" class="text_pole"></label>
           </div>
 
+          <label>주변 인물(NPC)이 직접 글 쓰기 <small>(세계관 속 모드 — 이야기에 나오는 조연이 커뮤니티에 직접 글·댓글을 다는지)</small></label>
+          <select id="stcm_set_npc" class="text_pole">
+            <option value="auto">AI가 알아서</option>
+            <option value="on">쓰게 하기 (조연 한두 명이 직접 등장)</option>
+            <option value="off">쓰지 않게 하기 (이름 없는 일반 이용자만)</option>
+          </select>
           <label class="checkbox_label"><input id="stcm_set_card" type="checkbox"><span>캐릭터·페르소나 설명 포함</span></label>
           <label>본 채팅에서 읽지 않을 태그 <small>(쉼표로 구분, 태그와 안의 내용을 통째로 빼요. 숨긴 메시지는 항상 빼요)</small></label>
           <textarea id="stcm_set_excludetags" class="text_pole" rows="3"></textarea>
@@ -5083,6 +5260,8 @@ function addSettingsPanel() {
     bind('stcm_set_theme', 'theme');
     document.getElementById('stcm_set_theme')?.addEventListener('change', applyTheme);
     bind('stcm_set_mode', 'defaultMode');
+    bind('stcm_set_npc', 'npcPosts');
+
     bind('stcm_set_pf', 'defaultPlatform');
     bind('stcm_set_extra', 'extraInstruction');
     bind('stcm_set_topicscope', 'topicScope');

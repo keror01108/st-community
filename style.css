@@ -477,7 +477,8 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
 .stcm-links { display: inline-flex; gap: 8px; margin-left: 8px; font-size: 11px; }
 .stcm-link { cursor: pointer; color: var(--k-sub, var(--s-sub)); text-decoration: none; }
 .stcm-link:hover { color: var(--k-text, var(--s-text)); text-decoration: underline; }
-.stcm-link.danger { color: #e53935; }
+.stcm-link.danger { color: inherit; opacity: 0.55; }
+.stcm-link.danger:hover, .stcm-link.danger:focus-visible { color: #e53935; opacity: 1; }
 .stcm-thread-nav { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; font-size: 12px; }
 .stcm-thread-nav .stcm-link { color: var(--k-link); }
 .stcm-closed .stcm-body { color: #e53935; font-weight: 700; }
