@@ -39,10 +39,10 @@ const defaultSettings = Object.freeze({
     topics: '공포: 괴담, 무서운 경험담, 미스터리\n낚시: 어그로성 제목, 반전 있는 낚시글\n웃음: 웃긴 썰, 드립, 짤 설명\n연애: 연애 상담, 썸, 이별, 짝사랑\n고민: 인생·학교·직장 고민 상담\n정보: 정보 공유, 꿀팁, 후기\n질문: 궁금한 거 물어보는 글\n썰: 경험담, 목격담\n논쟁: 의견 대립, 키배 유발 주제',
     topicSelected: [],           // names of selected topics
     topicMix: 'each',            // each: assign one topic per post | mix: let the model mix them
-    topicScope: 'all',
+    topicScope: 'all',           // all: manual + auto generation | auto: auto generation only
     threadCap: 1000,             // max posts per thread on capped platforms (2ch, Reddit)
     theme: 'theme',              // light | dark | theme (follow SillyTavern theme)
-    foldControls: null,          // collapse the control rows; null = automatic (short screens)           // all: manual + auto generation | auto: auto generation only
+    foldControls: null,          // collapse the control rows; null = automatic (short screens)
 });
 
 // Languages shown in the selectors. Value = English name used in prompts.
@@ -74,8 +74,8 @@ const LANGUAGES = [
 const PLATFORMS = {
     naver: { name: 'Naver Cafe', brand: false, label: '네이버 카페', icon: 'fa-mug-hot', lang: 'Korean', anon: '익명', now: '방금 전', thread: false, hasTitle: true },
     dcinside: { name: 'DCInside', brand: false, label: '디시인사이드', icon: 'fa-ghost', lang: 'Korean', anon: 'ㅇㅇ', now: '방금', thread: false, hasTitle: true },
-    reddit: { name: 'Reddit', brand: true, label: 'Reddit', icon: 'fa-reddit-alien', lang: 'English', anon: 'anonymous', now: 'just now', thread: false, hasTitle: true, capped: true },
-    twitter: { name: 'X (Twitter)', brand: true, label: 'X (트위터)', icon: 'fa-x-twitter', lang: 'the language most natural for the story setting and its fandom (if unclear, Korean)', anon: 'me', now: 'now', thread: false, hasTitle: false },
+    reddit: { name: 'Reddit', brand: true, label: 'Reddit', icon: 'fa-reddit-alien', lang: 'English', anon: 'throwaway', now: 'just now', thread: false, hasTitle: true, capped: true },
+    twitter: { name: 'X (Twitter)', brand: true, label: 'X (트위터)', icon: 'fa-x-twitter', lang: 'the language most natural for the story setting and its fandom (if unclear, Korean)', anon: 'user', now: 'now', thread: false, hasTitle: false },
     fivech: { name: '2channel / 5channel', brand: false, label: '2ch / 5ch', icon: 'fa-hashtag', lang: 'Japanese', anon: '名無しさん', now: null, thread: true, hasTitle: true, capped: true },
     weibo: { name: 'Sina Weibo', brand: true, label: '웨이보', icon: 'fa-weibo', lang: 'Simplified Chinese', anon: '微博用户', now: '刚刚', thread: false, hasTitle: false },
     tieba: { name: 'Baidu Tieba', brand: false, label: '바이두 티에바', icon: 'fa-paw', lang: 'Simplified Chinese', anon: '匿名用户', now: '刚刚', thread: true, hasTitle: true },
@@ -431,7 +431,7 @@ function loadFeedsForCurrentChat() {
             } catch (e) {
                 console.error(`[${MODULE}] failed to load feed file`, e);
                 toastr.error('커뮤니티 피드 파일을 불러오지 못했어요.', '커뮤니티');
-                if (feedState.key === key) feedState.loadFailed = true;
+                if (feedState.chatId === chatId) feedState.chatId = null;   // next ensureFeedsReady() retries
                 return;   // stay not-ready so nothing overwrites the file
             }
         }
@@ -457,7 +457,6 @@ function loadFeedsForCurrentChat() {
 
         feedState.storeId = st.storeId ?? null;   // null: chat without feeds yet, file made on first save
         feedState.feeds = feeds;
-        feedState.loadFailed = false;
         attachFeeds(st);
         feedState.ready = true;
 
@@ -925,6 +924,45 @@ async function callModel(system, user, signal) {
     return out;
 }
 
+/**
+ * When the reply was cut off (token limit), pull every complete object out of the array under `key`.
+ * Returns [] if nothing complete is found.
+ */
+function salvageArray(raw, key) {
+    const text = String(raw ?? '').replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '');
+    const m = new RegExp(`"${key}"\\s*:\\s*\\[`).exec(text);
+    if (!m) return [];
+    const out = [];
+    let depth = 0;
+    let inStr = false;
+    let esc2 = false;
+    let start = -1;
+    for (let i = m.index + m[0].length; i < text.length; i++) {
+        const ch = text[i];
+        if (inStr) {
+            if (esc2) esc2 = false;
+            else if (ch === '\\') esc2 = true;
+            else if (ch === '"') inStr = false;
+            continue;
+        }
+        if (ch === '"') { inStr = true; continue; }
+        if (ch === '{') { if (depth === 0) start = i; depth++; continue; }
+        if (ch === '}') {
+            depth--;
+            if (depth === 0 && start >= 0) {
+                const chunk = text.slice(start, i + 1);
+                try { out.push(JSON.parse(chunk)); } catch {
+                    try { out.push(JSON.parse(escapeControlCharsInStrings(chunk).replace(/,\s*([}\]])/g, '$1'))); } catch { /* skip */ }
+                }
+                start = -1;
+            }
+            continue;
+        }
+        if (ch === ']' && depth === 0) break;
+    }
+    return out;
+}
+
 function extractJson(raw) {
     let text = String(raw ?? '');
     text = text.replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '');
@@ -996,13 +1034,30 @@ function normPost(p) {
 }
 
 function parseFeed(raw) {
-    const data = extractJson(raw);
+    let data;
+    try {
+        data = extractJson(raw);
+    } catch (e) {
+        const posts = salvageArray(raw, 'posts');
+        if (!posts.length) throw e;
+        const board = /"board"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(String(raw))?.[1] ?? '';
+        data = { board: board.replace(/\\"/g, '"'), posts };
+        toastr.warning(`응답이 중간에 잘려서 완성된 글 ${posts.length}개만 살렸어요. 최대 토큰을 늘리면 좋아요.`, '커뮤니티');
+    }
     if (!Array.isArray(data.posts)) throw new Error('posts 배열이 없어요');
     return { board: String(data.board ?? '').slice(0, 200), posts: data.posts.slice(0, 50).map(normPost) };
 }
 
 function parseComments(raw) {
-    const data = extractJson(raw);
+    let data;
+    try {
+        data = extractJson(raw);
+    } catch (e) {
+        const comments = salvageArray(raw, 'comments');
+        if (!comments.length) throw e;
+        data = { comments };
+        toastr.warning(`응답이 중간에 잘려서 완성된 댓글 ${comments.length}개만 살렸어요.`, '커뮤니티');
+    }
     const list = Array.isArray(data.comments) ? data.comments : (Array.isArray(data) ? data : null);
     if (!list) throw new Error('comments 배열이 없어요');
     return list.slice(0, 200).map(c => ({ ...normItem(c), reply_to: Number.isInteger(Number(c?.reply_to)) ? Number(c.reply_to) : -1 }));
@@ -1130,7 +1185,7 @@ async function generateMorePosts(feedId, topic = '') {
         const raw = await callModel(system, user, signal);
         if (!stillSameChat()) return null;
         const data = parseOrThrow(parseFeed, raw);
-        const firstNew = feed.data.posts.length;
+        if (!getFeed(feed.id)) return null;
         feed.data.posts.push(...data.posts);
         if (!feed.data.board && data.board) feed.data.board = data.board;
         await saveChatStore();
@@ -1168,6 +1223,7 @@ async function generateNextThread(feedId, postIdx) {
     const part = (Number(prev.part) || 1) + 1;
     const count = Math.max(1, Number(getSettings().continueCount) || 5);
     return runJob('후속 스레를 세우는 중…', false, async ({ signal, stillSameChat }) => {
+        if (prev.nextIdx != null && feed.data.posts[prev.nextIdx]) return feed;   // made meanwhile
         const b = commonBlocks(feed.mode, feed.platform);
         const storyText = await buildContextBlock();
         const user = [
@@ -1185,6 +1241,9 @@ async function generateNextThread(feedId, postIdx) {
         const data = parseOrThrow(parseFeed, raw);
         const next = data.posts[0];
         if (!next) throw new Error('후속 스레가 비어 있어요');
+        if (!getFeed(feed.id)) return null;
+        postIdx = feed.data.posts.indexOf(prev);
+        if (postIdx < 0) return null;
         next.part = part;
         next.prevIdx = postIdx;
         if (!next.title) next.title = `${prev.title || ''} Part${part}`.trim();
@@ -1205,12 +1264,17 @@ async function generateMoreComments(feedId, postIdx, { playerJustPosted = false 
     const room = threadCap(feed.platform) - threadCount(feed.data.posts[postIdx]);
     const count = Math.max(1, Math.min(room, Number(getSettings().continueCount) || 5));
     const label = playerJustPosted ? '반응을 기다리는 중…' : (PLATFORMS[feed.platform].thread ? '스레드를 이어가는 중…' : '댓글을 더 불러오는 중…');
+    const postRef = feed.data.posts[postIdx];
     return runJob(label, false, async ({ signal, stillSameChat }) => {
         const { system, user } = await buildContinuePrompt({ feed, postIdx, count, playerJustPosted });
         const raw = await callModel(system, user, signal);
         if (!stillSameChat()) return null;
         const list = parseOrThrow(parseComments, raw);
-        const post = feed.data.posts[postIdx];
+        // the post (or its feed) may have been deleted or moved while generating
+        if (!getFeed(feed.id)) return null;
+        postIdx = feed.data.posts.indexOf(postRef);
+        if (postIdx < 0) return null;
+        const post = postRef;
         const existing = post.comments.length;
         const flat = feed.platform === 'fivech';
         for (const c of list) {
@@ -1236,8 +1300,10 @@ function playerItem(platformId, { as, nick, charName, body, title }) {
     const p = PLATFORMS[platformId];
     const author = nick?.trim() || (as === 'user' ? userName : as === 'char' ? charName : p.anon);
     let handle = '';
+    const digits = String(Math.floor(1000 + Math.random() * 9000));
     if (platformId === 'fivech') handle = randomId(8);
-    else if (platformId === 'twitter' || platformId === 'reddit') handle = author.replace(/\s+/g, '_');
+    else if (platformId === 'twitter') handle = nick?.trim() || as !== 'mob' ? author.replace(/\s+/g, '_') : `user${digits}${randomId(3).toLowerCase()}`;
+    else if (platformId === 'reddit') handle = nick?.trim() || as !== 'mob' ? author.replace(/\s+/g, '_') : `throwaway_${digits}`;
     const item = { isMe: true, as, author, handle, body, body_tr: '', time: nowLabel(platformId), likes: 0 };
     if (as === 'char') item.charName = charName;
     if (title !== undefined) Object.assign(item, { title, tags: [], views: 1, shares: 0, comments: [] });
@@ -1429,8 +1495,13 @@ function postToPinText(post) {
     const comments = post.comments ?? [];
     const keep = new Set([0, 1, 2, comments.length - 1]);
     comments.forEach((c, i) => {
-        if (storyAuthor(c) || c.replies.some(r => storyAuthor(r))) keep.add(i);
+        if (storyAuthor(c) || c.replies.some(r => storyAuthor(r))) {
+            keep.add(i);
+            // 2ch-style threads answer with later posts instead of nested replies
+            for (let k = 1; k <= 3 && i + k < comments.length; k++) keep.add(i + k);
+        }
     });
+    if (storyAuthor(post)) for (let k = 0; k < Math.min(6, comments.length); k++) keep.add(k);
     let skipped = false;
     comments.forEach((c, i) => {
         if (!keep.has(i)) { skipped = true; return; }
@@ -2237,7 +2308,12 @@ function buildOverlay() {
         syncTopicSettings();
     });
     document.getElementById('stcm_feedbar').addEventListener('click', onFeedClick);
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && isOpen()) closePanel(); });
+    document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape' || !isOpen()) return;
+        if (document.querySelector('dialog[open], .popup[open]')) return;   // let SillyTavern popups close first
+        if (e.target?.closest?.('#stcm_overlay input, #stcm_overlay textarea')) { e.target.blur(); return; }
+        closePanel();
+    });
     let resizeTimer = null;
     window.addEventListener('resize', () => {
         clearTimeout(resizeTimer);
@@ -3064,6 +3140,8 @@ function openPanel(feedId) {
 }
 
 function closePanel() {
+    captureDraft();
+    leaveFeed();
     document.getElementById('stcm_overlay')?.classList.remove('open');
 }
 
@@ -3205,7 +3283,13 @@ function addSettingsPanel() {
         else el.value = s[key];
         const handler = () => {
             if (type === 'checked') s[key] = el.checked;
-            else if (el.type === 'number') s[key] = Number(el.value);
+            else if (el.type === 'number') {
+                if (el.value === '' || !Number.isFinite(Number(el.value))) return;   // keep the old value while typing
+                let v = Number(el.value);
+                if (el.min !== '') v = Math.max(Number(el.min), v);
+                if (el.max !== '') v = Math.min(Number(el.max), v);
+                s[key] = v;
+            }
             else s[key] = el.value;
             saveSettings();
             if (key === 'pinDepth') refreshInjection();
