@@ -25,6 +25,9 @@ const defaultSettings = Object.freeze({
     commentCount: 5,
     continueCount: 5,
     contextMessages: 20,
+    extMemory: true,             // read memory / summaries other extensions inject (Memoria, VectFox, …)
+    extMemoryChoice: {},         // injection key → true/false (unset: memory-looking keys on, others off)
+    extMemoryMax: 8000,
     maxTokens: 4000,
     includeCard: true,
     // Tags whose whole block (tag + content) is removed from chat messages before they reach the community prompt
@@ -298,6 +301,7 @@ function getSettings() {
         for (const k of ['name', 'key', 'model']) if (typeof a[k] !== 'string') a[k] = '';
     }
     if (!s.modelOverrides || typeof s.modelOverrides !== 'object' || Array.isArray(s.modelOverrides)) s.modelOverrides = {};
+    if (!s.extMemoryChoice || typeof s.extMemoryChoice !== 'object' || Array.isArray(s.extMemoryChoice)) s.extMemoryChoice = {};
     return s;
 }
 
@@ -805,6 +809,83 @@ function baseVars(platformId) {
     };
 }
 
+// ---------------------------------------------------------------------------
+// Memory from other extensions: Memoria, 코끼리를 생각하지마, VectFox, Summarize, Vector Storage…
+// They all hand their text to SillyTavern with setExtensionPrompt; the community reads the same slots.
+// ---------------------------------------------------------------------------
+const EXT_MEMORY_LABELS = {
+    memoria_ledger: 'Memoria — 장기기억',
+    long_memory_main: '코끼리를 생각하지마 — 기억',
+    long_memory_anchor: '코끼리를 생각하지마 — 앵커',
+    long_memory_recall: '코끼리를 생각하지마 — 회상',
+    '3_vectfox': 'VectFox — 채팅 검색',
+    '3_vectfox_lorebook': 'VectFox — 로어북',
+    '3_vectfox_eventbase': 'VectFox — 이벤트',
+    '3_vectfox_summarizer': 'VectFox — 요약',
+    '1_memory': '요약 (Summarize)',
+    '3_vectors': '벡터 저장소 — 채팅',
+    '4_vectors_data_bank': '벡터 저장소 — 데이터 뱅크',
+    '2_floating_prompt': "작가 노트 (Author's Note)",
+    DEPTH_PROMPT: '캐릭터 노트',
+};
+const EXT_MEMORY_PATTERN = /memor|summar|vector|vectfox|long_memory|ledger|recall|chroma|rag\b|lore/i;
+
+function extMemoryLabel(key) {
+    if (EXT_MEMORY_LABELS[key]) return EXT_MEMORY_LABELS[key];
+    for (const [k, v] of Object.entries(EXT_MEMORY_LABELS)) if (key.startsWith(`${k}_`)) return `${v} (${key})`;
+    return key;
+}
+
+function extMemoryDefaultOn(key) {
+    return EXT_MEMORY_PATTERN.test(key) && !/^2_floating_prompt|^DEPTH_PROMPT/.test(key);
+}
+
+function extMemoryChosen(key) {
+    const v = getSettings().extMemoryChoice[key];
+    return typeof v === 'boolean' ? v : extMemoryDefaultOn(key);
+}
+
+/** Non-empty injection slots of other extensions right now: [{ key, label, text, on }]. */
+async function extMemorySlots() {
+    const slots = ctx().extensionPrompts ?? {};
+    const out = [];
+    for (const [key, p] of Object.entries(slots)) {
+        if (key.startsWith('st_community')) continue;   // our own pins
+        const raw = typeof p?.value === 'string' ? p.value.trim() : '';
+        if (!raw) continue;
+        if (typeof p.filter === 'function') {
+            try { if (!(await p.filter())) continue; } catch { /* keep it */ }
+        }
+        let text = raw;
+        try { text = ctx().substituteParams ? ctx().substituteParams(raw) : raw; } catch { /* raw */ }
+        text = cleanStoryText(text).trim();
+        if (text) out.push({ key, label: extMemoryLabel(key), text, on: extMemoryChosen(key) });
+    }
+    return out;
+}
+
+async function buildExtMemoryBlock() {
+    const s = getSettings();
+    if (!s.extMemory) return '';
+    const picked = (await extMemorySlots()).filter(x => x.on);
+    if (!picked.length) return '';
+    const max = Math.max(500, Number(s.extMemoryMax) || 8000);
+    const per = Math.max(400, Math.floor(max / picked.length));
+    return truncate(picked.map(x => `(${x.label})\n${truncate(x.text, per)}`).join('\n\n'), max);
+}
+
+/** The pick list shown in the settings (extension drawer or the panel's ⚙ view). */
+async function renderExtMemoryList() {
+    const box = document.getElementById('stcm_set_extmem_list');
+    if (!box) return;
+    const slots = await extMemorySlots();
+    if (!slots.length) {
+        box.innerHTML = '<small class="stcm-help">지금은 다른 확장이 넣은 기억이 없어요. 본 채팅에서 한 번 답변을 받으면 (요약 확장이 작동하면) 여기에 나타나요.</small>';
+        return;
+    }
+    box.innerHTML = slots.map(x => `<label class="checkbox_label stcm-extmem-item"><input type="checkbox" data-extmem="${esc(x.key)}" ${x.on ? 'checked' : ''}><span><b>${esc(x.label)}</b> <small>${esc(truncate(x.text.replace(/\s+/g, ' '), 90))} · ${x.text.length.toLocaleString()}자</small></span></label>`).join('');
+}
+
 async function buildContextBlock() {
     const c = ctx();
     const s = getSettings();
@@ -866,6 +947,14 @@ async function buildContextBlock() {
     }
     if (wiParts.length) parts.push(`[World information]\n${truncate(wiParts.join('\n\n'), Number(s.wiMaxChars) || 12000)}`);
 
+    // Long-term memory / summaries kept by other extensions (covers older or hidden messages too)
+    try {
+        const mem = await buildExtMemoryBlock();
+        if (mem) parts.push(`[Long-term memory — summaries and recalled past events from the story (from memory extensions)]\n${mem}`);
+    } catch (e) {
+        console.warn(`[${MODULE}] memory slots failed`, e);
+    }
+
     const log = recent
         .map(m => `${m.name}: ${truncate(m.text, 1500)}`)
         .join('\n\n');
@@ -902,6 +991,28 @@ function parseTopics() {
         out.push({ name, desc: m ? m[2].trim() : '' });
     }
     return out;
+}
+
+/** Board = the topic chips picked above (자유 = none). null when topics only steer auto generation. */
+function currentBoardKey() {
+    const s = getSettings();
+    if (s.topicScope === 'auto') return null;
+    const names = new Set(parseTopics().map(t => t.name));
+    return [...new Set(s.topicSelected ?? [])].filter(n => names.has(n)).sort().join('|');
+}
+
+function feedBoardKey(f) {
+    if (typeof f?.boardKey === 'string') return f.boardKey;
+    return [...new Set(f?.topics ?? [])].sort().join('|');   // older feeds: the topics they were made with
+}
+
+function boardLabel(key) {
+    return key ? key.split('|').join(' + ') : '자유';
+}
+
+/** "공포판" / "공포 서버" */
+function boardName(key, platform) {
+    return PLATFORMS[platform]?.chat ? `${boardLabel(key)} 서버` : `${boardLabel(key)}판`;
 }
 
 function selectedTopics() {
@@ -1355,6 +1466,7 @@ function newFeedObject({ platformId, mode, topic, data }) {
         mode,
         topic: topic || '',
         lang: resolvedLanguage() || '',   // fixed output language at creation ('' = the community's own)
+        boardKey: currentBoardKey() ?? '',   // topic board it belongs to ('' = 자유)
         createdAt: Date.now(),
         atMessage: (ctx().chat?.length ?? 1) - 1,
         data: data ?? { board: '', posts: [] },
@@ -1377,7 +1489,15 @@ async function addFeed(feed, { remember = true } = {}) {
 }
 
 /** Generate a brand new feed. */
+const lastAdded = new WeakMap();   // feed → posts the latest generation added (for auto-watch)
+
 async function generateFeed({ mode, platformId, topic = '', background = false }) {
+    // Discord: a topic is a server; generating again on the same one opens new channels there
+    // instead of a fresh server, so channels, DMs and your own messages stay together.
+    if (PLATFORMS[platformId]?.chat) {
+        const server = latestFeedFor(platformId, mode);
+        if (server) return generateMorePosts(server.id, topic, { background });
+    }
     return runJob(`${PLATFORMS[platformId].label} 글을 불러오는 중…`, background, async ({ signal, stillSameChat }) => {
         const { system, user, topicNames } = await buildPostsPrompt({ mode, platformId, topic, background });
         const raw = await callModel(system, user, signal);
@@ -1401,22 +1521,39 @@ async function generateFeed({ mode, platformId, topic = '', background = false }
     });
 }
 
+/** Background posts landed on the feed being read: show them unless the reader is typing a reply. */
+function updatePostsAppended(feed) {
+    if (document.activeElement?.closest?.('#stcm_feed .stcm-composer, #stcm_feed .stcm-compose-view')) return;
+    showFeed(feed.id, { keepScroll: true });
+}
+
 /** Append more posts to an existing feed. */
-async function generateMorePosts(feedId, topic = '') {
+async function generateMorePosts(feedId, topic = '', { background = false } = {}) {
     const feed = getFeed(feedId);
     if (!feed) return null;
-    return runJob('글을 더 불러오는 중…', false, async ({ signal, stillSameChat }) => {
-        const { system, user, topicNames } = await buildPostsPrompt({ mode: feed.mode, platformId: feed.platform, topic, avoidFeed: feed });
+    const chat = !!PLATFORMS[feed.platform]?.chat;
+    return runJob(chat ? '새 채널을 여는 중…' : '글을 더 불러오는 중…', background, async ({ signal, stillSameChat }) => {
+        const { system, user, topicNames } = await buildPostsPrompt({ mode: feed.mode, platformId: feed.platform, topic, avoidFeed: feed, background });
         if (topicNames.length) feed.topics = [...new Set([...(feed.topics ?? []), ...topicNames])];
         const raw = await callModel(system, user, signal);
         if (!stillSameChat()) return null;
         const data = parseOrThrow(parseFeed, raw);
         if (!getFeed(feed.id)) return null;
+        const first = feed.data.posts.length;
         feed.data.posts.push(...data.posts);
+        lastAdded.set(feed, data.posts);
         if (!feed.data.board && data.board) feed.data.board = data.board;
+        if (chat && data.posts.length && !background) dsSel.set(feed.id, first);   // open the first new channel
+        if (background && !isOpen()) getChatStore().unread += 1;
         await saveChatStore();
-        if (isOpen() && view === 'feed' && currentFeedId === feed.id) showFeed(feed.id, { keepScroll: true });
-        toastr.success(`글 ${data.posts.length}개가 아래에 추가됐어요.`, '', { timeOut: 1500 });
+        if (background) {
+            toastr.success(`${PLATFORMS[feed.platform].label}에 ${chat ? `새 채널 ${data.posts.length}개` : `새 글 ${data.posts.length}개`}가 생겼어요`, '커뮤니티', { onclick: () => openPanel(feed.id) });
+            updateBadge();
+            if (isOpen() && view === 'feed' && currentFeedId === feed.id) updatePostsAppended(feed);
+        } else {
+            if (isOpen()) showFeed(feed.id, chat ? {} : { keepScroll: true });
+            toastr.success(chat ? `새 채널 ${data.posts.length}개가 열렸어요.` : `글 ${data.posts.length}개가 아래에 추가됐어요.`, '', { timeOut: 1500 });
+        }
         return feed;
     });
 }
@@ -1571,7 +1708,8 @@ async function submitPlayerPost({ title, body, identity, react, board, category 
 
     // Append to the currently viewed feed when it matches the selection, otherwise start a new feed
     let feed = getFeed(currentFeedId);
-    if (!feed || feed.platform !== selPlatform || feed.mode !== selMode) {
+    const bk = currentBoardKey();
+    if (!feed || feed.platform !== selPlatform || feed.mode !== selMode || (bk !== null && feedBoardKey(feed) !== bk)) {
         feed = newFeedObject({ platformId: selPlatform, mode: selMode, data: { board: board?.trim() || '', posts: [] } });
         await addFeed(feed);
     }
@@ -2898,7 +3036,7 @@ async function onWorldInfoClick(el) {
 // ---------------------------------------------------------------------------
 let currentFeedId = null;
 const feedScroll = new Map();   // feedId → scrollTop, restored when coming back
-let view = 'feed';   // feed | history | pins | compose | wi | topics | api
+let view = 'feed';   // feed | history | pins | compose | wi | topics | api | settings
 let selMode = 'meta';
 let selPlatform = 'naver';
 
@@ -2965,6 +3103,7 @@ function buildOverlay() {
             <button id="stcm_btn_write" title="글쓰기"><i class="fa-solid fa-pen"></i></button>
             <button id="stcm_btn_fold" title="위쪽 메뉴 접기/펴기"><i class="fa-solid fa-chevron-up"></i></button>
             <button id="stcm_btn_api" title="API 설정 (연결 프로필)"><i class="fa-solid fa-plug"></i></button>
+            <button id="stcm_btn_settings" title="설정"><i class="fa-solid fa-gear"></i></button>
             <button id="stcm_btn_theme" title="화면 테마"><i class="fa-solid fa-circle-half-stroke"></i></button>
             <button id="stcm_btn_wi" title="참고할 월드 인포"><i class="fa-solid fa-book-atlas"></i></button>
             <button id="stcm_btn_history" title="지난 피드"><i class="fa-solid fa-clock-rotate-left"></i></button>
@@ -2980,6 +3119,7 @@ function buildOverlay() {
             ${Object.entries(PLATFORMS).map(([id, p]) => `<button data-platform="${id}" class="pf-${id}"><i class="${p.brand ? 'fa-brands' : 'fa-solid'} ${p.icon}"></i> ${p.label}</button>`).join('')}
           </div>
           <div class="stcm-chips stcm-topics" id="stcm_topics"></div>
+          <div class="stcm-chips stcm-topics stcm-boards stcm-hide" id="stcm_boards"></div>
           <div class="stcm-genrow">
             <input id="stcm_topic" type="text" placeholder="주제/요청 (선택) — 예: 방금 고백 장면 반응, 축제 날 시장 풍경" />
             <select id="stcm_lang" title="생성 언어">${languageOptions(true, false)}</select>
@@ -3021,6 +3161,7 @@ function buildOverlay() {
     });
     document.getElementById('stcm_btn_wi').addEventListener('click', () => { wiFilter = ''; showWorldInfo(); });
     document.getElementById('stcm_btn_api').addEventListener('click', showApi);
+    document.getElementById('stcm_btn_settings').addEventListener('click', showSettingsView);
     document.getElementById('stcm_btn_write').addEventListener('click', showCompose);
     document.getElementById('stcm_btn_stop').addEventListener('click', () => abortCtl?.abort());
     document.getElementById('stcm_btn_gen').addEventListener('click', () => {
@@ -3078,6 +3219,16 @@ function buildOverlay() {
         if (e.target.closest('[data-act="err-close"], [data-act="err-api"]')) document.getElementById('stcm_errbox').classList.remove('show');
         if (e.target.closest('[data-act="err-api"]')) showApi();
     });
+    document.getElementById('stcm_boards').addEventListener('click', (e) => {
+        const b = e.target.closest('button[data-board]');
+        if (!b) return;
+        const s = getSettings();
+        s.topicSelected = b.dataset.board ? b.dataset.board.split('|') : [];
+        saveSettings();
+        syncTopicSettings();
+        if (view === 'compose') showCompose(); else showFeed(null);
+        syncSelectors();
+    });
     document.getElementById('stcm_topics').addEventListener('click', (e) => {
         const b = e.target.closest('button');
         if (!b) return;
@@ -3092,7 +3243,10 @@ function buildOverlay() {
         }
         saveSettings();
         renderTopicChips();
+        renderBoardChips();
         syncTopicSettings();
+        // each topic set is its own board (like a gallery / 板): show it right away
+        if (b.dataset.topicAct !== 'mix' && (view === 'feed' || view === 'dm-new')) showFeed(null);
     });
     document.getElementById('stcm_feedbar').addEventListener('click', onFeedClick);
     document.addEventListener('keydown', (e) => {
@@ -3437,6 +3591,7 @@ function syncSelectors() {
     if (el) el.textContent = cnt ? String(cnt) : '';
     syncLanguageSelectors();
     renderTopicChips();
+    renderBoardChips();
 }
 
 function renderTopicChips() {
@@ -3453,6 +3608,40 @@ function renderTopicChips() {
         ${topics.map(t => `<button data-topic="${esc(t.name)}" class="${sel.has(t.name) ? 'active' : ''}" title="${esc(t.desc)}">${esc(t.name)}</button>`).join('')}
         <button data-topic-act="edit" title="주제 추가·관리"><i class="fa-solid fa-plus"></i></button>
         <button data-topic-act="mix" class="stcm-topic-mix" title="여러 주제를 골랐을 때 배정 방식" style="${sel.size > 1 ? '' : 'visibility:hidden'}">${s.topicMix === 'mix' ? '섞어서' : '글마다 하나씩'}</button>`;
+    el.scrollLeft = keepLeft;
+}
+
+/** Boards that already have posts on the selected community + mode, newest first. */
+function boardsFor(platform, mode) {
+    const store = hasChat() ? getChatStore() : null;
+    const known = new Set(parseTopics().map(t => t.name));
+    const map = new Map();
+    for (const f of store?.feeds ?? []) {
+        if (f.platform !== platform || f.mode !== mode) continue;
+        const key = feedBoardKey(f);
+        if (key && !key.split('|').every(n => known.has(n))) continue;   // a topic of it was deleted
+        const b = map.get(key) ?? { key, posts: 0, last: 0 };
+        b.posts += f.data?.posts?.length ?? 0;
+        b.last = Math.max(b.last, Number(f.createdAt) || 0);
+        map.set(key, b);
+    }
+    return [...map.values()].sort((a, b) => b.last - a.last);
+}
+
+/** "판" row: every board made so far (combined topics too), one click to go there. */
+function renderBoardChips() {
+    const el = document.getElementById('stcm_boards');
+    if (!el) return;
+    const cur = currentBoardKey();
+    const boards = cur === null ? [] : boardsFor(selPlatform, selMode);
+    // worth showing once there is more than one board, or a combined one
+    const show = boards.length > 1 || boards.some(b => b.key.includes('|'));
+    el.classList.toggle('stcm-hide', !show);
+    if (!show) { el.innerHTML = ''; return; }
+    const keepLeft = el.scrollLeft;
+    const unit = PLATFORMS[selPlatform]?.chat ? '서버' : '판';
+    el.innerHTML = `<span class="stcm-topic-label" title="지금 커뮤니티·모드에서 만든 ${unit}"><i class="fa-solid fa-table-list"></i> ${unit}</span>
+        ${boards.map(b => `<button data-board="${esc(b.key)}" class="${b.key === cur ? 'active' : ''}" title="글 ${b.posts}개">${esc(boardLabel(b.key))} <small>${b.posts}</small></button>`).join('')}`;
     el.scrollLeft = keepLeft;
 }
 
@@ -3523,7 +3712,7 @@ async function onTopicAction(el) {
     const act = el.dataset.act;
     const list = parseTopics();
     if (act === 'topic-add') {
-        const name = document.getElementById('stcm_tp_name').value.replace(/[:：\n]/g, ' ').trim();
+        const name = document.getElementById('stcm_tp_name').value.replace(/[:：\n|]/g, ' ').trim();   // '|' joins topics in a board key
         const desc = document.getElementById('stcm_tp_desc').value.replace(/\n/g, ' ').trim();
         if (!name) { toastr.warning('주제 이름을 적어 주세요.'); return; }
         const found = list.find(t => t.name === name);
@@ -3613,9 +3802,10 @@ function showError(msg, raw) {
 }
 
 /** Newest feed of this chat for a community + mode (or null). */
-function latestFeedFor(platform, mode) {
+function latestFeedFor(platform, mode, board = currentBoardKey()) {
     const store = hasChat() ? getChatStore() : null;
-    return [...(store?.feeds ?? [])].reverse().find(f => f.platform === platform && f.mode === mode) ?? null;
+    return [...(store?.feeds ?? [])].reverse()
+        .find(f => f.platform === platform && f.mode === mode && (board === null || feedBoardKey(f) === board)) ?? null;
 }
 
 /** Community / mode chip picked: show that board right away (or the write form when writing). */
@@ -3657,21 +3847,29 @@ function showFeed(feedId, opts = {}) {
     if (feed) {
         selPlatform = feed.platform;
         selMode = feed.mode;
+        const key = feedBoardKey(feed);
+        if (currentBoardKey() !== null && key !== currentBoardKey()) {
+            const known = new Set(parseTopics().map(t => t.name));
+            const want = key ? key.split('|') : [];
+            if (want.every(n => known.has(n))) { getSettings().topicSelected = want; saveSettings(); }
+        }
         syncSelectors();
     } else {
         feed = latestFeedFor(selPlatform, selMode);
     }
     if (!feed) {
         currentFeedId = null;
-        bar.innerHTML = `<span class="stcm-fb-info"><b>${esc(PLATFORMS[selPlatform]?.label)}</b> · ${esc(MODES[selMode]?.label)}</span>`;
-        el.innerHTML = `<div class="stcm-empty"><i class="fa-solid fa-comments"></i><br>${store.feeds.length ? `아직 <b>${esc(PLATFORMS[selPlatform]?.label)}</b> · ${esc(MODES[selMode]?.label)} 글이 없어요.` : '아직 글이 없어요.'}<br><b>생성</b>을 누르거나 <i class="fa-solid fa-pen"></i> 버튼으로 직접 글을 써 보세요.${store.feeds.length ? '<br><small>다른 커뮤니티 글은 <i class="fa-solid fa-clock-rotate-left"></i> 지난 피드에서 볼 수 있어요.</small>' : ''}</div>`;
+        const bk = currentBoardKey();
+        const where = `<b>${esc(PLATFORMS[selPlatform]?.label)}</b> · ${esc(MODES[selMode]?.label)}${bk !== null ? ` · ${esc(boardName(bk, selPlatform))}` : ''}`;
+        bar.innerHTML = `<span class="stcm-fb-info">${where}</span>`;
+        el.innerHTML = `<div class="stcm-empty"><i class="fa-solid fa-comments"></i><br>${store.feeds.length ? `아직 ${where} ${PLATFORMS[selPlatform]?.chat ? '채널이' : '글이'} 없어요.` : '아직 글이 없어요.'}<br><b>생성</b>을 누르거나 <i class="fa-solid fa-pen"></i> 버튼으로 직접 글을 써 보세요.${store.feeds.length ? '<br><small>다른 커뮤니티 글은 <i class="fa-solid fa-clock-rotate-left"></i> 지난 피드에서 볼 수 있어요.</small>' : ''}</div>`;
         el.scrollTop = 0;
         return;
     }
     currentFeedId = feed.id;
     const hasTr = feed.data.posts.some(p => p.body_tr || p.body_ko || p.comments.some(c => c.body_tr || c.body_ko));
     const when = new Date(feed.createdAt).toLocaleString();
-    bar.innerHTML = `<span class="stcm-fb-info"><b>${esc(PLATFORMS[feed.platform]?.label)}</b> · ${esc(MODES[feed.mode]?.label)} · #${feed.atMessage} 시점 · ${esc(when)}${feed.topics?.length ? ` · 주제: ${esc(feed.topics.join(', '))}` : ''}${feed.topic ? ` · “${esc(truncate(feed.topic, 30))}”` : ''}</span>
+    bar.innerHTML = `<span class="stcm-fb-info"><b>${esc(PLATFORMS[feed.platform]?.label)}</b> · ${esc(MODES[feed.mode]?.label)} · #${feed.atMessage} 시점 · ${esc(when)}${currentBoardKey() !== null ? ` · ${esc(boardName(feedBoardKey(feed), feed.platform))}` : (feed.topics?.length ? ` · 주제: ${esc(feed.topics.join(', '))}` : '')}${feed.topic ? ` · “${esc(truncate(feed.topic, 30))}”` : ''}</span>
         ${foldable(feed) && feed.data.posts.length ? '<button id="stcm_fold_all" data-act="fold-all"></button>' : ''}
         ${hasTr ? `<button id="stcm_tr_toggle" class="${showTr ? 'on' : ''}" title="${showTr ? '원문 보기' : '번역 보기'}"><i class="fa-solid fa-language"></i> 번역</button>` : ''}`;
     updateFoldAllButton(feed);
@@ -3716,8 +3914,51 @@ function restoreAnchor(feedEl, anchor) {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Settings inside the panel: the extension-drawer settings are moved in (same elements,
+// same listeners — nothing is duplicated) and moved back when the view is left.
+// ---------------------------------------------------------------------------
+let settingsHome = null;   // { marker, content, display } while the settings live in the panel
+
+function showSettingsView() {
+    leaveFeed();
+    view = 'settings';
+    const bar = document.getElementById('stcm_feedbar');
+    const el = document.getElementById('stcm_feed');
+    const content = document.querySelector('#stcm_settings .inline-drawer-content');
+    bar.innerHTML = `<button id="stcm_back"><i class="fa-solid fa-arrow-left"></i> 돌아가기</button><span class="stcm-fb-info">설정 <small>— 확장 탭의 설정과 같아요</small></span>`;
+    document.getElementById('stcm_errbox')?.classList.remove('show');
+    syncSelectors();
+    if (!content) { el.innerHTML = '<div class="stcm-empty">설정을 찾지 못했어요. 확장 탭에서 열어 주세요.</div>'; return; }
+    el.innerHTML = '<div class="stcm-settings-view"></div>';
+    if (!settingsHome) {
+        const marker = document.createComment('stcm-settings-home');
+        content.before(marker);
+        settingsHome = { marker, content, display: content.style.display };
+    }
+    content.style.display = 'block';
+    el.querySelector('.stcm-settings-view').appendChild(content);
+    const sel = document.getElementById('stcm_set_profile');
+    if (sel) sel.innerHTML = connOptionsHtml();
+    renderExtMemoryList();
+    el.scrollTop = 0;
+}
+
+/** Put the settings back into the extension drawer (call before any other view or on close). */
+function restoreSettingsHome() {
+    if (!settingsHome) return;
+    // keep a reference: even if the panel's HTML was replaced meanwhile, the node still exists
+    const { marker, content, display } = settingsHome;
+    settingsHome = null;
+    if (content && marker.parentNode) {
+        content.style.display = display;
+        marker.replaceWith(content);
+    } else marker.remove();
+}
+
 /** Remember where the reader was in the current feed before switching views. */
 function leaveFeed() {
+    restoreSettingsHome();
     const el = document.getElementById('stcm_feed');
     if (view === 'feed' && currentFeedId && el) feedScroll.set(currentFeedId, el.scrollTop);
 }
@@ -3952,6 +4193,7 @@ function importFeed(f, chatLen) {
         topic: String(f.topic ?? '').slice(0, 300),
         topics: Array.isArray(f.topics) ? f.topics.slice(0, 20).map(t => String(t).slice(0, 60)) : [],
         ...(typeof f.lang === 'string' ? { lang: f.lang.replace(/[\n\r<>{}]/g, '').slice(0, 60) } : {}),
+        ...(typeof f.boardKey === 'string' ? { boardKey: f.boardKey.slice(0, 600) } : {}),
         createdAt: intOr(f.createdAt, Date.now()),
         // keep it inside this chat so branches made later still carry it
         atMessage: Math.min(intOr(f.atMessage), Math.max(0, chatLen - 1)),
@@ -4220,11 +4462,29 @@ async function listProfileModels(profile) {
 // ---- API view ---------------------------------------------------------------
 let apiTesting = false;
 let apiEdit = null;                // null | { id } ('' = new)
-const apiModelCache = new Map();   // key → model ids (datalist suggestions)
+const apiModelCache = new Map();   // key → model ids loaded with "목록 불러오기"
 
-function modelDatalist(id, key, extra = []) {
-    const ids = [...new Set([...extra.filter(Boolean), ...(apiModelCache.get(key) ?? [])])];
-    return `<datalist id="${id}">${ids.map(m => `<option value="${esc(m)}"></option>`).join('')}</datalist>`;
+/**
+ * A real dropdown of the loaded models (a <datalist> filters by the text already typed,
+ * so with a model name in the box it looks empty — and it barely works on phones).
+ */
+function modelPickerHtml(cls, key, current) {
+    const ids = apiModelCache.get(key) ?? [];
+    if (!ids.length) return `<div class="stcm-modelpick" data-key="${esc(key)}"></div>`;
+    const cur = String(current ?? '');
+    return `<div class="stcm-modelpick" data-key="${esc(key)}">
+        <select class="${cls}">
+            <option value="">▼ 불러온 모델에서 고르기 (${ids.length}개)</option>
+            ${ids.map(m => `<option value="${esc(m)}" ${m === cur ? 'selected' : ''}>${esc(m)}</option>`).join('')}
+        </select>
+    </div>`;
+}
+
+function fillModelPicker(box, cls, key, current) {
+    const holder = box?.querySelector(`.stcm-modelpick[data-key="${CSS.escape(key)}"]`) ?? box?.querySelector('.stcm-modelpick');
+    if (!holder) return;
+    holder.outerHTML = modelPickerHtml(cls, key, current);
+    box.querySelector(`.${cls}`)?.focus({ preventScroll: true });
 }
 
 function apiFormHtml() {
@@ -4241,10 +4501,10 @@ function apiFormHtml() {
             <button data-act="af-eye" title="키 보기/숨기기"><i class="fa-solid fa-eye"></i></button>
         </div>
         <div class="stcm-cp-row">
-            <input class="stcm-af-model" type="text" list="stcm_af_models" maxlength="200" placeholder="모델 이름 (예: gpt-4o-mini)" value="${esc(a?.model ?? '')}">
+            <input class="stcm-af-model" type="text" maxlength="200" placeholder="모델 이름 (예: gpt-4o-mini)" value="${esc(a?.model ?? '')}">
             <button data-act="af-models"><i class="fa-solid fa-list"></i> 목록 불러오기</button>
         </div>
-        ${modelDatalist('stcm_af_models', a ? `api:${a.id}` : 'form', [a?.model])}
+        ${modelPickerHtml('stcm-af-modelsel', a ? `api:${a.id}` : 'form', a?.model)}
         <p class="stcm-cp-hint">키는 실리태번 설정 파일(settings.json)에 저장되고, 요청은 실리태번 서버를 거쳐 그 주소로 가요. 실리태번이 리버스 프록시 비밀번호를 저장하는 방식과 같아요. 설정 파일을 다른 사람과 공유하지 마세요.</p>
         <div class="stcm-cp-foot">
             <span class="stcm-af-result"></span>
@@ -4272,16 +4532,16 @@ function showApi({ keepScroll = false } = {}) {
         const p = conn.profile;
         modelRow = `<label class="stcm-cp-check">모델 <small>비워 두면 프로필 모델${p.model ? ` (${esc(p.model)})` : ''}을 써요</small></label>
             <div class="stcm-cp-row">
-                <input class="stcm-api-model" type="text" list="stcm_api_models" maxlength="200" placeholder="${esc(p.model || '프로필 기본 모델')}" value="${esc(s.modelOverrides[p.id] ?? '')}">
+                <input class="stcm-api-model" type="text" maxlength="200" placeholder="${esc(p.model || '프로필 기본 모델')}" value="${esc(s.modelOverrides[p.id] ?? '')}">
                 <button data-act="api-models"><i class="fa-solid fa-list"></i> 목록 불러오기</button>
-            </div>${modelDatalist('stcm_api_models', `p:${p.id}`, [p.model])}`;
+            </div>${modelPickerHtml('stcm-api-modelsel', `p:${p.id}`, s.modelOverrides[p.id])}`;
     } else if (conn.type === 'api' && conn.api) {
         const a = conn.api;
         modelRow = `<label class="stcm-cp-check">모델</label>
             <div class="stcm-cp-row">
-                <input class="stcm-api-model" type="text" list="stcm_api_models" maxlength="200" placeholder="모델 이름 (꼭 적어 주세요)" value="${esc(a.model ?? '')}">
+                <input class="stcm-api-model" type="text" maxlength="200" placeholder="모델 이름 (꼭 적어 주세요)" value="${esc(a.model ?? '')}">
                 <button data-act="api-models"><i class="fa-solid fa-list"></i> 목록 불러오기</button>
-            </div>${modelDatalist('stcm_api_models', `api:${a.id}`, [a.model])}`;
+            </div>${modelPickerHtml('stcm-api-modelsel', `api:${a.id}`, a.model)}`;
     }
     const cmNote = !connectionManagerOn()
         ? '<p class="stcm-cp-hint">Connection Manager 확장이 꺼져 있어서 실리태번 연결 프로필은 쓸 수 없어요. 아래에서 API를 직접 추가할 수는 있어요.</p>'
@@ -4376,9 +4636,8 @@ async function onApiClick(act, el) {
             try {
                 const ids = await listApiModels(f);
                 apiModelCache.set(f.id ? `api:${f.id}` : 'form', ids);
-                const dl = document.getElementById('stcm_af_models');
-                if (dl) dl.innerHTML = ids.map(m => `<option value="${esc(m)}"></option>`).join('');
-                setNote(note, ids.length ? `모델 ${ids.length}개 — 모델 칸을 눌러 고르세요.` : '목록이 비어 있어요. 모델 이름을 직접 적어 주세요.', ids.length > 0);
+                fillModelPicker(box, 'stcm-af-modelsel', f.id ? `api:${f.id}` : 'form', f.model);
+                setNote(note, ids.length ? `모델 ${ids.length}개 — 아래 목록에서 고르세요.` : '목록이 비어 있어요. 모델 이름을 직접 적어 주세요.', ids.length > 0);
             } catch (e) {
                 setNote(note, `목록을 못 불러왔어요: ${truncate(String(e?.message ?? e), 120)} (모델 이름은 직접 적어도 돼요)`, false);
             } finally { el.disabled = false; }
@@ -4427,9 +4686,8 @@ async function onApiClick(act, el) {
             else if (conn.type === 'profile' && conn.profile) { ids = await listProfileModels(conn.profile); key = `p:${conn.profile.id}`; }
             else return true;
             apiModelCache.set(key, ids);
-            const dl = document.getElementById('stcm_api_models');
-            if (dl) dl.innerHTML = ids.map(m => `<option value="${esc(m)}"></option>`).join('');
-            setNote(note, ids.length ? `모델 ${ids.length}개 — 모델 칸을 눌러 고르세요.` : '목록이 비어 있어요. 모델 이름을 직접 적어 주세요.', ids.length > 0);
+            fillModelPicker(box, 'stcm-api-modelsel', key, box.querySelector('.stcm-api-model')?.value);
+            setNote(note, ids.length ? `모델 ${ids.length}개 — 아래 목록에서 고르세요.` : '목록이 비어 있어요. 모델 이름을 직접 적어 주세요.', ids.length > 0);
         } catch (e) {
             setNote(note, `목록을 못 불러왔어요: ${truncate(String(e?.message ?? e), 120)}`, false);
         } finally { el.disabled = false; }
@@ -4444,6 +4702,15 @@ function onApiChange(e) {
     const box = t.closest?.('.stcm-api-view');
     if (!box) return false;
     const s = getSettings();
+    if (t.classList.contains('stcm-api-modelsel') || t.classList.contains('stcm-af-modelsel')) {
+        if (e.type !== 'change' || !t.value) return true;
+        const input = t.classList.contains('stcm-af-modelsel') ? t.closest('.stcm-api-form')?.querySelector('.stcm-af-model') : box.querySelector('.stcm-api-model');
+        if (input) {
+            input.value = t.value;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        return true;
+    }
     if (t.classList.contains('stcm-api-conn')) {
         if (e.type !== 'change') return true;
         setConnection(t.value);
@@ -4584,6 +4851,8 @@ function showOverlay() {
 function hideOverlay() {
     const ov = document.getElementById('stcm_overlay');
     if (!ov) return;
+    restoreSettingsHome();
+    if (view === 'settings') view = 'feed';
     ov.classList.remove('open');
     try { if (ov.open) ov.close(); } catch { ov.removeAttribute('open'); }
     try {
@@ -4670,6 +4939,12 @@ function addSettingsPanel() {
           <label class="checkbox_label"><input id="stcm_set_skipnarr" type="checkbox"><span>내레이터·시스템 메모(/sys)도 읽지 않기</span></label>
           <label class="checkbox_label"><input id="stcm_set_wi" type="checkbox"><span>새 채팅에서 월드 인포 자동 참고 <small>(채팅별 선택은 커뮤니티 창의 📚 버튼)</small></span></label>
           <label>월드 인포 최대 글자 수 <input id="stcm_set_wimax" type="number" min="1000" max="100000" step="1000" class="text_pole"></label>
+          <label class="checkbox_label"><input id="stcm_set_extmem" type="checkbox"><span>장기기억·요약 확장 내용 포함 <small>(Memoria, 코끼리를 생각하지마, VectFox, 요약, 벡터 저장소 등이 본 채팅에 넣는 기억)</small></span></label>
+          <label>기억 최대 글자 수 <input id="stcm_set_extmemmax" type="number" min="500" max="50000" step="500" class="text_pole"></label>
+          <div class="stcm-extmem">
+            <div class="stcm-prompt-row"><small>읽을 항목 <span class="stcm-help">(기억·요약으로 보이는 건 자동으로 켜져요)</span></small><div class="menu_button" id="stcm_set_extmem_refresh"><i class="fa-solid fa-rotate"></i> 새로고침</div></div>
+            <div id="stcm_set_extmem_list"></div>
+          </div>
 
           <hr>
           <label><b>본 채팅 진행에 맞춰 자동 생성</b> <small>(AI 답변이 올 때마다 셉니다)</small></label>
@@ -4781,6 +5056,17 @@ function addSettingsPanel() {
     bind('stcm_set_excludetags', 'excludeTags');
     bind('stcm_set_skipnarr', 'excludeSkipNarrator', 'checked');
     bind('stcm_set_wi', 'includeWorldInfo', 'checked');
+    bind('stcm_set_extmem', 'extMemory', 'checked');
+    bind('stcm_set_extmemmax', 'extMemoryMax');
+    document.getElementById('stcm_set_extmem_refresh')?.addEventListener('click', renderExtMemoryList);
+    document.getElementById('stcm_set_extmem_list')?.addEventListener('change', (e) => {
+        const key = e.target?.dataset?.extmem;
+        if (!key) return;
+        getSettings().extMemoryChoice[key] = e.target.checked;
+        saveSettings();
+    });
+    document.querySelector('#stcm_settings .inline-drawer-toggle')?.addEventListener('click', () => setTimeout(renderExtMemoryList, 50));
+    renderExtMemoryList();
     bind('stcm_set_wimax', 'wiMaxChars');
     bind('stcm_set_auto', 'autoEnabled', 'checked');
     bind('stcm_set_every', 'autoEvery');
@@ -4921,7 +5207,7 @@ async function onMessageReceived(messageId, type) {
         queueAuto('new', async () => {
             const feed = await generateFeed({ mode, platformId, background: true });
             if (feed && s.autoWatchNew) {
-                for (const p of feed.data.posts) p.watch = true;
+                for (const p of lastAdded.get(feed) ?? feed.data.posts) p.watch = true;
                 await saveChatStore();
             }
         });
@@ -4950,6 +5236,8 @@ async function onChatChanged() {
 }
 
 function showLoadingFeed() {
+    restoreSettingsHome();
+    if (view === 'settings') view = 'feed';
     const el = document.getElementById('stcm_feed');
     const bar = document.getElementById('stcm_feedbar');
     if (bar) bar.innerHTML = '';

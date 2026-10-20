@@ -753,7 +753,11 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
     .stcm-ds-wrap { flex-direction: column; min-height: 0; }
     .stcm-ds-side { flex: 0 0 auto; flex-direction: row; align-items: center; overflow-x: auto; overflow-y: hidden; gap: 4px; padding: 6px; }
     .stcm-ds-server { display: none; }
-    .stcm-ds-sec { padding: 0 4px; white-space: nowrap; font-size: 10px; }
+    .stcm-ds-sec { flex: 0 0 auto; padding: 0 4px; white-space: nowrap; font-size: 10px; gap: 2px; }
+    .stcm-ds-sec + .stcm-ds-ch, .stcm-ds-sec + .stcm-ds-empty { margin-left: 0; }
+    .stcm-ds-ch ~ .stcm-ds-sec, .stcm-ds-empty ~ .stcm-ds-sec { margin-left: 6px; padding-left: 10px; border-left: 1px solid var(--k-line); }
+    .stcm-ds-empty { flex: 0 0 auto; white-space: nowrap; padding: 5px 6px; }
+    .stcm-ds-ch span { max-width: 9em; }
     .stcm-ds-ch { width: auto; flex: 0 0 auto; padding: 5px 9px; }
     .stcm-ds-msg { padding: 6px 10px; gap: 8px; }
     .stcm-ds-msg .stcm-avatar { width: 30px; height: 30px; }
@@ -963,3 +967,38 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
     .stcm-fold:not(.open) > .stcm-psum { padding: 10px 12px; }
 }
 #stcm_fold_all { white-space: nowrap; }
+
+/* ---------- settings inside the panel (⚙) ---------- */
+.stcm-settings-view { padding: 12px 14px 20px; color: var(--s-text); }
+.stcm-settings-view > .inline-drawer-content { display: flex !important; flex-direction: column; gap: 6px; padding: 0; margin: 0; border: 0; background: none; }
+.stcm-settings-view #stcm_set_open { display: none !important; }
+.stcm-settings-view label { color: var(--s-text); font-size: 13px; }
+.stcm-settings-view small, .stcm-settings-view .stcm-help { color: var(--s-sub); }
+.stcm-settings-view .text_pole, .stcm-settings-view select, .stcm-settings-view textarea,
+.stcm-settings-view input[type="number"], .stcm-settings-view input[type="text"] {
+    width: 100%; box-sizing: border-box; margin: 2px 0 0;
+    background: var(--s-input); color: var(--s-text); border: 1px solid var(--s-border); border-radius: 6px;
+    padding: 6px 8px; font: inherit; font-size: 13px;
+}
+.stcm-settings-view textarea { resize: vertical; }
+.stcm-settings-view .menu_button {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px; width: auto; align-self: flex-start;
+    background: transparent; color: var(--s-text); border: 1px solid var(--s-border); border-radius: 6px;
+    padding: 5px 12px; font-size: 13px; cursor: pointer; margin: 2px 0;
+}
+.stcm-settings-view .menu_button:hover { background: var(--s-hover); }
+.stcm-settings-view hr { width: 100%; border: 0; border-top: 1px solid var(--s-border); margin: 12px 0 6px; }
+.stcm-settings-view .checkbox_label { display: flex; align-items: flex-start; gap: 8px; }
+.stcm-settings-view input[type="checkbox"] { accent-color: var(--s-accent); margin-top: 2px; flex: 0 0 auto; }
+.stcm-settings-view code { background: var(--s-input); border-radius: 4px; padding: 0 4px; }
+.stcm-extmem { display: flex; flex-direction: column; gap: 4px; padding: 6px 8px; border: 1px dashed var(--s-border, rgba(127,127,127,.4)); border-radius: 6px; }
+.stcm-extmem-item small { opacity: 0.8; word-break: break-all; }
+@media (max-width: 440px) {
+    .stcm-title-text { display: none; }   /* 9 header buttons: keep only the icon as the title */
+    .stcm-hbtns { gap: 2px; }
+    .stcm-hbtns button { width: 30px; }
+}
+.stcm-modelpick:empty { display: none; }
+.stcm-modelpick select { width: 100%; box-sizing: border-box; margin-top: 4px; }
+.stcm-boards button small { opacity: 0.65; margin-left: 2px; font-size: 10px; }
+.stcm-boards button.active small { opacity: 0.85; }
