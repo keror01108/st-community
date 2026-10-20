@@ -14,7 +14,9 @@ const PROMPT_IN_CHAT = 1;
 const ROLE_SYSTEM = 0;
 
 const defaultSettings = Object.freeze({
-    profileId: '',
+    profileId: '',               // '' main API · ST connection profile id · 'api:<id>' an API added in the panel
+    customApis: [],              // [{ id, name, kind: openai|claude|google, url, key, model }]
+    modelOverrides: {},          // ST profile id → model used for community generation
     language: 'native',          // 'native' | a language name (English) | 'custom'
     customLanguage: '',
     translateTo: '',             // '' (off) | a language name | 'custom'
@@ -255,6 +257,25 @@ function ctx() {
     return SillyTavern.getContext();
 }
 
+// Formats an API added in the panel can speak (sent through SillyTavern's reverse-proxy route)
+const API_KINDS = {
+    openai: {
+        label: 'OpenAI 호환', source: 'openai', example: 'https://api.openai.com/v1',
+        hint: 'OpenAI 공식, 리버스 프록시, OpenRouter, DeepSeek, 로컬 서버 등 /v1/chat/completions 형식이면 다 돼요. 주소는 /v1 까지만 적어 주세요.',
+        strip: /\/(chat\/)?completions\/?$/i,
+    },
+    claude: {
+        label: 'Claude (Anthropic) 호환', source: 'claude', example: 'https://api.anthropic.com/v1',
+        hint: 'Anthropic 공식 API 또는 Claude 리버스 프록시 (/v1/messages 형식). 주소는 /v1 까지만 적어 주세요.',
+        strip: /\/messages\/?$/i,
+    },
+    google: {
+        label: 'Gemini (Google) 호환', source: 'makersuite', example: 'https://generativelanguage.googleapis.com',
+        hint: 'Google AI Studio 또는 Gemini 리버스 프록시. 주소는 도메인(또는 프록시 기본 주소)까지만 적어 주세요.',
+        strip: /\/v1(beta|alpha)?(\/models.*)?\/?$/i,
+    },
+};
+
 function getSettings() {
     const { extensionSettings } = ctx();
     if (!extensionSettings[MODULE]) {
@@ -268,6 +289,13 @@ function getSettings() {
     if (s.language === 'korean') s.language = 'Korean';
     if (s.language === 'native_ko') { s.language = 'native'; if (!s.translateTo) s.translateTo = 'Korean'; }
     if (!s.prompts || typeof s.prompts !== 'object') s.prompts = {};
+    if (!Array.isArray(s.customApis)) s.customApis = [];
+    s.customApis = s.customApis.filter(a => a && typeof a === 'object' && typeof a.id === 'string' && typeof a.url === 'string');
+    for (const a of s.customApis) {
+        if (!API_KINDS[a.kind]) a.kind = 'openai';
+        for (const k of ['name', 'key', 'model']) if (typeof a[k] !== 'string') a[k] = '';
+    }
+    if (!s.modelOverrides || typeof s.modelOverrides !== 'object' || Array.isArray(s.modelOverrides)) s.modelOverrides = {};
     return s;
 }
 
@@ -1025,26 +1053,30 @@ async function buildContinuePrompt({ feed, postIdx, count, playerJustPosted }) {
 async function callModel(system, user, signal) {
     const c = ctx();
     const s = getSettings();
-    const svc = c.ConnectionManagerRequestService;
+    const conn = resolveConnection();
 
-    if (s.profileId && svc) {
-        if (!connectionManagerOn()) throw new Error('Connection Manager 확장이 꺼져 있어요. 커뮤니티 창의 API 설정에서 "메인 API 사용"을 고르거나, 확장을 다시 켜 주세요.');
-        if (!(c.extensionSettings?.connectionManager?.profiles ?? []).some(p => p?.id === s.profileId)) {
-            throw new Error('골라 둔 연결 프로필이 없어졌어요. 커뮤니티 창의 API 설정에서 다시 골라 주세요.');
-        }
+    if (conn.type === 'api') {
+        if (!conn.api) throw new Error('골라 둔 API가 지워졌어요. 커뮤니티 창의 API 설정에서 다시 골라 주세요.');
+        return callCustomApi(conn.api, system, user, signal);
+    }
+    if (conn.type === 'profile') {
+        if (!connectionManagerOn()) throw new Error('Connection Manager 확장이 꺼져 있어요. 커뮤니티 창의 API 설정에서 다른 연결을 고르거나, 확장을 다시 켜 주세요.');
+        if (!conn.profile) throw new Error('골라 둔 연결 프로필이 없어졌어요. 커뮤니티 창의 API 설정에서 다시 골라 주세요.');
+        const svc = c.ConnectionManagerRequestService;
         const messages = [
             { role: 'system', content: system },
             { role: 'user', content: user },
         ];
         if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-        const prompt = svc.constructPrompt(messages, s.profileId);
-        const res = await svc.sendRequest(s.profileId, prompt, Number(s.maxTokens) || 4000, {
+        const model = String(s.modelOverrides[conn.profile.id] ?? '').trim();
+        const prompt = svc.constructPrompt(messages, conn.profile.id);
+        const res = await svc.sendRequest(conn.profile.id, prompt, Number(s.maxTokens) || 4000, {
             stream: false,
             signal,
             extractData: true,
             includePreset: true,
             includeInstruct: true,
-        });
+        }, model ? { model } : {});
         if (typeof res === 'string') return res;
         return res?.content ?? '';
     }
@@ -1275,7 +1307,7 @@ function newFeedObject({ platformId, mode, topic, data }) {
     };
 }
 
-async function addFeed(feed) {
+async function addFeed(feed, { remember = true } = {}) {
     const store = getChatStore();
     store.feeds.push(feed);
     if (store.feeds.length > MAX_FEEDS_PER_CHAT) {
@@ -1283,8 +1315,10 @@ async function addFeed(feed) {
         const ids = new Set(removed.map(f => f.id));
         store.pins = store.pins.filter(p => !ids.has(p.feedId));
     }
-    store.lastMode = feed.mode;
-    store.lastPlatform = feed.platform;
+    if (remember) {   // background (auto) feeds don't change which board the panel opens on
+        store.lastMode = feed.mode;
+        store.lastPlatform = feed.platform;
+    }
     await saveChatStore();
 }
 
@@ -1297,7 +1331,7 @@ async function generateFeed({ mode, platformId, topic = '', background = false }
         const data = parseOrThrow(parseFeed, raw);
         const feed = newFeedObject({ platformId, mode, topic, data });
         feed.topics = topicNames;
-        await addFeed(feed);
+        await addFeed(feed, { remember: !background });
 
         if (background) {
             const store = getChatStore();
@@ -1305,7 +1339,7 @@ async function generateFeed({ mode, platformId, topic = '', background = false }
             toastr.success(`${PLATFORMS[platformId].label}에 새 글이 올라왔어요`, '커뮤니티', { onclick: () => openPanel(feed.id) });
             updateBadge();
             // Don't yank the reader away from what they're reading; only show it if nothing is open
-            if (isOpen() && view === 'feed' && !getFeed(currentFeedId)) showFeed(feed.id);
+            if (isOpen() && view === 'feed' && !getFeed(currentFeedId) && feed.platform === selPlatform && feed.mode === selMode) showFeed(feed.id);
         } else {
             showFeed(feed.id);
         }
@@ -1492,7 +1526,7 @@ async function submitPlayerPost({ title, body, identity, react, board, category 
     feed.data.posts.push(post);
     const postIdx = feed.data.posts.length - 1;
     if (pf.chat) dsSel.set(feed.id, postIdx);
-    if (feed.platform === 'tdgall') tdOpen.add(`${feed.id}:${postIdx}`);
+    openPosts.add(`${feed.id}:${postIdx}`);   // your own new post opens right away
     await saveChatStore();
     showFeed(feed.id, { scrollToPost: postIdx });
     if (react) await generateMoreComments(feed.id, postIdx, { playerJustPosted: true });
@@ -1545,11 +1579,11 @@ async function deletePlayerItem(feedId, postIdx, ci, ri) {
         // view state keyed by post index (Discord pane, 투디갤 expanded rows)
         const sel = dsSel.get(feedId);
         if (Number.isInteger(sel) && sel >= postIdx) dsSel.set(feedId, Math.max(0, sel - (sel > postIdx ? 1 : 0)));
-        for (const key of [...tdOpen]) {
+        for (const key of [...openPosts]) {
             const [fid, n] = [key.slice(0, key.lastIndexOf(':')), Number(key.slice(key.lastIndexOf(':') + 1))];
             if (fid !== feedId || n < postIdx) continue;
-            tdOpen.delete(key);
-            if (n > postIdx) tdOpen.add(`${fid}:${n - 1}`);
+            openPosts.delete(key);
+            if (n > postIdx) openPosts.add(`${fid}:${n - 1}`);
         }
         refreshInjection();
     } else if (ri == null) {
@@ -1916,6 +1950,95 @@ function postFooter(feed, i) {
 }
 
 // ---------------------------------------------------------------------------
+// Title list: posts start folded; the title row opens the body and reactions
+// ---------------------------------------------------------------------------
+const FOLD_SKIP = new Set(['tdgall', 'discord']);   // 투디갤 has its own board list, Discord shows one channel at a time
+
+function foldable(feed) {
+    return !!feed && !FOLD_SKIP.has(feed.platform);
+}
+
+function isPostOpen(feed, i) {
+    return openPosts.has(`${feed.id}:${i}`) || (composer && composer.feedId === feed.id && composer.postIdx === i);
+}
+
+function postSummaryHtml(feed, p, i) {
+    const pf = feed.platform;
+    const n = p.comments.reduce((a, c) => a + 1 + c.replies.length, 0);
+    const titled = !!String(p.title ?? '').trim() && pf !== 'twitter';
+    const title = titled ? p.title : truncate(p.body, 90);
+    let tag = '';
+    if (pf === 'naver') tag = p.tags?.[0] || '';
+    if (pf === 'reddit') tag = p.tags?.[0] || '';
+    const cnt = pf === 'fivech' ? `(${n + 1})`
+        : pf === 'reddit' ? `${n} comments`
+        : (pf === 'twitter' || pf === 'weibo') ? `<i class="fa-regular fa-comment"></i> ${n}`
+        : pf === 'tieba' ? `${n}`
+        : `[${n}]`;
+    const who = pf === 'reddit' ? `u/${String(p.handle || p.author || 'anon').replace(/^u\//, '')}`
+        : pf === 'twitter' ? `${p.author || ''}` : (p.author || '');
+    const extra = pf === 'fivech' || pf === 'tieba' ? '' : (Number(p.likes) ? ` · ♥ ${num(p.likes)}` : '');
+    return `<div class="stcm-psum" data-act="post-toggle" data-feed="${esc(feed.id)}" data-idx="${i}" role="button" tabindex="0" aria-expanded="${isPostOpen(feed, i) ? 'true' : 'false'}">
+        ${tag ? `<span class="tag">${esc(tag)}</span>` : ''}
+        <span class="tt">${p.isMe ? '<i class="fa-solid fa-pen-nib mine"></i> ' : ''}${!titled && pf === 'twitter' ? `<b>${esc(who)}</b> ` : ''}${esc(title)}</span>
+        <span class="cnt">${cnt}</span>
+        <span class="mt">${titled || pf !== 'twitter' ? `${esc(who)}${who ? ' · ' : ''}` : ''}${esc(p.time || '')}${extra}</span>
+        <i class="fa-solid fa-chevron-down chev"></i>
+    </div>`;
+}
+
+/** Add the title row to every post of a rendered feed (root = feed element or a template fragment). */
+function applyFolding(feed, root) {
+    if (!foldable(feed) || !root) return;
+    root.querySelectorAll('article[data-post]').forEach((art) => {
+        const i = Number(art.dataset.post);
+        const p = feed.data.posts[i];
+        if (!p || art.querySelector(':scope > .stcm-psum')) return;
+        art.classList.add('stcm-fold');
+        art.classList.toggle('open', !!isPostOpen(feed, i));
+        art.insertAdjacentHTML('afterbegin', postSummaryHtml(feed, p, i));
+    });
+}
+
+function setPostOpen(feedId, idx, open) {
+    const key = `${feedId}:${idx}`;
+    if (open) openPosts.add(key); else openPosts.delete(key);
+    const art = document.querySelector(`#stcm_feed article.stcm-fold[data-post="${idx}"]`);
+    if (!art) return;
+    art.classList.toggle('open', open);
+    art.querySelector(':scope > .stcm-psum')?.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+function togglePost(feedId, idx) {
+    const open = !openPosts.has(`${feedId}:${idx}`);
+    if (!open && composer && composer.feedId === feedId && composer.postIdx === idx) {
+        captureDraft();
+        composer = null;   // closing the post also closes its comment box (draft text was saved)
+    }
+    setPostOpen(feedId, idx, open);
+    if (!open) {
+        // keep the folded title in view when the reader was further down inside the post
+        const feedEl = document.getElementById('stcm_feed');
+        const row = feedEl?.querySelector(`article[data-post="${idx}"] > .stcm-psum`);
+        if (row && row.getBoundingClientRect().top < feedEl.getBoundingClientRect().top) scrollToPostSmooth(idx, false);
+    }
+}
+
+function setAllOpen(feed, open) {
+    feed.data.posts.forEach((_, i) => setPostOpen(feed.id, i, open));
+    if (!open && composer?.feedId === feed.id) { captureDraft(); composer = null; }
+    updateFoldAllButton(feed);
+}
+
+function updateFoldAllButton(feed) {
+    const b = document.getElementById('stcm_fold_all');
+    if (!b || !feed) return;
+    const allOpen = feed.data.posts.length > 0 && feed.data.posts.every((_, i) => openPosts.has(`${feed.id}:${i}`));
+    b.dataset.open = allOpen ? '1' : '';
+    b.innerHTML = allOpen ? '<i class="fa-solid fa-angles-up"></i> 모두 접기' : '<i class="fa-solid fa-angles-down"></i> 모두 펴기';
+}
+
+// ---------------------------------------------------------------------------
 // Renderers per platform
 // ---------------------------------------------------------------------------
 const renderers = {
@@ -2132,7 +2255,7 @@ const renderers = {
         const rows = order.map(({ p, i }) => {
             const cat = tdCatOf(p);
             const n = tdCount(p);
-            const open = tdOpen.has(`${feed.id}:${i}`) || (composer && composer.feedId === feed.id && composer.postIdx === i);
+            const open = openPosts.has(`${feed.id}:${i}`) || (composer && composer.feedId === feed.id && composer.postIdx === i);
             return `<article class="stcm-td-post ${open ? 'open' : ''} ${tdVisible(feed, p) ? '' : 'stcm-hide'}" data-post="${i}">
                 <div class="stcm-td-row" data-act="td-toggle" data-feed="${fid}" data-idx="${i}">
                     <span class="no">${base + i + 1}</span>
@@ -2234,7 +2357,7 @@ const renderers = {
 // Discord: selected channel / DM per feed, DM helpers
 // ---------------------------------------------------------------------------
 const dsSel = new Map();       // feedId → index of the channel / DM shown
-const tdOpen = new Set();      // `${feedId}:${idx}` posts expanded in the 투디갤 list
+const openPosts = new Set();   // `${feedId}:${idx}` posts expanded in the title list
 const TD_CATS = ['전체', '투디', '웹툰', '소설', '게임', 'AI', '괴담', '남극'];
 
 const TD_ICONS = { '전체': '📌', '투디': '💬', '웹툰': '📺', '소설': '📖', '게임': '🎮', 'AI': '🤖', '괴담': '👻', '남극': '🐧' };
@@ -2868,21 +2991,24 @@ function buildOverlay() {
     document.getElementById('stcm_modes').addEventListener('click', (e) => {
         const b = e.target.closest('button[data-mode]');
         if (!b) return;
+        if (selMode === b.dataset.mode && view === 'feed') return;
         selMode = b.dataset.mode;
-        syncSelectors();
-        if (view === 'compose') showCompose();
+        onSelectorChange();
     });
     document.getElementById('stcm_platforms').addEventListener('click', (e) => {
         const b = e.target.closest('button[data-platform]');
         if (!b) return;
+        if (selPlatform === b.dataset.platform && view === 'feed') return;
         selPlatform = b.dataset.platform;
-        syncSelectors();
-        if (view === 'compose') showCompose();
+        onSelectorChange();
     });
     document.getElementById('stcm_feed').addEventListener('click', onFeedClick);
+    document.getElementById('stcm_feed').addEventListener('keydown', (e) => {
+        if ((e.key === 'Enter' || e.key === ' ') && e.target.classList?.contains('stcm-psum')) { e.preventDefault(); e.target.click(); }
+    });
     document.getElementById('stcm_feed').addEventListener('change', onFeedChange);
     document.getElementById('stcm_feed').addEventListener('input', (e) => {
-        if (e.target.classList?.contains('stcm-api-tokens')) { onApiChange(e); return; }
+        if (e.target.closest?.('.stcm-api-view')) { onApiChange(e); return; }
         if (!e.target.classList?.contains('stcm-td-q')) return;
         tdState(e.target.dataset.feed).q = e.target.value;
         tdApply(e.target.dataset.feed);
@@ -2950,6 +3076,7 @@ async function onFeedClick(e) {
     if (!el) return;
     const act = el.dataset.act;
     if (act?.startsWith('wi-')) { await onWorldInfoClick(el); return; }
+    if (act && view === 'api' && await onApiClick(act, el)) return;
     if (act === 'feed-export') { exportFeeds(); return; }
     if (act === 'feed-import') { document.getElementById('stcm_import_file')?.click(); return; }
     if (act === 'import-cancel') { pendingImport = null; showHistory(); return; }
@@ -2965,29 +3092,10 @@ async function onFeedClick(e) {
         await applyImport(act === 'import-replace' ? 'replace' : 'merge', withPins);
         return;
     }
-    if (act === 'goto-post') {
-        document.querySelector(`#stcm_feed [data-post="${el.dataset.idx}"]`)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
-        return;
-    }
+    if (act === 'goto-post') { scrollToPostSmooth(Number(el.dataset.idx)); return; }
+    if (act === 'post-toggle') { togglePost(el.dataset.feed, Number(el.dataset.idx)); updateFoldAllButton(getFeed(el.dataset.feed)); return; }
+    if (act === 'fold-all') { const f = getFeed(currentFeedId); if (f) setAllOpen(f, !document.getElementById('stcm_fold_all')?.dataset.open); return; }
     if (act?.startsWith('topic')) { await onTopicAction(el); return; }
-    if (act === 'goto-post') {
-        document.querySelector(`#stcm_feed [data-post="${el.dataset.idx}"]`)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
-        return;
-    }
-    if (act === 'topics-save' || act === 'topics-reset') {
-        const s = getSettings();
-        s.topics = act === 'topics-reset' ? defaultSettings.topics : document.getElementById('stcm_topic_text').value;
-        s.topicScope = document.getElementById('stcm_topic_scope').value;
-        const names = new Set(parseTopics().map(t => t.name));
-        s.topicSelected = (s.topicSelected ?? []).filter(n => names.has(n));
-        saveSettings();
-        syncTopicSettings();
-        renderTopicChips();
-        if (act === 'topics-reset') { showTopicEditor(); return; }
-        toastr.success('주제 목록을 저장했어요.');
-        showFeed(currentFeedId);
-        return;
-    }
     const feedId = el.dataset.feed;
     const idx = el.dataset.idx != null ? Number(el.dataset.idx) : null;
 
@@ -3056,12 +3164,11 @@ async function onFeedClick(e) {
         if (out && document.body.contains(bodyEl)) bodyEl.value = out.body;
         return;
     }
-    if (act === 'api-test') { await testApi(el); return; }
     if (act === 'td-toggle') {
         const key = `${feedId}:${idx}`;
         const art = el.closest('.stcm-td-post');
-        if (tdOpen.has(key)) tdOpen.delete(key); else tdOpen.add(key);
-        art?.classList.toggle('open', tdOpen.has(key));
+        if (openPosts.has(key)) openPosts.delete(key); else openPosts.add(key);
+        art?.classList.toggle('open', openPosts.has(key));
         return;
     }
     if (act === 'td-cat' || act === 'td-filter') {
@@ -3084,7 +3191,7 @@ async function onFeedClick(e) {
         return;
     }
     if (act === 'td-open') {
-        tdOpen.add(`${feedId}:${idx}`);
+        openPosts.add(`${feedId}:${idx}`);
         const st = tdState(feedId);
         const post = getFeed(feedId)?.data.posts[idx];
         if (post && !tdVisible(getFeed(feedId), post)) { st.cat = '전체'; st.filter = 'all'; st.q = ''; }
@@ -3438,6 +3545,26 @@ function showError(msg, raw) {
     eb.classList.add('show');
 }
 
+/** Newest feed of this chat for a community + mode (or null). */
+function latestFeedFor(platform, mode) {
+    const store = hasChat() ? getChatStore() : null;
+    return [...(store?.feeds ?? [])].reverse().find(f => f.platform === platform && f.mode === mode) ?? null;
+}
+
+/** Community / mode chip picked: show that board right away (or the write form when writing). */
+function onSelectorChange() {
+    syncSelectors();
+    const store = hasChat() ? getChatStore() : null;
+    if (store) {
+        store.lastPlatform = selPlatform;
+        store.lastMode = selMode;
+        saveChatStore();
+    }
+    if (view === 'compose') { showCompose(); return; }
+    if (view === 'dm-new') dmDraft = null;
+    showFeed(null);
+}
+
 function showFeed(feedId, opts = {}) {
     const sameView = view === 'feed';
     leaveFeed();
@@ -3456,10 +3583,22 @@ function showFeed(feedId, opts = {}) {
         el.innerHTML = `<div class="stcm-empty">채팅을 열면 커뮤니티를 볼 수 있어요.</div>`;
         return;
     }
-    const feed = store.feeds.find(f => f.id === feedId) ?? store.feeds.at(-1);
+    // An explicit feed (history, new generation…) wins and moves the selectors to it;
+    // otherwise show the newest feed of the community + mode picked above, never another community's.
+    let feed = feedId ? store.feeds.find(f => f.id === feedId) : null;
+    if (feed) {
+        selPlatform = feed.platform;
+        selMode = feed.mode;
+        syncSelectors();
+    } else {
+        feed = latestFeedFor(selPlatform, selMode);
+    }
     if (!feed) {
-        bar.innerHTML = '';
-        el.innerHTML = `<div class="stcm-empty"><i class="fa-solid fa-comments"></i><br>아직 글이 없어요.<br>모드와 커뮤니티를 고르고 <b>생성</b>을 누르거나,<br><i class="fa-solid fa-pen"></i> 버튼으로 직접 글을 써 보세요.</div>`;
+        if (composer) { captureDraft(); composer = null; }
+        currentFeedId = null;
+        bar.innerHTML = `<span class="stcm-fb-info"><b>${esc(PLATFORMS[selPlatform]?.label)}</b> · ${esc(MODES[selMode]?.label)}</span>`;
+        el.innerHTML = `<div class="stcm-empty"><i class="fa-solid fa-comments"></i><br>${store.feeds.length ? `아직 <b>${esc(PLATFORMS[selPlatform]?.label)}</b> · ${esc(MODES[selMode]?.label)} 글이 없어요.` : '아직 글이 없어요.'}<br><b>생성</b>을 누르거나 <i class="fa-solid fa-pen"></i> 버튼으로 직접 글을 써 보세요.${store.feeds.length ? '<br><small>다른 커뮤니티 글은 <i class="fa-solid fa-clock-rotate-left"></i> 지난 피드에서 볼 수 있어요.</small>' : ''}</div>`;
+        el.scrollTop = 0;
         return;
     }
     if (feed.id !== currentFeedId && composer?.feedId !== feed.id) composer = null;
@@ -3467,11 +3606,14 @@ function showFeed(feedId, opts = {}) {
     const hasTr = feed.data.posts.some(p => p.body_tr || p.body_ko || p.comments.some(c => c.body_tr || c.body_ko));
     const when = new Date(feed.createdAt).toLocaleString();
     bar.innerHTML = `<span class="stcm-fb-info"><b>${esc(PLATFORMS[feed.platform]?.label)}</b> · ${esc(MODES[feed.mode]?.label)} · #${feed.atMessage} 시점 · ${esc(when)}${feed.topics?.length ? ` · 주제: ${esc(feed.topics.join(', '))}` : ''}${feed.topic ? ` · “${esc(truncate(feed.topic, 30))}”` : ''}</span>
+        ${foldable(feed) && feed.data.posts.length ? '<button id="stcm_fold_all" data-act="fold-all"></button>' : ''}
         ${hasTr ? `<button id="stcm_tr_toggle" class="${showTr ? 'on' : ''}" title="${showTr ? '원문 보기' : '번역 보기'}"><i class="fa-solid fa-language"></i> 번역</button>` : ''}`;
+    updateFoldAllButton(feed);
     const render = renderers[feed.platform] ?? renderers.naver;
     el.innerHTML = render(feed) + `
         <div class="stcm-more-posts"><button data-act="more-posts" data-feed="${esc(feed.id)}"><i class="fa-solid fa-plus"></i> ${PLATFORMS[feed.platform]?.chat ? '이 서버에 채널 더 만들기' : '이 게시판에 글 더 불러오기'}</button></div>`;
 
+    applyFolding(feed, el);
     if (opts.scrollToPost != null) {
         scrollToPostSmooth(opts.scrollToPost, false);
     } else if (opts.keepScroll && sameView) {
@@ -3518,6 +3660,7 @@ function scrollToPostSmooth(idx, smooth = true) {
     const feedEl = document.getElementById('stcm_feed');
     const target = feedEl?.querySelector(`[data-post="${idx}"]`);
     if (!target) return;
+    if (currentFeedId && target.classList.contains('stcm-fold')) setPostOpen(currentFeedId, idx, true);
     const top = target.getBoundingClientRect().top - feedEl.getBoundingClientRect().top + feedEl.scrollTop - 6;
     feedEl.scrollTo({ top, behavior: smooth ? 'smooth' : 'auto' });
 }
@@ -3563,6 +3706,7 @@ function updatePost(feedId, idx, opts = {}) {
     captureDraft();
     const tpl = document.createElement('template');
     tpl.innerHTML = (renderers[feed.platform] ?? renderers.naver)(feed);
+    applyFolding(feed, tpl.content);
     const fresh = tpl.content.querySelector(`[data-post="${idx}"]`);
     const old = feedEl.querySelector(`[data-post="${idx}"]`);
     if (!fresh || !old) {
@@ -3572,6 +3716,7 @@ function updatePost(feedId, idx, opts = {}) {
     const scroll = feedEl.scrollTop;
     const anchor = captureAnchor(feedEl);
     old.replaceWith(fresh);
+    updateFoldAllButton(feed);
     feedEl.scrollTop = scroll;
     // Elements before the replaced post keep their index, so this pins the view in place
     restoreAnchor(feedEl, anchor);
@@ -3821,8 +3966,11 @@ async function applyImport(mode, withPins) {
 }
 
 // ---------------------------------------------------------------------------
-// API view: pick the connection profile from inside the panel
+// Connections: SillyTavern connection profiles + APIs added inside this extension
 // ---------------------------------------------------------------------------
+// Added APIs go through SillyTavern's own server route (/api/backends/chat-completions),
+// the same way ST talks to a reverse proxy: the key is sent to the ST server only, never to the page's origin.
+
 /** Is the Connection Manager extension usable? (the service class exists even when the extension is off) */
 function connectionManagerOn() {
     const c = ctx();
@@ -3842,72 +3990,432 @@ function connectionProfiles() {
     return all.filter(p => p?.id && ok(p)).sort((a, b) => String(a.name ?? '').localeCompare(String(b.name ?? '')));
 }
 
-function profileSummary(p) {
-    if (!p) return '지금 실리태번에 연결된 API와 모델을 그대로 써요.';
-    const bits = [p.api && `API: ${p.api}`, p.model && `모델: ${p.model}`, p.preset && `프리셋: ${p.preset}`].filter(Boolean);
-    return bits.length ? bits.join(' · ') : '프로필 정보 없음';
+function customApis() {
+    return getSettings().customApis;
 }
 
-let apiTesting = false;
+function normalizeApiUrl(kind, url) {
+    let u = String(url ?? '').trim().replace(/\/+$/, '');
+    const k = API_KINDS[kind] ?? API_KINDS.openai;
+    u = u.replace(k.strip, '').replace(/\/+$/, '');
+    return u;
+}
 
-function showApi() {
+function validApiUrl(url) {
+    try {
+        const u = new URL(url);
+        return u.protocol === 'http:' || u.protocol === 'https:';
+    } catch { return false; }
+}
+
+function apiHost(url) {
+    try { return new URL(url).host; } catch { return String(url ?? ''); }
+}
+
+/** What "profileId" points at: '' main API · '<uuid>' an ST profile · 'api:<id>' an API added here. */
+function resolveConnection() {
+    const id = getSettings().profileId || '';
+    if (!id) return { type: 'main' };
+    if (id.startsWith('api:')) return { type: 'api', api: customApis().find(a => a.id === id.slice(4)) ?? null };
+    return { type: 'profile', profile: connectionProfiles().find(p => p.id === id) ?? null };
+}
+
+function connectionSummary(conn = resolveConnection()) {
+    const s = getSettings();
+    if (conn.type === 'main') return '지금 실리태번에 연결된 API와 모델을 그대로 써요.';
+    if (conn.type === 'api') {
+        if (!conn.api) return '고른 API가 지워졌어요. 다른 연결을 골라 주세요.';
+        const a = conn.api;
+        return `${API_KINDS[a.kind]?.label ?? a.kind} · ${apiHost(a.url)} · 모델: ${a.model || '(정해지지 않음)'}`;
+    }
+    if (!conn.profile) {
+        return connectionManagerOn()
+            ? '고른 프로필이 없어졌어요. 이대로면 생성이 실패하니 다른 연결을 골라 주세요.'
+            : '프로필을 쓰려면 Connection Manager 확장을 켜 주세요. 지금은 다른 연결을 골라야 생성할 수 있어요.';
+    }
+    const p = conn.profile;
+    const override = (s.modelOverrides[p.id] ?? '').trim();
+    const bits = [p.api && `API: ${p.api}`, `모델: ${override ? `${override} (따로 지정)` : (p.model || '프로필 기본')}`, p.preset && `프리셋: ${p.preset}`].filter(Boolean);
+    return bits.join(' · ');
+}
+
+/** <option>s for every place that picks the connection (panel + extension settings). */
+function connOptionsHtml() {
+    const s = getSettings();
+    const cur = s.profileId || '';
+    const conn = resolveConnection();
+    const profiles = connectionProfiles();
+    const apis = customApis();
+    let missing = '';
+    if (conn.type === 'api' && !conn.api) missing = '(지워진 API — 다시 골라 주세요)';
+    if (conn.type === 'profile' && !conn.profile) missing = connectionManagerOn() ? '(지워진 프로필 — 다시 골라 주세요)' : '(Connection Manager 꺼짐 — 생성 불가)';
+    return `<option value="">(메인 API 사용)</option>
+        ${missing ? `<option value="${esc(cur)}" selected>${missing}</option>` : ''}
+        ${apis.length ? `<optgroup label="직접 추가한 API">${apis.map(a => `<option value="api:${esc(a.id)}" ${cur === `api:${a.id}` ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</optgroup>` : ''}
+        ${profiles.length ? `<optgroup label="실리태번 연결 프로필">${profiles.map(p => `<option value="${esc(p.id)}" ${cur === p.id ? 'selected' : ''}>${esc(p.name || p.id)}</option>`).join('')}</optgroup>` : ''}`;
+}
+
+/** Re-fill the extension settings dropdown (and the panel's API view when it is open and idle). */
+function refreshConnSelectors() {
+    const sel = document.getElementById('stcm_set_profile');
+    if (sel) sel.innerHTML = connOptionsHtml();
+    if (view === 'api' && isOpen() && !apiTesting && !apiEdit) showApi({ keepScroll: true });
+}
+
+function setConnection(value) {
+    const s = getSettings();
+    s.profileId = String(value ?? '');
+    saveSettings();
+    refreshConnSelectors();
+}
+
+// ---- requests -------------------------------------------------------------
+function apiErrorText(json) {
+    const e = json?.error;
+    if (!e) return '';
+    if (typeof e === 'string') return e;
+    if (e === true) return typeof json?.message === 'string' ? json.message : '요청 실패 — 주소와 키를 확인해 주세요';
+    return e.message || e.error?.message || JSON.stringify(e).slice(0, 200);
+}
+
+function replyText(json) {
+    const ch = json?.choices?.[0];
+    let out = ch?.message?.content ?? ch?.text;
+    if (out == null && Array.isArray(json?.content)) out = json.content;
+    if (Array.isArray(out)) out = out.map(x => (typeof x === 'string' ? x : x?.text ?? '')).join('');
+    return typeof out === 'string' ? out : null;
+}
+
+async function postBackend(path, body, signal) {
+    const res = await fetch(path, { method: 'POST', headers: ctx().getRequestHeaders(), body: JSON.stringify(body), signal });
+    const text = await res.text();
+    let json = null;
+    try { json = JSON.parse(text); } catch { /* not JSON */ }
+    const err = apiErrorText(json);
+    if (!res.ok || err) throw new Error(truncate(err || (text && !json ? text : `HTTP ${res.status}`), 300));
+    return json;
+}
+
+async function callCustomApi(api, system, user, signal) {
+    const kind = API_KINDS[api.kind] ?? API_KINDS.openai;
+    if (!String(api.model ?? '').trim()) throw new Error(`"${api.name}"에 모델이 정해지지 않았어요. 커뮤니티 창의 API 설정에서 모델을 적어 주세요.`);
+    const body = {
+        chat_completion_source: kind.source,
+        reverse_proxy: api.url,
+        proxy_password: api.key || '',
+        model: String(api.model).trim(),
+        messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+        max_tokens: Number(getSettings().maxTokens) || 4000,
+        stream: false,
+    };
+    if (api.kind === 'claude') body.use_sysprompt = true;
+    if (api.kind === 'google') body.use_makersuite_sysprompt = true;
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    let json;
+    try {
+        json = await postBackend('/api/backends/chat-completions/generate', body, signal);
+    } catch (e) {
+        if (e?.name === 'AbortError') throw e;
+        throw new Error(`${api.name}: ${e?.message ?? e}`);
+    }
+    const out = replyText(json);
+    if (out == null) throw new Error(`${api.name}: 응답에서 글을 찾지 못했어요.`);
+    return out;
+}
+
+function modelIds(json) {
+    const arr = Array.isArray(json) ? json : (json?.data ?? json?.models ?? []);
+    const ids = (Array.isArray(arr) ? arr : [])
+        .map(m => (typeof m === 'string' ? m : (m?.id ?? m?.name ?? '')))
+        .map(x => String(x).replace(/^models\//, '').trim())
+        .filter(Boolean);
+    return [...new Set(ids)].sort((a, b) => a.localeCompare(b)).slice(0, 500);
+}
+
+/** Model list of an added API (or of the form being edited). */
+async function listApiModels({ kind, url, key }) {
+    const k = API_KINDS[kind] ?? API_KINDS.openai;
+    const json = await postBackend('/api/backends/chat-completions/status', { chat_completion_source: k.source, reverse_proxy: url, proxy_password: key || '' });
+    return modelIds(json);
+}
+
+/** Model list for an ST connection profile (Chat Completion profiles without a proxy preset only). */
+async function listProfileModels(profile) {
+    const map = ctx().CONNECT_API_MAP?.[profile.api];
+    if (!map || map.selected !== 'openai' || !map.source) throw new Error('이 프로필은 목록을 불러올 수 없어요. 모델 이름을 직접 적어 주세요.');
+    if (profile.proxy && profile.proxy !== 'None') throw new Error('프록시를 쓰는 프로필이라 목록을 불러올 수 없어요. 모델 이름을 직접 적어 주세요.');
+    const body = { chat_completion_source: map.source };
+    if (profile['api-url']) body.custom_url = profile['api-url'];
+    if (profile['secret-id']) body.secret_id = profile['secret-id'];
+    return modelIds(await postBackend('/api/backends/chat-completions/status', body));
+}
+
+// ---- API view ---------------------------------------------------------------
+let apiTesting = false;
+let apiEdit = null;                // null | { id } ('' = new)
+const apiModelCache = new Map();   // key → model ids (datalist suggestions)
+
+function modelDatalist(id, key, extra = []) {
+    const ids = [...new Set([...extra.filter(Boolean), ...(apiModelCache.get(key) ?? [])])];
+    return `<datalist id="${id}">${ids.map(m => `<option value="${esc(m)}"></option>`).join('')}</datalist>`;
+}
+
+function apiFormHtml() {
+    const a = apiEdit?.id ? customApis().find(x => x.id === apiEdit.id) : null;
+    const kind = a?.kind ?? 'openai';
+    return `<div class="stcm-api-form" data-id="${esc(a?.id ?? '')}">
+        <label class="stcm-cp-check">${a ? 'API 수정' : '새 API 추가'}</label>
+        <input class="stcm-af-name" type="text" maxlength="40" placeholder="이름 (예: 내 프록시, OpenAI)" value="${esc(a?.name ?? '')}">
+        <select class="stcm-af-kind">${Object.entries(API_KINDS).map(([k, v]) => `<option value="${k}" ${k === kind ? 'selected' : ''}>${esc(v.label)}</option>`).join('')}</select>
+        <p class="stcm-cp-hint stcm-af-kindhint">${esc(API_KINDS[kind].hint)}</p>
+        <input class="stcm-af-url" type="url" maxlength="500" placeholder="${esc(API_KINDS[kind].example)}" value="${esc(a?.url ?? '')}">
+        <div class="stcm-cp-row">
+            <input class="stcm-af-key" type="password" autocomplete="off" maxlength="500" placeholder="API 키 / 프록시 비밀번호 (없으면 비워 두기)" value="${esc(a?.key ?? '')}">
+            <button data-act="af-eye" title="키 보기/숨기기"><i class="fa-solid fa-eye"></i></button>
+        </div>
+        <div class="stcm-cp-row">
+            <input class="stcm-af-model" type="text" list="stcm_af_models" maxlength="200" placeholder="모델 이름 (예: gpt-4o-mini)" value="${esc(a?.model ?? '')}">
+            <button data-act="af-models"><i class="fa-solid fa-list"></i> 목록 불러오기</button>
+        </div>
+        ${modelDatalist('stcm_af_models', a ? `api:${a.id}` : 'form', [a?.model])}
+        <p class="stcm-cp-hint">키는 실리태번 설정 파일(settings.json)에 저장되고, 요청은 실리태번 서버를 거쳐 그 주소로 가요. 실리태번이 리버스 프록시 비밀번호를 저장하는 방식과 같아요. 설정 파일을 다른 사람과 공유하지 마세요.</p>
+        <div class="stcm-cp-foot">
+            <span class="stcm-af-result"></span>
+            <button data-act="af-test"><i class="fa-solid fa-plug-circle-check"></i> 테스트</button>
+            <button data-act="af-cancel">취소</button>
+            <button class="primary" data-act="af-save"><i class="fa-solid fa-floppy-disk"></i> 저장</button>
+        </div>
+    </div>`;
+}
+
+function showApi({ keepScroll = false } = {}) {
+    const el = document.getElementById('stcm_feed');
+    const top = el.scrollTop;
     leaveFeed();
     view = 'api';
+    document.getElementById('stcm_errbox')?.classList.remove('show');
     const s = getSettings();
-    const svc = connectionManagerOn();
-    const profiles = connectionProfiles();
-    const current = profiles.find(p => p.id === s.profileId) ?? null;
-    const missing = !!s.profileId && !current;
+    const conn = resolveConnection();
     const bar = document.getElementById('stcm_feedbar');
-    const el = document.getElementById('stcm_feed');
     bar.innerHTML = `<button id="stcm_back"><i class="fa-solid fa-arrow-left"></i> 돌아가기</button><span class="stcm-fb-info">API 설정</span>`;
     syncSelectors();
+
+    let modelRow = '';
+    if (conn.type === 'profile' && conn.profile) {
+        const p = conn.profile;
+        modelRow = `<label class="stcm-cp-check">모델 <small>비워 두면 프로필 모델${p.model ? ` (${esc(p.model)})` : ''}을 써요</small></label>
+            <div class="stcm-cp-row">
+                <input class="stcm-api-model" type="text" list="stcm_api_models" maxlength="200" placeholder="${esc(p.model || '프로필 기본 모델')}" value="${esc(s.modelOverrides[p.id] ?? '')}">
+                <button data-act="api-models"><i class="fa-solid fa-list"></i> 목록 불러오기</button>
+            </div>${modelDatalist('stcm_api_models', `p:${p.id}`, [p.model])}`;
+    } else if (conn.type === 'api' && conn.api) {
+        const a = conn.api;
+        modelRow = `<label class="stcm-cp-check">모델</label>
+            <div class="stcm-cp-row">
+                <input class="stcm-api-model" type="text" list="stcm_api_models" maxlength="200" placeholder="모델 이름 (꼭 적어 주세요)" value="${esc(a.model ?? '')}">
+                <button data-act="api-models"><i class="fa-solid fa-list"></i> 목록 불러오기</button>
+            </div>${modelDatalist('stcm_api_models', `api:${a.id}`, [a.model])}`;
+    }
+    const cmNote = !connectionManagerOn()
+        ? '<p class="stcm-cp-hint">Connection Manager 확장이 꺼져 있어서 실리태번 연결 프로필은 쓸 수 없어요. 아래에서 API를 직접 추가할 수는 있어요.</p>'
+        : '';
+    const list = customApis().map(a => `
+        <div class="stcm-li">
+            <div class="stcm-li-main"><b>${esc(a.name)}</b>${s.profileId === `api:${a.id}` ? ' <span class="stcm-api-using">사용 중</span>' : ''}
+                <small>${esc(API_KINDS[a.kind]?.label ?? a.kind)} · ${esc(apiHost(a.url))} · ${esc(a.model || '모델 없음')}${a.key ? ' · 키 있음' : ''}</small></div>
+            <button data-act="api-use" data-api="${esc(a.id)}" title="이 API로 생성"><i class="fa-solid fa-check"></i></button>
+            <button data-act="api-edit" data-api="${esc(a.id)}" title="수정"><i class="fa-solid fa-pen"></i></button>
+            <button data-act="api-del" data-api="${esc(a.id)}" title="삭제"><i class="fa-solid fa-trash-can"></i></button>
+        </div>`).join('');
+
     el.innerHTML = `<div class="stcm-compose-view stcm-api-view">
-        <label class="stcm-cp-check">커뮤니티 생성에 쓸 연결 프로필</label>
-        <select class="stcm-api-profile">
-            <option value="">(메인 API 사용)</option>
-            ${missing ? `<option value="${esc(s.profileId)}" selected>${svc ? '(지워진 프로필 — 다시 골라 주세요)' : '(Connection Manager 꺼짐 — 생성 불가)'}</option>` : ''}
-            ${profiles.map(p => `<option value="${esc(p.id)}" ${p.id === s.profileId ? 'selected' : ''}>${esc(p.name || p.id)}</option>`).join('')}
-        </select>
-        <p class="stcm-cp-hint stcm-api-info">${esc(!missing ? profileSummary(current) : svc ? '고른 프로필이 없어졌어요. 이대로면 생성이 실패하니 다른 프로필을 골라 주세요.' : '프로필을 쓰려면 Connection Manager 확장을 켜 주세요. 지금은 "메인 API 사용"을 골라야 생성할 수 있어요.')}</p>
-        ${svc ? '' : '<p class="stcm-cp-hint">Connection Manager 확장이 꺼져 있어서 메인 API만 쓸 수 있어요.</p>'}
-        ${svc && !profiles.length ? '<p class="stcm-cp-hint">저장된 연결 프로필이 없어요. 실리태번 상단 API 연결 화면의 "연결 프로필"에서 먼저 만들어 주세요.</p>' : ''}
+        <label class="stcm-cp-check">커뮤니티 생성에 쓸 연결</label>
+        <select class="stcm-api-conn">${connOptionsHtml()}</select>
+        <p class="stcm-cp-hint stcm-api-info">${esc(connectionSummary(conn))}</p>
+        ${cmNote}
+        ${modelRow}
         <label class="stcm-cp-check">최대 응답 토큰</label>
         <input class="stcm-api-tokens" type="number" min="500" max="32000" step="100" value="${Number(s.maxTokens) || 4000}">
-        <p class="stcm-cp-hint">글이 중간에 끊기면 늘려 주세요. 본 채팅의 API 연결은 바뀌지 않고, 여기서 고른 프로필은 커뮤니티 생성에만 쓰여요.</p>
+        <p class="stcm-cp-hint">글이 중간에 끊기면 늘려 주세요. 본 채팅의 API 연결은 바뀌지 않고, 여기서 고른 연결은 커뮤니티 생성에만 쓰여요.</p>
         <div class="stcm-cp-foot">
             <span class="stcm-api-result"></span>
             <button data-act="api-test" ${apiTesting ? 'disabled' : ''}><i class="fa-solid fa-plug-circle-check"></i> 연결 테스트</button>
         </div>
+    </div>
+    <div class="stcm-compose-view stcm-api-view stcm-api-custom">
+        <label class="stcm-cp-check">직접 추가한 API</label>
+        <p class="stcm-cp-hint">실리태번 API 설정과 따로, 커뮤니티에서만 쓸 API를 추가할 수 있어요. OpenAI 호환 주소, 리버스 프록시, Claude·Gemini 프록시를 지원해요.</p>
+        ${list ? `<div class="stcm-list">${list}</div>` : ''}
+        ${apiEdit ? apiFormHtml() : '<button class="stcm-api-add" data-act="api-add"><i class="fa-solid fa-plus"></i> API 추가</button>'}
     </div>`;
-    el.scrollTop = 0;
+    el.scrollTop = keepScroll ? top : 0;
 }
 
-function onApiChange(e) {
+function readApiForm(box) {
+    const kind = box.querySelector('.stcm-af-kind').value;
+    const url = normalizeApiUrl(kind, box.querySelector('.stcm-af-url').value);
+    const key = box.querySelector('.stcm-af-key').value.trim();
+    const model = box.querySelector('.stcm-af-model').value.trim();
+    const name = box.querySelector('.stcm-af-name').value.trim() || apiHost(url) || 'API';
+    return { id: box.dataset.id || '', name: name.slice(0, 40), kind: API_KINDS[kind] ? kind : 'openai', url, key, model };
+}
+
+function setNote(el, text, ok = null) {
+    if (!el || !document.body.contains(el)) { if (text && ok !== null) (ok ? toastr.success : toastr.error)(esc(text)); return; }
+    el.className = el.className.replace(/\s*\b(ok|bad)\b/g, '');
+    if (ok === true) el.classList.add('ok');
+    if (ok === false) el.classList.add('bad');
+    el.textContent = text;
+}
+
+/** Click actions inside the API view. Returns true when handled. */
+async function onApiClick(act, el) {
     const s = getSettings();
-    const box = e.target.closest('.stcm-api-view');
-    if (!box) return false;
-    if (e.target.classList.contains('stcm-api-profile')) {
-        s.profileId = e.target.value;
+    if (act === 'api-test') { await testApi(el); return true; }
+    if (act === 'api-add') { apiEdit = { id: '' }; apiModelCache.delete('form'); showApi({ keepScroll: true }); el.closest('#stcm_feed')?.querySelector('.stcm-af-name')?.focus(); return true; }
+    if (act === 'api-edit') { apiEdit = { id: el.dataset.api }; showApi({ keepScroll: true }); return true; }
+    if (act === 'af-cancel') { apiEdit = null; showApi({ keepScroll: true }); return true; }
+    if (act === 'api-use') { setConnection(`api:${el.dataset.api}`); showApi({ keepScroll: true }); return true; }
+    if (act === 'api-del') {
+        const a = customApis().find(x => x.id === el.dataset.api);
+        if (!a) return true;
+        const { Popup, POPUP_RESULT } = ctx();
+        const ok = Popup?.show?.confirm
+            ? (await Popup.show.confirm('API 삭제', `"${esc(a.name)}"을(를) 지울까요? 저장된 키도 함께 지워져요.`)) === POPUP_RESULT.AFFIRMATIVE
+            : confirm('지울까요?');
+        if (!ok) return true;
+        s.customApis = s.customApis.filter(x => x.id !== a.id);
+        apiModelCache.delete(`api:${a.id}`);
+        if (s.profileId === `api:${a.id}`) s.profileId = '';
+        if (apiEdit?.id === a.id) apiEdit = null;
         saveSettings();
-        const p = connectionProfiles().find(x => x.id === s.profileId) ?? null;
-        box.querySelector('.stcm-api-info').textContent = profileSummary(p);
-        const setSel = document.getElementById('stcm_set_profile');
-        if (setSel) setSel.value = s.profileId;
-        toastr.info(p ? `연결 프로필: ${esc(p.name || p.id)}` : '메인 API를 써요.', '', { timeOut: 1500 });
+        refreshConnSelectors();
+        showApi({ keepScroll: true });
         return true;
     }
-    if (e.target.classList.contains('stcm-api-tokens')) {
-        const v = Number(e.target.value);
-        if (e.target.value === '' || !Number.isFinite(v)) return true;
+    if (act === 'af-eye') {
+        const k = el.closest('.stcm-api-form')?.querySelector('.stcm-af-key');
+        if (k) k.type = k.type === 'password' ? 'text' : 'password';
+        return true;
+    }
+    if (act === 'af-models' || act === 'af-test' || act === 'af-save') {
+        const box = el.closest('.stcm-api-form');
+        const note = box.querySelector('.stcm-af-result');
+        const f = readApiForm(box);
+        if (!validApiUrl(f.url)) { setNote(note, '주소를 http:// 또는 https:// 로 시작하게 적어 주세요.', false); return true; }
+        if (act === 'af-models') {
+            el.disabled = true;
+            setNote(note, '목록 불러오는 중…');
+            try {
+                const ids = await listApiModels(f);
+                apiModelCache.set(f.id ? `api:${f.id}` : 'form', ids);
+                const dl = document.getElementById('stcm_af_models');
+                if (dl) dl.innerHTML = ids.map(m => `<option value="${esc(m)}"></option>`).join('');
+                setNote(note, ids.length ? `모델 ${ids.length}개 — 모델 칸을 눌러 고르세요.` : '목록이 비어 있어요. 모델 이름을 직접 적어 주세요.', ids.length > 0);
+            } catch (e) {
+                setNote(note, `목록을 못 불러왔어요: ${truncate(String(e?.message ?? e), 120)} (모델 이름은 직접 적어도 돼요)`, false);
+            } finally { el.disabled = false; }
+            return true;
+        }
+        if (!f.model) { setNote(note, '모델 이름을 적어 주세요.', false); return true; }
+        if (act === 'af-test') {
+            el.disabled = true;
+            setNote(note, '확인 중…');
+            try {
+                const reply = await callCustomApi({ ...f, name: f.name }, 'This is a connection test.', 'Reply with exactly: OK');
+                setNote(note, reply.trim() ? `응답 받음: ${truncate(reply.trim(), 40)}` : '빈 응답이 왔어요.', !!reply.trim());
+            } catch (e) {
+                setNote(note, `실패: ${truncate(String(e?.message ?? e), 160)}`, false);
+            } finally { el.disabled = false; }
+            return true;
+        }
+        // save
+        const isNew = !f.id;
+        const entry = { id: f.id || (ctx().uuidv4 ? ctx().uuidv4() : `${Date.now().toString(36)}${randomId(6)}`), name: f.name, kind: f.kind, url: f.url, key: f.key, model: f.model };
+        if (isNew) {
+            s.customApis.push(entry);
+            if (apiModelCache.has('form')) apiModelCache.set(`api:${entry.id}`, apiModelCache.get('form'));
+            s.profileId = `api:${entry.id}`;   // a new API is usually added to be used
+        } else {
+            const i = s.customApis.findIndex(x => x.id === f.id);
+            if (i >= 0) s.customApis[i] = entry; else s.customApis.push(entry);
+        }
+        apiModelCache.delete('form');
+        apiEdit = null;
+        saveSettings();
+        refreshConnSelectors();
+        showApi({ keepScroll: true });
+        toastr.success(isNew ? `"${esc(entry.name)}" 추가 — 지금부터 이 API로 생성해요.` : `"${esc(entry.name)}" 저장했어요.`);
+        return true;
+    }
+    if (act === 'api-models') {
+        const conn = resolveConnection();
+        const box = el.closest('.stcm-api-view');
+        const note = box.querySelector('.stcm-api-result');
+        el.disabled = true;
+        setNote(note, '목록 불러오는 중…');
+        try {
+            let ids; let key;
+            if (conn.type === 'api' && conn.api) { ids = await listApiModels(conn.api); key = `api:${conn.api.id}`; }
+            else if (conn.type === 'profile' && conn.profile) { ids = await listProfileModels(conn.profile); key = `p:${conn.profile.id}`; }
+            else return true;
+            apiModelCache.set(key, ids);
+            const dl = document.getElementById('stcm_api_models');
+            if (dl) dl.innerHTML = ids.map(m => `<option value="${esc(m)}"></option>`).join('');
+            setNote(note, ids.length ? `모델 ${ids.length}개 — 모델 칸을 눌러 고르세요.` : '목록이 비어 있어요. 모델 이름을 직접 적어 주세요.', ids.length > 0);
+        } catch (e) {
+            setNote(note, `목록을 못 불러왔어요: ${truncate(String(e?.message ?? e), 120)}`, false);
+        } finally { el.disabled = false; }
+        return true;
+    }
+    return false;
+}
+
+/** change / input inside the API view. Returns true when handled. */
+function onApiChange(e) {
+    const t = e.target;
+    const box = t.closest?.('.stcm-api-view');
+    if (!box) return false;
+    const s = getSettings();
+    if (t.classList.contains('stcm-api-conn')) {
+        if (e.type !== 'change') return true;
+        setConnection(t.value);
+        showApi({ keepScroll: true });
+        const conn = resolveConnection();
+        const name = conn.type === 'api' ? conn.api?.name : conn.type === 'profile' ? (conn.profile?.name || conn.profile?.id) : null;
+        toastr.info(name ? `연결: ${esc(name)}` : '메인 API를 써요.', '', { timeOut: 1500 });
+        return true;
+    }
+    if (t.classList.contains('stcm-api-model')) {
+        const conn = resolveConnection();
+        const v = t.value.trim().slice(0, 200);
+        if (conn.type === 'profile' && conn.profile) {
+            if (v) s.modelOverrides[conn.profile.id] = v; else delete s.modelOverrides[conn.profile.id];
+        } else if (conn.type === 'api' && conn.api) {
+            conn.api.model = v;
+        } else return true;
+        saveSettings();
+        box.querySelector('.stcm-api-info').textContent = connectionSummary(conn);
+        return true;
+    }
+    if (t.classList.contains('stcm-api-tokens')) {
+        const v = Number(t.value);
+        if (t.value === '' || !Number.isFinite(v)) return true;
         s.maxTokens = Math.min(32000, Math.max(500, Math.round(v)));
-        if (e.type === 'change') e.target.value = s.maxTokens;
+        if (e.type === 'change') t.value = s.maxTokens;
         saveSettings();
         const setTok = document.getElementById('stcm_set_tokens');
         if (setTok) setTok.value = s.maxTokens;
         return true;
     }
-    return false;
+    if (t.classList.contains('stcm-af-kind')) {
+        const k = API_KINDS[t.value] ?? API_KINDS.openai;
+        const form = t.closest('.stcm-api-form');
+        form.querySelector('.stcm-af-kindhint').textContent = k.hint;
+        form.querySelector('.stcm-af-url').placeholder = k.example;
+        return true;
+    }
+    return t.closest('.stcm-api-form') ? true : false;
 }
 
 async function testApi(btn) {
@@ -3915,7 +4423,7 @@ async function testApi(btn) {
     apiTesting = true;
     btn.disabled = true;
     const out = btn.closest('.stcm-api-view')?.querySelector('.stcm-api-result');
-    if (out) { out.className = 'stcm-api-result'; out.textContent = '확인 중…'; }
+    setNote(out, '확인 중…');
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), 60000);
     let ok = false;
@@ -3925,14 +4433,13 @@ async function testApi(btn) {
         ok = !!String(reply ?? '').trim();
         msg = ok ? `응답 받음: ${truncate(String(reply).trim(), 40)}` : '빈 응답이 왔어요. 모델이나 토큰 설정을 확인해 주세요.';
     } catch (e) {
-        msg = e?.name === 'AbortError' ? '응답이 너무 늦어요 (60초 넘음).' : `실패: ${truncate(String(e?.message ?? e), 120)}`;
+        msg = e?.name === 'AbortError' ? '응답이 너무 늦어요 (60초 넘음).' : `실패: ${truncate(String(e?.message ?? e), 160)}`;
     } finally {
         clearTimeout(timer);
         apiTesting = false;
         btn.disabled = false;
     }
-    if (out && document.body.contains(out)) { out.classList.add(ok ? 'ok' : 'bad'); out.textContent = msg; }
-    else (ok ? toastr.success : toastr.error)(esc(msg));
+    setNote(out, msg, ok);
 }
 
 function showPins() {
@@ -4069,7 +4576,7 @@ function addSettingsPanel() {
             <option value="dark">나이트</option>
           </select>
 
-          <label>생성에 쓸 연결 프로필 <small>(비우면 지금 메인 API 사용)</small></label>
+          <label>생성에 쓸 연결 <small>(메인 API · 실리태번 연결 프로필 · 직접 추가한 API — 모델 지정과 API 추가는 커뮤니티 창의 🔌 API 설정에서)</small></label>
           <select id="stcm_set_profile" class="text_pole"></select>
 
           <label>생성 언어</label>
@@ -4267,22 +4774,10 @@ function addSettingsPanel() {
     });
     load();
 
-    // Connection profile dropdown
-    const svc = ctx().ConnectionManagerRequestService;
+    // Connection dropdown (ST profiles + APIs added in the panel)
     const sel = document.getElementById('stcm_set_profile');
-    try {
-        if (!svc) throw new Error('no service');
-        svc.handleDropdown('#stcm_set_profile', s.profileId, (profile) => {
-            s.profileId = profile?.id ?? '';
-            saveSettings();
-        });
-        const first = sel.querySelector('option[value=""]');
-        if (first) { first.textContent = '(메인 API 사용)'; delete first.dataset.i18n; }
-    } catch (e) {
-        // keep the saved choice (it comes back when the extension is turned on again)
-        sel.innerHTML = '<option value="">(Connection Manager 꺼짐 — 메인 API 사용)</option>';
-        sel.disabled = true;
-    }
+    sel.innerHTML = connOptionsHtml();
+    sel.addEventListener('change', () => setConnection(sel.value));
 }
 
 // ---------------------------------------------------------------------------
@@ -4495,7 +4990,7 @@ function registerCommands() {
     });
     eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
     for (const k of ['CONNECTION_PROFILE_CREATED', 'CONNECTION_PROFILE_UPDATED', 'CONNECTION_PROFILE_DELETED']) {
-        if (event_types[k]) eventSource.on(event_types[k], () => { if (view === 'api' && isOpen() && !apiTesting) showApi(); });
+        if (event_types[k]) eventSource.on(event_types[k], () => refreshConnSelectors());
     }
     if (event_types.CHAT_DELETED) eventSource.on(event_types.CHAT_DELETED, onChatDeleted);
     if (event_types.GROUP_CHAT_DELETED) eventSource.on(event_types.GROUP_CHAT_DELETED, onChatDeleted);
