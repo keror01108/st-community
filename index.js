@@ -1538,15 +1538,33 @@ async function deletePlayerItem(feedId, postIdx, ci, ri) {
         store.pins = store.pins
             .filter(p => !(p.feedId === feedId && p.postIdx === postIdx))
             .map(p => (p.feedId === feedId && p.postIdx > postIdx) ? { ...p, postIdx: p.postIdx - 1 } : p);
+        // view state keyed by post index (Discord pane, 투디갤 expanded rows)
+        const sel = dsSel.get(feedId);
+        if (Number.isInteger(sel) && sel >= postIdx) dsSel.set(feedId, Math.max(0, sel - (sel > postIdx ? 1 : 0)));
+        for (const key of [...tdOpen]) {
+            const [fid, n] = [key.slice(0, key.lastIndexOf(':')), Number(key.slice(key.lastIndexOf(':') + 1))];
+            if (fid !== feedId || n < postIdx) continue;
+            tdOpen.delete(key);
+            if (n > postIdx) tdOpen.add(`${fid}:${n - 1}`);
+        }
         refreshInjection();
     } else if (ri == null) {
         post.comments.splice(ci, 1);
+        // Discord replies point at comments by index: drop / shift them
+        for (const c of post.comments) {
+            if (c.ref == null) continue;
+            if (c.ref === ci) delete c.ref;
+            else if (c.ref > ci) c.ref -= 1;
+        }
     } else {
         post.comments[ci]?.replies.splice(ri, 1);
     }
     await saveChatStore();
     if (ci == null) showFeed(feedId, { keepScroll: true });
-    else updatePost(feedId, postIdx);
+    else {
+        updatePost(feedId, postIdx);
+        if (isPinned(feedId, postIdx)) refreshInjection();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2106,9 +2124,10 @@ const renderers = {
         const who = (o) => `<b>${esc(o.author || 'ㅇㅇ')}</b>${o.handle ? `<small class="stcm-td-code">${esc(o.handle)}</small>` : ''}${meBadge(o)}`;
         const catList = TD_CATS.map(c => `<button class="stcm-td-catitem ${c === st.cat ? 'active' : ''}" data-act="td-cat" data-feed="${fid}" data-cat="${esc(c)}"><span class="ico">${TD_ICONS[c] ?? '•'}</span><span>${c === '전체' ? '전체 글' : esc(c)}</span>${c !== '전체' && counts[c] ? `<small>${counts[c]}</small>` : ''}${c === '전체' ? '<i class="fa-solid fa-chevron-right"></i>' : ''}</button>`).join('');
         const chips = TD_CATS.map(c => `<button class="stcm-td-chip ${c === st.cat ? 'active' : ''}" data-act="td-cat" data-feed="${fid}" data-cat="${esc(c)}"><span class="ico">${TD_ICONS[c] ?? '•'}</span>${esc(c)}</button>`).join('');
+        const anyVisible = items.some(({ p }) => tdVisible(feed, p));
         const rows = order.map(({ p, i }) => {
             const cat = tdCatOf(p);
-            const n = p.comments.reduce((a, c) => a + 1 + c.replies.length, 0);
+            const n = tdCount(p);
             const open = tdOpen.has(`${feed.id}:${i}`) || (composer && composer.feedId === feed.id && composer.postIdx === i);
             return `<article class="stcm-td-post ${open ? 'open' : ''} ${tdVisible(feed, p) ? '' : 'stcm-hide'}" data-post="${i}">
                 <div class="stcm-td-row" data-act="td-toggle" data-feed="${fid}" data-idx="${i}">
@@ -2143,7 +2162,7 @@ const renderers = {
         const bestPost = best[bi];
         const banner = best.length ? `<div class="stcm-td-best">
                 <span class="lbl"><i class="fa-solid fa-star"></i> 개념글</span>
-                <a class="tt" data-act="td-open" data-feed="${fid}" data-idx="${bestPost.i}">${esc(bestPost.p.title || truncate(bestPost.p.body, 40))}${bestPost.p.comments.length ? ` <em>[${bestPost.p.comments.length}]</em>` : ''}</a>
+                <a class="tt" data-act="td-open" data-feed="${fid}" data-idx="${bestPost.i}">${esc(bestPost.p.title || truncate(bestPost.p.body, 40))}${tdCount(bestPost.p) ? ` <em>[${tdCount(bestPost.p)}]</em>` : ''}</a>
                 <span class="pager"><button data-act="td-best" data-feed="${fid}" data-dir="-1" aria-label="이전"><i class="fa-solid fa-chevron-left"></i></button>${bi + 1}/${best.length}<button data-act="td-best" data-feed="${fid}" data-dir="1" aria-label="다음"><i class="fa-solid fa-chevron-right"></i></button></span>
             </div>` : '';
         return `<div class="stcm-skin stcm-tdgall">
@@ -2169,7 +2188,7 @@ const renderers = {
                         </div>
                         <div class="stcm-td-head"><span class="no">번호</span><span class="cat">카테고리</span><span class="tt">제목</span><span class="au">글쓴이</span><span class="tm">날짜</span><span class="vw">조회</span><span class="rc">추천</span></div>
                         ${rows || '<div class="stcm-empty">글이 없어요.</div>'}
-                        <div class="stcm-td-none stcm-hide">조건에 맞는 글이 없어요.</div>
+                        <div class="stcm-td-none ${anyVisible || !items.length ? 'stcm-hide' : ''}">조건에 맞는 글이 없어요.</div>
                     </div>
                 </div>
             </div>
@@ -2211,7 +2230,6 @@ const renderers = {
 // Discord: selected channel / DM per feed, DM helpers
 // ---------------------------------------------------------------------------
 const dsSel = new Map();       // feedId → index of the channel / DM shown
-const tdCat = new Map();       // feedId → 투디갤 board tab
 const tdOpen = new Set();      // `${feedId}:${idx}` posts expanded in the 투디갤 list
 const TD_CATS = ['전체', '투디', '웹툰', '소설', '게임', 'AI', '괴담', '남극'];
 
@@ -2219,7 +2237,7 @@ const TD_ICONS = { '전체': '📌', '투디': '💬', '웹툰': '📺', '소설
 const tdStates = new Map();   // feedId → { cat, sort, q, filter, best }
 
 function tdState(feedId) {
-    if (!tdStates.has(feedId)) tdStates.set(feedId, { cat: tdCat.get(feedId) ?? '전체', sort: 'latest', q: '', filter: 'all', best: 0 });
+    if (!tdStates.has(feedId)) tdStates.set(feedId, { cat: '전체', sort: 'latest', q: '', filter: 'all', best: 0 });
     return tdStates.get(feedId);
 }
 
@@ -2268,6 +2286,10 @@ function tdApply(feedId) {
     skin.querySelectorAll('[data-act="td-filter"]').forEach(b => b.classList.toggle('active', b.dataset.filter === st.filter));
 }
 
+function tdCount(p) {
+    return p.comments.reduce((a, c) => a + 1 + c.replies.length, 0);
+}
+
 function tdCatOf(p) {
     const t = String(p?.tags?.[0] ?? '').replace(/(갤러리|갤|게시판)$/, '').trim();
     const hit = TD_CATS.find(c => c !== '전체' && c.toLowerCase() === t.toLowerCase());
@@ -2303,7 +2325,7 @@ function dmSideEn(side) {
 }
 
 function dmPartnerLabel(p) {
-    return dmSideName(p.dm?.partner) || p.title || 'DM';
+    return p.dm?.partner ? dmSideName(p.dm.partner) : (p.title || 'DM');
 }
 
 function dmSubtitle(p) {
@@ -2342,14 +2364,14 @@ function dmCandidateNames(feed) {
     return [...names].slice(0, 60);
 }
 
-let dmDraft = null;   // { feedId, to }
+let dmDraft = null;   // { feedId }
 
 function showDmCompose(feedId, toName = '') {
     const feed = getFeed(feedId);
     if (!feed) return;
     leaveFeed();
     view = 'dm-new';
-    dmDraft = { feedId, to: toName };
+    dmDraft = { feedId };
     const names = dmCandidateNames(feed);
     const isChar = toName && characterNames().includes(toName);
     const bar = document.getElementById('stcm_feedbar');
@@ -2405,6 +2427,7 @@ async function createDm(box) {
     if (!checkIdentity(me)) return;
     const partner = readDmTarget(box);
     if (partner.as !== 'user' && !partner.name) { toastr.warning('받는 사람 이름을 적어 주세요.'); return; }
+    if (partner.as === me.as && (me.as === 'user' || (me.as === 'char' && partner.charName === me.charName))) { toastr.warning('자기 자신에게는 DM을 보낼 수 없어요.'); return; }
     const body = box.querySelector('.stcm-cp-body').value.trim();
     const react = box.querySelector('.stcm-cp-react').checked;
     if (!body && !react) { toastr.warning('첫 메시지를 쓰거나 "상대가 먼저 말 걸기"를 켜 주세요.'); return; }
@@ -3033,7 +3056,7 @@ async function onFeedClick(e) {
     }
     if (act === 'td-cat' || act === 'td-filter') {
         const st = tdState(feedId);
-        if (act === 'td-cat') { st.cat = el.dataset.cat; tdCat.set(feedId, st.cat); }
+        if (act === 'td-cat') st.cat = el.dataset.cat;
         else st.filter = el.dataset.filter;
         tdApply(feedId);
         return;
