@@ -1290,7 +1290,7 @@ async function generateMorePosts(feedId, topic = '') {
         feed.data.posts.push(...data.posts);
         if (!feed.data.board && data.board) feed.data.board = data.board;
         await saveChatStore();
-        showFeed(feed.id, { keepScroll: true });
+        if (isOpen() && view === 'feed' && currentFeedId === feed.id) showFeed(feed.id, { keepScroll: true });
         toastr.success(`글 ${data.posts.length}개가 아래에 추가됐어요.`, '', { timeOut: 1500 });
         return feed;
     });
@@ -1394,7 +1394,8 @@ async function generateMoreComments(feedId, postIdx, { playerJustPosted = false,
         postRef.autoAt = Date.now();
         if (background && !isOpen()) { const st = getChatStore(); st.unread = (st.unread || 0) + 1; updateBadge(); }
         await saveChatStore();
-        if (!background || (isOpen() && view === 'feed' && currentFeedId === feed.id)) updatePost(feed.id, postIdx);
+        updatePost(feed.id, postIdx);
+        if (isPinned(feed.id, postIdx)) refreshInjection();   // pinned text includes the newest replies
         return feed;
     });
 }
@@ -1470,6 +1471,7 @@ async function submitPlayerComment({ feedId, postIdx, replyTo, body, identity, r
     composer = null;
     await saveChatStore();
     updatePost(feed.id, postIdx);
+    if (isPinned(feed.id, postIdx)) refreshInjection();
     if (react) await generateMoreComments(feed.id, postIdx, { playerJustPosted: true });
 }
 
@@ -2982,10 +2984,14 @@ function captureDraft() {
 function updatePost(feedId, idx, opts = {}) {
     const feedEl = document.getElementById('stcm_feed');
     const feed = getFeed(feedId);
-    if (!feedEl || !feed || view !== 'feed' || currentFeedId !== feedId) {
-        showFeed(feedId, { keepScroll: true, focusComposer: opts.focusComposer });
-        return;
-    }
+    if (!feedEl || !feed || !isOpen()) return;
+    // The user is looking at something else (history, another feed, compose…): the data is saved,
+    // it shows up when they come back. Never switch their view from under them.
+    if (view !== 'feed' || currentFeedId !== feedId) return;
+    const active = document.activeElement;
+    const typing = active && feedEl.contains(active) && active.matches('.stcm-composer textarea, .stcm-composer input')
+        ? { cls: active.classList.contains('stcm-cp-body') ? '.stcm-cp-body' : (active.classList.contains('stcm-cp-inst') ? '.stcm-cp-inst' : null), start: active.selectionStart, end: active.selectionEnd }
+        : null;
     captureDraft();
     const tpl = document.createElement('template');
     tpl.innerHTML = (renderers[feed.platform] ?? renderers.naver)(feed);
@@ -3003,6 +3009,13 @@ function updatePost(feedId, idx, opts = {}) {
     restoreAnchor(feedEl, anchor);
     updatePinCount();
     if (opts.focusComposer) focusComposer();
+    else if (typing?.cls) {
+        const el = feedEl.querySelector(`.stcm-composer ${typing.cls}`);
+        if (el) {
+            try { el.focus({ preventScroll: true }); } catch { el.focus(); }
+            try { el.setSelectionRange(typing.start ?? el.value.length, typing.end ?? el.value.length); } catch { /* ignore */ }
+        }
+    }
 }
 
 function updatePinCount() {
@@ -3544,10 +3557,14 @@ function addSettingsPanel() {
 // ---------------------------------------------------------------------------
 // Background jobs run one after another and wait for any manual generation to finish
 let autoChain = Promise.resolve();
+const autoPending = new Set();   // kinds already waiting in the chain
 
-function queueAuto(job) {
+function queueAuto(kind, job) {
+    if (autoPending.has(kind)) return autoChain;   // one waiting job per kind is enough
+    autoPending.add(kind);
     const chatId = ctx().getCurrentChatId?.();
     autoChain = autoChain.then(async () => {
+        autoPending.delete(kind);
         for (let waited = 0; busy && waited < 180000; waited += 500) await new Promise(r => setTimeout(r, 500));
         if (busy || ctx().getCurrentChatId?.() !== chatId) return;   // still busy or chat changed: skip this round
         try { await job(); } catch (e) { console.error(`[${MODULE}] auto job failed`, e); }
@@ -3567,7 +3584,8 @@ function watchedPosts() {
 async function onMessageReceived(messageId, type) {
     const s = getSettings();
     if ((!s.autoEnabled && !s.autoReplyEnabled) || !hasChat()) return;
-    if (['quiet', 'impersonate', 'swipe', 'continue'].includes(type)) return;
+    // regenerate / swipe replace the last reply; first_message is the greeting → not a new turn
+    if (['quiet', 'impersonate', 'swipe', 'continue', 'regenerate', 'first_message'].includes(type)) return;
     const msg = ctx().chat?.[messageId];
     if (!msg || msg.is_user || msg.is_system) return;
 
@@ -3587,7 +3605,7 @@ async function onMessageReceived(messageId, type) {
 
     if (runReplies) {
         // watched posts first, so a full thread gets its follow-up before brand-new threads
-        queueAuto(async () => {
+        queueAuto('replies', async () => {
             if (!(await ensureFeedsReady())) return;
             const max = Math.max(1, Math.min(10, Number(s.autoReplyMax) || 2));
             for (const { feed, post } of watchedPosts().slice(0, max)) {
@@ -3605,7 +3623,7 @@ async function onMessageReceived(messageId, type) {
             platformId = store.lastPlatform ?? s.defaultPlatform;
         }
         const mode = store.lastMode ?? s.defaultMode;
-        queueAuto(async () => {
+        queueAuto('new', async () => {
             const feed = await generateFeed({ mode, platformId, background: true });
             if (feed && s.autoWatchNew) {
                 for (const p of feed.data.posts) p.watch = true;
