@@ -1028,6 +1028,10 @@ async function callModel(system, user, signal) {
     const svc = c.ConnectionManagerRequestService;
 
     if (s.profileId && svc) {
+        if (!connectionManagerOn()) throw new Error('Connection Manager 확장이 꺼져 있어요. 커뮤니티 창의 API 설정에서 "메인 API 사용"을 고르거나, 확장을 다시 켜 주세요.');
+        if (!(c.extensionSettings?.connectionManager?.profiles ?? []).some(p => p?.id === s.profileId)) {
+            throw new Error('골라 둔 연결 프로필이 없어졌어요. 커뮤니티 창의 API 설정에서 다시 골라 주세요.');
+        }
         const messages = [
             { role: 'system', content: system },
             { role: 'user', content: user },
@@ -2632,6 +2636,7 @@ async function setBookPicks(book, uids) {
 }
 
 async function onFeedChange(e) {
+    if (onApiChange(e)) return;
     const t = e.target;
     if (t.classList.contains('stcm-cp-as')) {
         const row = t.closest('.stcm-cp-row');
@@ -2714,7 +2719,7 @@ async function onWorldInfoClick(el) {
 // ---------------------------------------------------------------------------
 let currentFeedId = null;
 const feedScroll = new Map();   // feedId → scrollTop, restored when coming back
-let view = 'feed';   // feed | history | pins | compose | wi | topics
+let view = 'feed';   // feed | history | pins | compose | wi | topics | api
 let selMode = 'meta';
 let selPlatform = 'naver';
 
@@ -2780,6 +2785,7 @@ function buildOverlay() {
           <div class="stcm-hbtns">
             <button id="stcm_btn_write" title="글쓰기"><i class="fa-solid fa-pen"></i></button>
             <button id="stcm_btn_fold" title="위쪽 메뉴 접기/펴기"><i class="fa-solid fa-chevron-up"></i></button>
+            <button id="stcm_btn_api" title="API 설정 (연결 프로필)"><i class="fa-solid fa-plug"></i></button>
             <button id="stcm_btn_theme" title="화면 테마"><i class="fa-solid fa-circle-half-stroke"></i></button>
             <button id="stcm_btn_wi" title="참고할 월드 인포"><i class="fa-solid fa-book-atlas"></i></button>
             <button id="stcm_btn_history" title="지난 피드"><i class="fa-solid fa-clock-rotate-left"></i></button>
@@ -2835,6 +2841,7 @@ function buildOverlay() {
         toastr.info(`화면: ${THEMES[s.theme].label}`, '', { timeOut: 1200 });
     });
     document.getElementById('stcm_btn_wi').addEventListener('click', () => { wiFilter = ''; showWorldInfo(); });
+    document.getElementById('stcm_btn_api').addEventListener('click', showApi);
     document.getElementById('stcm_btn_write').addEventListener('click', showCompose);
     document.getElementById('stcm_btn_stop').addEventListener('click', () => abortCtl?.abort());
     document.getElementById('stcm_btn_gen').addEventListener('click', () => {
@@ -2875,6 +2882,7 @@ function buildOverlay() {
     document.getElementById('stcm_feed').addEventListener('click', onFeedClick);
     document.getElementById('stcm_feed').addEventListener('change', onFeedChange);
     document.getElementById('stcm_feed').addEventListener('input', (e) => {
+        if (e.target.classList?.contains('stcm-api-tokens')) { onApiChange(e); return; }
         if (!e.target.classList?.contains('stcm-td-q')) return;
         tdState(e.target.dataset.feed).q = e.target.value;
         tdApply(e.target.dataset.feed);
@@ -2885,7 +2893,8 @@ function buildOverlay() {
         await readImportFile(f);
     });
     document.getElementById('stcm_errbox').addEventListener('click', (e) => {
-        if (e.target.closest('[data-act="err-close"]')) document.getElementById('stcm_errbox').classList.remove('show');
+        if (e.target.closest('[data-act="err-close"], [data-act="err-api"]')) document.getElementById('stcm_errbox').classList.remove('show');
+        if (e.target.closest('[data-act="err-api"]')) showApi();
     });
     document.getElementById('stcm_topics').addEventListener('click', (e) => {
         const b = e.target.closest('button');
@@ -3047,6 +3056,7 @@ async function onFeedClick(e) {
         if (out && document.body.contains(bodyEl)) bodyEl.value = out.body;
         return;
     }
+    if (act === 'api-test') { await testApi(el); return; }
     if (act === 'td-toggle') {
         const key = `${feedId}:${idx}`;
         const art = el.closest('.stcm-td-post');
@@ -3418,7 +3428,9 @@ function showError(msg, raw) {
     const feedEl = document.getElementById('stcm_feed');
     const box = `<div class="stcm-empty error"><i class="fa-solid fa-triangle-exclamation"></i> ${esc(msg)}
         ${raw ? `<details><summary>원본 응답 보기</summary><pre>${esc(String(raw).slice(0, 8000))}</pre></details>` : ''}
-        <p>최대 토큰을 늘리거나, 글/댓글 수를 줄이거나, 다른 연결 프로필을 써 보세요.</p></div>`;
+        ${raw
+            ? '<p>최대 토큰을 늘리거나, 글/댓글 수를 줄이거나, 다른 연결 프로필을 써 보세요.</p>'
+            : '<p><button class="stcm-link" data-act="err-api"><i class="fa-solid fa-plug"></i> API 설정 열기</button> — 연결 프로필과 연결 테스트를 확인해 보세요.</p>'}</div>`;
     // Show over the feed without moving it
     const eb = document.getElementById('stcm_errbox');
     if (!eb) { feedEl.insertAdjacentHTML('afterbegin', box); return; }
@@ -3808,6 +3820,121 @@ async function applyImport(mode, withPins) {
     showHistory();
 }
 
+// ---------------------------------------------------------------------------
+// API view: pick the connection profile from inside the panel
+// ---------------------------------------------------------------------------
+/** Is the Connection Manager extension usable? (the service class exists even when the extension is off) */
+function connectionManagerOn() {
+    const c = ctx();
+    if (!c.ConnectionManagerRequestService) return false;
+    return !(c.extensionSettings?.disabledExtensions ?? []).includes('connection-manager');
+}
+
+/** Profiles the request service can actually use (Chat / Text Completion), sorted by name. */
+function connectionProfiles() {
+    if (!connectionManagerOn()) return [];
+    const svc = ctx().ConnectionManagerRequestService;
+    const all = ctx().extensionSettings?.connectionManager?.profiles ?? [];
+    const ok = (p) => {
+        try { return typeof svc.isProfileSupported === 'function' ? !!svc.isProfileSupported(p) : !!p?.api; }
+        catch { return false; }   // unknown API type
+    };
+    return all.filter(p => p?.id && ok(p)).sort((a, b) => String(a.name ?? '').localeCompare(String(b.name ?? '')));
+}
+
+function profileSummary(p) {
+    if (!p) return '지금 실리태번에 연결된 API와 모델을 그대로 써요.';
+    const bits = [p.api && `API: ${p.api}`, p.model && `모델: ${p.model}`, p.preset && `프리셋: ${p.preset}`].filter(Boolean);
+    return bits.length ? bits.join(' · ') : '프로필 정보 없음';
+}
+
+let apiTesting = false;
+
+function showApi() {
+    leaveFeed();
+    view = 'api';
+    const s = getSettings();
+    const svc = connectionManagerOn();
+    const profiles = connectionProfiles();
+    const current = profiles.find(p => p.id === s.profileId) ?? null;
+    const missing = !!s.profileId && !current;
+    const bar = document.getElementById('stcm_feedbar');
+    const el = document.getElementById('stcm_feed');
+    bar.innerHTML = `<button id="stcm_back"><i class="fa-solid fa-arrow-left"></i> 돌아가기</button><span class="stcm-fb-info">API 설정</span>`;
+    syncSelectors();
+    el.innerHTML = `<div class="stcm-compose-view stcm-api-view">
+        <label class="stcm-cp-check">커뮤니티 생성에 쓸 연결 프로필</label>
+        <select class="stcm-api-profile">
+            <option value="">(메인 API 사용)</option>
+            ${missing ? `<option value="${esc(s.profileId)}" selected>${svc ? '(지워진 프로필 — 다시 골라 주세요)' : '(Connection Manager 꺼짐 — 생성 불가)'}</option>` : ''}
+            ${profiles.map(p => `<option value="${esc(p.id)}" ${p.id === s.profileId ? 'selected' : ''}>${esc(p.name || p.id)}</option>`).join('')}
+        </select>
+        <p class="stcm-cp-hint stcm-api-info">${esc(!missing ? profileSummary(current) : svc ? '고른 프로필이 없어졌어요. 이대로면 생성이 실패하니 다른 프로필을 골라 주세요.' : '프로필을 쓰려면 Connection Manager 확장을 켜 주세요. 지금은 "메인 API 사용"을 골라야 생성할 수 있어요.')}</p>
+        ${svc ? '' : '<p class="stcm-cp-hint">Connection Manager 확장이 꺼져 있어서 메인 API만 쓸 수 있어요.</p>'}
+        ${svc && !profiles.length ? '<p class="stcm-cp-hint">저장된 연결 프로필이 없어요. 실리태번 상단 API 연결 화면의 "연결 프로필"에서 먼저 만들어 주세요.</p>' : ''}
+        <label class="stcm-cp-check">최대 응답 토큰</label>
+        <input class="stcm-api-tokens" type="number" min="500" max="32000" step="100" value="${Number(s.maxTokens) || 4000}">
+        <p class="stcm-cp-hint">글이 중간에 끊기면 늘려 주세요. 본 채팅의 API 연결은 바뀌지 않고, 여기서 고른 프로필은 커뮤니티 생성에만 쓰여요.</p>
+        <div class="stcm-cp-foot">
+            <span class="stcm-api-result"></span>
+            <button data-act="api-test" ${apiTesting ? 'disabled' : ''}><i class="fa-solid fa-plug-circle-check"></i> 연결 테스트</button>
+        </div>
+    </div>`;
+    el.scrollTop = 0;
+}
+
+function onApiChange(e) {
+    const s = getSettings();
+    const box = e.target.closest('.stcm-api-view');
+    if (!box) return false;
+    if (e.target.classList.contains('stcm-api-profile')) {
+        s.profileId = e.target.value;
+        saveSettings();
+        const p = connectionProfiles().find(x => x.id === s.profileId) ?? null;
+        box.querySelector('.stcm-api-info').textContent = profileSummary(p);
+        const setSel = document.getElementById('stcm_set_profile');
+        if (setSel) setSel.value = s.profileId;
+        toastr.info(p ? `연결 프로필: ${esc(p.name || p.id)}` : '메인 API를 써요.', '', { timeOut: 1500 });
+        return true;
+    }
+    if (e.target.classList.contains('stcm-api-tokens')) {
+        const v = Number(e.target.value);
+        if (e.target.value === '' || !Number.isFinite(v)) return true;
+        s.maxTokens = Math.min(32000, Math.max(500, Math.round(v)));
+        if (e.type === 'change') e.target.value = s.maxTokens;
+        saveSettings();
+        const setTok = document.getElementById('stcm_set_tokens');
+        if (setTok) setTok.value = s.maxTokens;
+        return true;
+    }
+    return false;
+}
+
+async function testApi(btn) {
+    if (apiTesting) return;
+    apiTesting = true;
+    btn.disabled = true;
+    const out = btn.closest('.stcm-api-view')?.querySelector('.stcm-api-result');
+    if (out) { out.className = 'stcm-api-result'; out.textContent = '확인 중…'; }
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 60000);
+    let ok = false;
+    let msg = '';
+    try {
+        const reply = await callModel('This is a connection test.', 'Reply with exactly: OK', ctl.signal);
+        ok = !!String(reply ?? '').trim();
+        msg = ok ? `응답 받음: ${truncate(String(reply).trim(), 40)}` : '빈 응답이 왔어요. 모델이나 토큰 설정을 확인해 주세요.';
+    } catch (e) {
+        msg = e?.name === 'AbortError' ? '응답이 너무 늦어요 (60초 넘음).' : `실패: ${truncate(String(e?.message ?? e), 120)}`;
+    } finally {
+        clearTimeout(timer);
+        apiTesting = false;
+        btn.disabled = false;
+    }
+    if (out && document.body.contains(out)) { out.classList.add(ok ? 'ok' : 'bad'); out.textContent = msg; }
+    else (ok ? toastr.success : toastr.error)(esc(msg));
+}
+
 function showPins() {
     leaveFeed();
     view = 'pins';
@@ -4152,9 +4279,9 @@ function addSettingsPanel() {
         const first = sel.querySelector('option[value=""]');
         if (first) { first.textContent = '(메인 API 사용)'; delete first.dataset.i18n; }
     } catch (e) {
-        sel.innerHTML = '<option value="">(Connection Manager 사용 불가 — 메인 API 사용)</option>';
+        // keep the saved choice (it comes back when the extension is turned on again)
+        sel.innerHTML = '<option value="">(Connection Manager 꺼짐 — 메인 API 사용)</option>';
         sel.disabled = true;
-        s.profileId = '';
     }
 }
 
@@ -4367,6 +4494,9 @@ function registerCommands() {
         if (hasChat()) loadFeedsForCurrentChat();
     });
     eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
+    for (const k of ['CONNECTION_PROFILE_CREATED', 'CONNECTION_PROFILE_UPDATED', 'CONNECTION_PROFILE_DELETED']) {
+        if (event_types[k]) eventSource.on(event_types[k], () => { if (view === 'api' && isOpen() && !apiTesting) showApi(); });
+    }
     if (event_types.CHAT_DELETED) eventSource.on(event_types.CHAT_DELETED, onChatDeleted);
     if (event_types.GROUP_CHAT_DELETED) eventSource.on(event_types.GROUP_CHAT_DELETED, onChatDeleted);
     if (event_types.CHAT_RENAMED) eventSource.on(event_types.CHAT_RENAMED, onChatRenamed);

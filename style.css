@@ -333,7 +333,7 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
     font-family: inherit;
     resize: vertical;
 }
-.stcm-compose-view select, .stcm-compose-view input[type="text"], .stcm-compose-view textarea {
+.stcm-compose-view select, .stcm-compose-view input[type="text"], .stcm-compose-view input[type="number"], .stcm-compose-view textarea {
     background: var(--s-bg);
     color: var(--s-text);
     border: 1px solid var(--s-border);
@@ -905,3 +905,10 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
     .stcm-td-search { max-width: none; }
     .stcm-td-best .lbl { padding-right: 6px; }
 }
+
+/* ---------- API view ---------- */
+.stcm-api-view select, .stcm-api-view input[type="number"] { width: 100%; max-width: 420px; box-sizing: border-box; }
+.stcm-api-info { margin-top: 4px; word-break: break-all; }
+.stcm-api-result { flex: 1; min-width: 0; font-size: 12px; color: var(--s-sub); overflow-wrap: anywhere; }
+.stcm-api-result.ok { color: #2e9e5b; }
+.stcm-api-result.bad { color: #d9534f; }
