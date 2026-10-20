@@ -85,8 +85,10 @@ const PLATFORMS = {
     dcinside: { name: 'DCInside', brand: false, label: '디시인사이드', icon: 'fa-ghost', lang: 'Korean', anon: 'ㅇㅇ', now: '방금', thread: false, hasTitle: true },
     reddit: { name: 'Reddit', brand: true, label: 'Reddit', icon: 'fa-reddit-alien', lang: 'English', anon: 'throwaway', now: 'just now', thread: false, hasTitle: true, capped: true },
     twitter: { name: 'X (Twitter)', brand: true, label: 'X (트위터)', icon: 'fa-x-twitter', lang: 'the language most natural for the story setting and its fandom (if unclear, Korean)', anon: 'user', now: 'now', thread: false, hasTitle: false },
-    fivech: { name: '2channel / 5channel', brand: false, label: '2ch / 5ch', icon: 'fa-hashtag', lang: 'Japanese', anon: '名無しさん', now: null, thread: true, hasTitle: true, capped: true },
+    fivech: { name: '2channel / 5channel', brand: false, label: '2ch / 5ch', icon: 'fa-hashtag', lang: 'Japanese', anon: '名無しさん', now: null, thread: true, hasTitle: true, capped: true, flat: true },
     weibo: { name: 'Sina Weibo', brand: true, label: '웨이보', icon: 'fa-weibo', lang: 'Simplified Chinese', anon: '微博用户', now: '刚刚', thread: false, hasTitle: false },
+    discord: { name: 'Discord', brand: true, label: '디스코드', icon: 'fa-discord', lang: 'the language most natural for the story setting and its fandom (if unclear, Korean)', anon: 'user', now: '오늘', thread: false, hasTitle: false, flat: true, chat: true },
+    tdgall: { name: '투디갤 (tdgall.com)', brand: false, label: '투디갤', icon: 'fa-snowflake', lang: 'Korean', anon: 'ㅇㅇ', now: '방금', thread: false, hasTitle: true },
     tieba: { name: 'Baidu Tieba', brand: false, label: '바이두 티에바', icon: 'fa-paw', lang: 'Simplified Chinese', anon: '匿名用户', now: '刚刚', thread: true, hasTitle: true },
 };
 
@@ -137,6 +139,10 @@ Author: {{author}}
 Output ONLY a JSON object, no code fences: {"title": "post title, or empty when the platform has none / for comments", "body": "text, use \\n for line breaks"}`,
 
     cross_ref: `Other recent posts on this community are listed below for awareness. Posters may naturally mention, quote, link, compare or argue about them (e.g. "saw this in the other thread", "the OP of that post again"), but do not copy them and do not force references into every post.`,
+
+    dm_continue: `<thread> is a private Discord DM conversation between {{me}} and {{partner}}. Write the next {{count}} messages FROM {{partnerName}} only, reacting to the latest messages (or opening the conversation naturally if it is empty). Several short consecutive messages are fine, like real chat. Do not write messages for the other side. {{partnerName}} only knows what they would plausibly know in the story, and speaks in their own voice. Set "author" to "{{partnerName}}" and "reply_to" to -1 unless replying to a specific earlier message.`,
+
+    inject_dm: `[Private Discord direct messages these people actually exchanged. Both sides remember them; let them shape knowledge, mood and dialogue when relevant. Nobody else has seen them unless shared.]`,
 
     amount_posts: `Write {{count}} posts. Each post has roughly {{comments}} comments (vary it: popular posts more, boring ones fewer). Add replies to some comments where natural, unless the platform style says otherwise.`,
 
@@ -200,6 +206,8 @@ Numbers must be plain integers. Escape double quotes inside strings. Every poste
     guide_twitter: `X (Twitter). Set "board" to a trending hashtag or topic. Each post is a short tweet (under 280 characters), with display name and @handle, no title. Use hashtags, emoji, fandom slang, screaming caps, "RT if...", short threads. Metrics: likes, retweets (shares), views. Comments are replies to the tweet.`,
     guide_fivech: `2channel / 5channel (Japanese anonymous textboard). Each post object is one THREAD: "title" is the thread title (e.g. 【悲報】..., 【朗報】..., ○○について語るスレ Part3), "body" is the opener (>>1). Comments are the following replies in order (>>2, >>3...); the "replies" field must stay empty and "reply_to" must be -1 — reply with anchors like ">>1" or ">>5" in the body instead. Author is usually "名無しさん" (or a board-specific default name); "handle" is a random 8-character ID like "aB3dE9fG". Use 草, w, ワロタ, ガチ, kaomoji, light AA. Tone: cynical, joking, chaotic.`,
     guide_weibo: `Sina Weibo. Set "board" to a super-topic or trending topic (超话 / 热搜). Posts by bloggers with display names (e.g. 吃瓜群众小王), no title, using #话题# hashtags (with # on both sides), emoji like [doge] [允悲] [泪], words like 绝了, 磕到了, 破防了, 吃瓜, yyds. Metrics: likes, comments, reposts (shares). Comments may have replies.`,
+    guide_discord: `Discord server. Set "board" to the server name (a fan server in reader mode, a local / guild / school / work server in the in-world mode). Each post object is one CHANNEL: "title" is the channel name without "#" (e.g. 잡담, 정보, 스포일러, 짤방, 공지, 오프라인), "body" is the first message of the shown chat log and "author" its sender. "comments" are the following chat messages in order — short, casual, fast, several messages in a row from the same person are normal; "replies" stays empty. Use "reply_to" to point at an earlier message only when someone uses Discord's reply. Usernames look like Discord display names; emoji, :custom_emoji:, @mentions, lowercase, typos, "ㅋㅋ", stickers described in brackets. "time" like "오늘 오후 3:12".`,
+    guide_tdgall: `투디갤 (tdgall.com), a Korean anonymous community for 2D works — anime, manga, light novels, subculture/mobile games, webtoons — that split off from DCInside. Everyone posts anonymously: set "author" to "ㅇㅇ" and "handle" to a random 4-character code of letters/digits (e.g. "k7Qa"); a person keeps the same code inside one post. Put the board in tags[0]: one of 투디, 웹툰, 소설, 게임, AI, 괴담, 남극. Tone: casual banmal, fast fandom slang and chosung abbreviations (ㅋㅋ, ㅠㅠ, ㄹㅇ, ㄱㅊ), title prefixes such as ㅃ (off-topic chatter), ㅂㅎ (dislike post — replies agree rather than argue), ㅅㅍ (spoiler), ㅂㅇ (translation). Community words: 펭도리 (asking for a source or character name), 소주 (claiming a character as one's spouse), 자표, 갤메이저/갤마이너, 유입 (newcomer, treated warily). Typical posts: short reactions, questions, rants about creators or pacing, shipping, fan theories, recommendation requests. No real-person photos, doxxing or slurs.`,
     guide_tieba: `Baidu Tieba. Set "board" to the bar name WITHOUT the trailing 吧. Each post object is a THREAD with a title and the 楼主 (OP) body as floor 1. Comments are the following floors (2楼, 3楼...) and their "replies" are 楼中楼 replies. Culture: 沙发, 板凳, 前排, 顶, 楼主好人, 233, 水贴, 吧务, heated debates, long analysis posts.`,
 };
 
@@ -234,6 +242,10 @@ const PROMPT_LABELS = {
     guide_fivech: '스타일: 2ch / 5ch',
     guide_weibo: '스타일: 웨이보',
     guide_tieba: '스타일: 바이두 티에바',
+    guide_discord: '스타일: 디스코드',
+    guide_tdgall: '스타일: 투디갤',
+    dm_continue: '디스코드 DM 이어가기 지시',
+    inject_dm: '본편 반영: 디스코드 DM',
 };
 
 // ---------------------------------------------------------------------------
@@ -939,6 +951,23 @@ function serializeThread(feed, postIdx) {
         return lines.join('\n\n');
     }
 
+    if (PLATFORMS[feed.platform]?.chat) {
+        if (post.kind === 'dm') lines.push(`Private Discord DM between ${dmSideEn(post.dm?.me)} and ${dmSideEn(post.dm?.partner)}.`);
+        else {
+            lines.push(`Channel: #${String(post.title || 'general').replace(/^#\s*/, '')}`);
+            if (post.body || post.author) lines.push(`[first] ${whoLine(post)}${playerMark(post, userName)}: ${post.body}`);
+        }
+        const start = Math.max(0, post.comments.length - MAX_THREAD_ITEMS_IN_PROMPT);
+        if (start > 0) lines.push('(… older messages omitted …)');
+        post.comments.slice(start).forEach((c, k) => {
+            const i = start + k;
+            lines.push(`[c${i}] ${whoLine(c)}${playerMark(c, userName)}${c.ref != null ? ` (replying to c${c.ref})` : ''}: ${c.body}`);
+            for (const r of c.replies) lines.push(`    ↳ ${whoLine(r)}${playerMark(r, userName)}: ${r.body}`);
+        });
+        if (!post.comments.length && post.kind === 'dm') lines.push('(no messages yet)');
+        return lines.join('\n');
+    }
+
     lines.push(`[POST] ${whoLine(post)}${playerMark(post, userName)}${post.title ? `\nTitle: ${post.title}` : ''}\n${post.body}`);
     const start = Math.max(0, post.comments.length - MAX_THREAD_ITEMS_IN_PROMPT);
     if (start > 0) lines.push('(… older comments omitted …)');
@@ -976,10 +1005,12 @@ async function buildContinuePrompt({ feed, postIdx, count, playerJustPosted }) {
         `<story_context>\n${storyText}\n</story_context>`,
         `<task>\n${b.task}\n</task>`,
         `<platform_style>\n${b.style}\n</platform_style>`,
-        crossRefOn(post) ? buildCrossRefBlock(feed.platform, feed.mode, post) : '',
+        crossRefOn(post) && post.kind !== 'dm' ? buildCrossRefBlock(feed.platform, feed.mode, post) : '',
         `<thread>\n${serializeThread(feed, postIdx)}\n</thread>`,
         playerNotes.length ? `<player>\n${playerNotes.join('\n')}\n</player>` : '',
-        `<continue>\n${fillTpl(getPrompt('continue'), { ...b.vars, count })}\n</continue>`,
+        post.kind === 'dm'
+            ? `<continue>\n${fillTpl(getPrompt('dm_continue'), { ...b.vars, count, me: dmSideEn(post.dm?.me), partner: dmSideEn(post.dm?.partner), partnerName: dmSideName(post.dm?.partner) })}\n</continue>`
+            : `<continue>\n${fillTpl(getPrompt('continue'), { ...b.vars, count })}\n</continue>`,
         `<language>\n${b.language}\n</language>`,
         b.extra ? `<extra_instructions>\n${b.extra}\n</extra_instructions>` : '',
         getPrompt('format_comments'),
@@ -1127,9 +1158,11 @@ function normPost(p) {
         views: toInt(p?.views),
         shares: toInt(p?.shares),
         tags: Array.isArray(p?.tags) ? p.tags.slice(0, 10).map(t => String(t).slice(0, 60)) : [],
-        comments: Array.isArray(p?.comments) ? p.comments.map(cm => ({
+        comments: Array.isArray(p?.comments) ? p.comments.map((cm, ci) => ({
             ...normItem(cm),
             replies: Array.isArray(cm?.replies) ? cm.replies.map(normItem) : [],
+            // chat-style platforms (Discord) show which earlier message was replied to
+            ...(Number.isInteger(cm?.reply_to) && cm.reply_to >= 0 && cm.reply_to < ci ? { ref: cm.reply_to } : {}),
         })) : [],
     };
 }
@@ -1381,13 +1414,16 @@ async function generateMoreComments(feedId, postIdx, { playerJustPosted = false,
         if (postIdx < 0) return null;
         const post = postRef;
         const existing = post.comments.length;
-        const flat = feed.platform === 'fivech';
+        const flat = !!PLATFORMS[feed.platform]?.flat;
+        const chat = !!PLATFORMS[feed.platform]?.chat;
         for (const c of list) {
             if (isThreadFull(feed, post)) break;
             const { reply_to, ...item } = c;
+            if (post.kind === 'dm' && !item.author) item.author = dmSideName(post.dm?.partner);
             if (!flat && reply_to >= 0 && reply_to < existing) {
                 post.comments[reply_to].replies.push(item);
             } else {
+                if (chat && reply_to >= 0 && reply_to < existing) item.ref = reply_to;
                 post.comments.push({ ...item, replies: [] });
             }
         }
@@ -1410,6 +1446,7 @@ function playerItem(platformId, { as, nick, charName, body, title }) {
     let handle = '';
     const digits = String(Math.floor(1000 + Math.random() * 9000));
     if (platformId === 'fivech') handle = randomId(8);
+    else if (platformId === 'tdgall') handle = randomId(4);
     else if (platformId === 'twitter') handle = nick?.trim() || as !== 'mob' ? author.replace(/\s+/g, '_') : `user${digits}${randomId(3).toLowerCase()}`;
     else if (platformId === 'reddit') handle = nick?.trim() || as !== 'mob' ? author.replace(/\s+/g, '_') : `throwaway_${digits}`;
     const item = { isMe: true, as, author, handle, body, body_tr: '', time: nowLabel(platformId), likes: 0 };
@@ -1433,7 +1470,7 @@ function checkIdentity(id) {
     return true;
 }
 
-async function submitPlayerPost({ title, body, identity, react, board }) {
+async function submitPlayerPost({ title, body, identity, react, board, category }) {
     if (!body.trim()) { toastr.warning('내용을 입력해 주세요.'); return; }
     if (!(await ensureFeedsReady())) return;
     if (!checkIdentity(identity)) return;
@@ -1445,9 +1482,13 @@ async function submitPlayerPost({ title, body, identity, react, board }) {
         feed = newFeedObject({ platformId: selPlatform, mode: selMode, data: { board: board?.trim() || '', posts: [] } });
         await addFeed(feed);
     }
-    const post = playerItem(feed.platform, { ...identity, body: body.trim(), title: PLATFORMS[feed.platform].hasTitle ? title.trim() : '' });
+    const pf = PLATFORMS[feed.platform];
+    const post = playerItem(feed.platform, { ...identity, body: body.trim(), title: pf.hasTitle || pf.chat ? (title.trim() || (pf.chat ? '잡담' : '')) : '' });
+    if (category) post.tags = [category];
     feed.data.posts.push(post);
     const postIdx = feed.data.posts.length - 1;
+    if (pf.chat) dsSel.set(feed.id, postIdx);
+    if (feed.platform === 'tdgall') tdOpen.add(`${feed.id}:${postIdx}`);
     await saveChatStore();
     showFeed(feed.id, { scrollToPost: postIdx });
     if (react) await generateMoreComments(feed.id, postIdx, { playerJustPosted: true });
@@ -1463,9 +1504,11 @@ async function submitPlayerComment({ feedId, postIdx, replyTo, body, identity, r
     await rememberIdentity(identity);
 
     const item = playerItem(feed.platform, { ...identity, body: body.trim() });
-    if (replyTo != null && replyTo >= 0 && post.comments[replyTo] && feed.platform !== 'fivech') {
+    const flat = !!PLATFORMS[feed.platform]?.flat;
+    if (replyTo != null && replyTo >= 0 && post.comments[replyTo] && !flat) {
         post.comments[replyTo].replies.push(item);
     } else {
+        if (PLATFORMS[feed.platform]?.chat && replyTo != null && post.comments[replyTo]) item.ref = replyTo;
         post.comments.push({ ...item, replies: [] });
     }
     composer = null;
@@ -1480,7 +1523,7 @@ async function deletePlayerItem(feedId, postIdx, ci, ri) {
     const post = feed?.data.posts[postIdx];
     if (!post) return;
     const target = ci == null ? post : (ri == null ? post.comments[ci] : post.comments[ci]?.replies[ri]);
-    if (!target?.isMe) return;
+    if (!target?.isMe && !(ci == null && post.kind === 'dm')) return;
     if (ci == null) {
         // Delete the whole post (only allowed for player posts); drop pins pointing at it and shift later ones
         feed.data.posts.splice(postIdx, 1);
@@ -1535,11 +1578,14 @@ function pickPlayerTopic() {
     return topics.length ? topics[Math.floor(Math.random() * topics.length)] : null;
 }
 
-async function aiWrite({ kind, mode, platformId, identity, instruction, draft, feed, postIdx, replyTo, anchorN, topic }) {
+async function aiWrite({ kind, mode, platformId, identity, instruction, draft, feed, postIdx, replyTo, anchorN, topic, dmTo }) {
     return runJob('글을 쓰는 중…', false, async ({ signal, stillSameChat }) => {
         const b = commonBlocks(mode, platformId);
         const storyText = await buildContextBlock();
-        const kindLabel = { post: platformId === 'fivech' ? 'thread (title + opening post)' : 'post', comment: 'comment', reply: 'reply' }[kind] ?? kind;
+        const dmPost = feed && postIdx != null && feed.data.posts[postIdx]?.kind === 'dm';
+        const kindLabel = dmPost || kind === 'dm' ? 'direct message'
+            : PLATFORMS[platformId]?.chat ? 'chat message'
+            : ({ post: platformId === 'fivech' ? 'thread (title + opening post)' : 'post', comment: 'comment', reply: 'reply' }[kind] ?? kind);
         const parts = [
             `<story_context>\n${storyText}\n</story_context>`,
             `<task>\n${b.task}\n</task>`,
@@ -1555,6 +1601,7 @@ async function aiWrite({ kind, mode, platformId, identity, instruction, draft, f
         } else if (feed?.data?.board) {
             parts.push(`<board>\nThe post goes on: ${feed.data.board}\n</board>`);
         }
+        if (dmTo) parts.push(`<dm>\nA private Discord direct message from the author to ${dmTo}. It opens a new DM conversation.\n</dm>`);
         if (topic) parts.push(`<topic>\nWrite it about this topic (it may be written in any language; follow its intent): ${topic.name}${topic.desc ? ` — ${topic.desc}` : ''}\n</topic>`);
         if (draft?.trim()) parts.push(`<draft>\n${draft.trim()}\n</draft>`);
         if (instruction?.trim()) parts.push(`<user_request>\nThe player's instruction for this text (it may be written in any language; follow its intent):\n${instruction.trim()}\n</user_request>`);
@@ -1639,6 +1686,7 @@ function refreshInjection() {
     }
 
     const authored = [];
+    const dms = [];
     const world = [];
     const meta = [];
     for (const p of pins) {
@@ -1646,19 +1694,22 @@ function refreshInjection() {
         const post = feed?.data.posts[p.postIdx];
         // Feeds may not be loaded yet (they live in a separate file); fall back to what the pin cached
         if (post) {
-            p.text = postToPinText(post);
+            p.kind = post.kind === 'dm' ? 'dm' : undefined;
+            p.text = post.kind === 'dm' ? dmToPinText(post) : postToPinText(post);
             p.authored = postHasStoryAuthor(post);
             p.where = `${PLATFORMS[p.platform]?.name ?? p.platform}${feed.data.board ? ` / ${feed.data.board}` : ''}`;
         }
         const where = p.where ?? (PLATFORMS[p.platform]?.name ?? p.platform);
         const entry = `(${where})\n${p.text}`;
-        if (p.authored) authored.push(entry);
+        if (p.kind === 'dm') dms.push(p.text);
+        else if (p.authored) authored.push(entry);
         else if (p.mode === 'world') world.push(entry);
         else meta.push(p.text);
     }
 
     const vars = { char: c.name2 || 'Character', user: c.name1 || 'User' };
     const blocks = [];
+    if (dms.length) blocks.push(`${fillTpl(getPrompt('inject_dm'), vars)}\n${dms.join('\n\n')}`);
     if (authored.length) blocks.push(`${fillTpl(getPrompt('inject_authored'), vars)}\n${authored.join('\n\n')}`);
     if (world.length) blocks.push(`${fillTpl(getPrompt('inject_world'), vars)}\n${world.join('\n\n')}`);
     if (meta.length) blocks.push(`${fillTpl(getPrompt('inject_meta'), vars)}\n${meta.join('\n\n')}`);
@@ -1679,8 +1730,15 @@ async function togglePin(feedId, postIdx) {
             feedId, postIdx,
             platform: feed.platform,
             mode: feed.mode,
-            text: postToPinText(post),
+            kind: post.kind === 'dm' ? 'dm' : undefined,
+            text: post.kind === 'dm' ? dmToPinText(post) : postToPinText(post),
         });
+        if (post.kind === 'dm') {
+            toastr.success(`${esc(dmSubtitle(post))} DM을 본편에 반영할게요.`);
+            await saveChatStore();
+            refreshInjection();
+            return;
+        }
         const authors = [...new Set([post, ...post.comments, ...post.comments.flatMap(c => c.replies)].map(storyAuthor).filter(Boolean))];
         toastr.success(authors.length
             ? `${esc(authors.join(', '))}이(가) 이 글을 썼다는 걸 본편에 반영할게요.`
@@ -1737,19 +1795,20 @@ function postActions(feed, i) {
     const post = feed.data.posts[i];
     const on = isPinned(feed.id, i);
     const thread = PLATFORMS[feed.platform].thread;
+    const chat = PLATFORMS[feed.platform].chat;
     const full = isThreadFull(feed, post);
     const hasNext = post.nextIdx != null && feed.data.posts[post.nextIdx];
     const cap = threadCap(feed.platform);
     return `${threadNav(feed, i)}<div class="stcm-actions" data-k="${i}.act">
         ${cap !== Infinity ? `<span class="stcm-count ${full ? 'full' : ''}">${threadCount(post)} / ${cap}</span>` : ''}
-        ${full ? '' : `<button data-act="comment" data-feed="${esc(feed.id)}" data-idx="${i}"><i class="fa-regular fa-pen-to-square"></i>${thread ? '레스 쓰기' : '댓글 쓰기'}</button>`}
+        ${full ? '' : `<button data-act="comment" data-feed="${esc(feed.id)}" data-idx="${i}"><i class="fa-regular fa-pen-to-square"></i>${chat ? '메시지 보내기' : (thread ? '레스 쓰기' : '댓글 쓰기')}</button>`}
         ${full
             ? `<button data-act="more" data-feed="${esc(feed.id)}" data-idx="${i}" class="stcm-next"><i class="fa-solid fa-arrow-turn-down"></i>${hasNext ? '후속 스레로 이동' : '후속 스레 작성'}</button>`
-            : `<button data-act="more" data-feed="${esc(feed.id)}" data-idx="${i}"><i class="fa-solid fa-angles-down"></i>${thread ? '스레드 이어가기' : '댓글 더 보기'}</button>`}
+            : `<button data-act="more" data-feed="${esc(feed.id)}" data-idx="${i}"><i class="fa-solid fa-angles-down"></i>${chat ? '대화 이어가기' : (thread ? '스레드 이어가기' : '댓글 더 보기')}</button>`}
         <button class="stcm-tog ${post.watch ? 'on' : ''}" data-act="watch" data-feed="${esc(feed.id)}" data-idx="${i}" title="${post.watch ? '자동 이어가기 끄기' : '본 채팅이 진행되면 이 글에 자동으로 레스/댓글 달기'}"><i class="fa-solid fa-eye"></i><span class="lbl">${post.watch ? '지켜보는 중' : '지켜보기'}</span></button>
-        <button class="stcm-tog icon ${crossRefOn(post) ? 'on' : ''}" data-act="crossref" data-feed="${esc(feed.id)}" data-idx="${i}" title="${getSettings().crossRef ? '전체 설정에서 켜져 있어요' : (post.crossRef ? '이 글만 다른 글 참고 끄기' : '이 글을 이어갈 때 다른 게시글도 참고')}"><i class="fa-solid fa-link"></i></button>
+        ${post.kind === 'dm' ? '' : `<button class="stcm-tog icon ${crossRefOn(post) ? 'on' : ''}" data-act="crossref" data-feed="${esc(feed.id)}" data-idx="${i}" title="${getSettings().crossRef ? '전체 설정에서 켜져 있어요' : (post.crossRef ? '이 글만 다른 글 참고 끄기' : '이 글을 이어갈 때 다른 게시글도 참고')}"><i class="fa-solid fa-link"></i></button>`}
         <button class="stcm-pin ${on ? 'on' : ''}" data-act="pin" data-feed="${esc(feed.id)}" data-idx="${i}" title="본편에 반영"><i class="fa-solid fa-thumbtack"></i>${on ? '반영 중' : '반영'}</button>
-        ${post.isMe ? `<button data-act="del-post" data-feed="${esc(feed.id)}" data-idx="${i}" title="내 글 삭제"><i class="fa-solid fa-trash-can"></i></button>` : ''}
+        ${post.isMe || post.kind === 'dm' ? `<button data-act="del-post" data-feed="${esc(feed.id)}" data-idx="${i}" title="${post.kind === 'dm' ? 'DM 삭제' : '내 글 삭제'}"><i class="fa-solid fa-trash-can"></i></button>` : ''}
     </div>`;
 }
 
@@ -1809,10 +1868,15 @@ function composerSlot(feed, i) {
     const post = feed.data.posts[i];
     const target = composer.replyTo != null ? post.comments[composer.replyTo] : null;
     const thread = PLATFORMS[feed.platform].thread;
+    const chat = PLATFORMS[feed.platform].chat;
+    const isDm = post.kind === 'dm';
+    const ph = isDm ? `@${dmPartnerLabel(post)}에게 메시지 보내기` : chat ? `#${String(post.title || '일반').replace(/^#\s*/, '')}에 메시지 보내기` : (thread ? '레스 내용 (>>번호 로 앵커)' : '댓글 내용');
+    // In a DM the sender is fixed: the side that started it
+    const ident = isDm ? `<div class="stcm-cp-target">보내는 사람: <b>${esc(dmSideName(post.dm?.me))}</b> → <b>${esc(dmPartnerLabel(post))}</b></div>` : identityControls(composer.draft);
     return `<div class="stcm-composer" data-feed="${esc(feed.id)}" data-idx="${i}">
-        ${identityControls(composer.draft)}
-        ${target ? `<div class="stcm-cp-target">↳ <b>${esc(target.author)}</b>님에게 답글 <a class="stcm-link" data-act="reply-cancel">취소</a></div>` : ''}
-        <textarea class="stcm-cp-body" rows="3" placeholder="${thread ? '레스 내용 (>>번호 로 앵커)' : '댓글 내용'}">${esc(composer.draft?.body ?? '')}</textarea>
+        ${ident}
+        ${target ? `<div class="stcm-cp-target">↳ <b>${esc(target.author)}</b>님에게 ${chat ? '답장' : '답글'} <a class="stcm-link" data-act="reply-cancel">취소</a></div>` : ''}
+        <textarea class="stcm-cp-body" rows="3" placeholder="${esc(ph)}">${esc(composer.draft?.body ?? '')}</textarea>
         <div class="stcm-cp-ai">
             <input class="stcm-cp-inst" type="text" maxlength="500" value="${esc(composer.draft?.inst ?? '')}" placeholder="AI에게 지시 (선택) — 비우면 알아서">
             <button data-act="ai-write-comment" title="고른 신분으로 AI가 써 줘요. 칸에 글이 있으면 그걸 다듬어요."><i class="fa-solid fa-wand-magic-sparkles"></i> AI로 쓰기</button>
@@ -1983,6 +2047,136 @@ const renderers = {
         </div>`;
     },
 
+    discord(feed) {
+        const d = feed.data;
+        const sel = dsSelected(feed);
+        const chans = [];
+        const dms = [];
+        d.posts.forEach((p, i) => (p.kind === 'dm' ? dms : chans).push(i));
+        const nameOf = (p) => (p.kind === 'dm' ? dmPartnerLabel(p) : String(p.title || '일반').replace(/^#\s*/, ''));
+        const msgHtml = (o, i, ci, ri, p) => {
+            const refTo = p && o.ref != null ? p.comments[o.ref] : null;
+            const canDm = !o.isMe && o.author && p?.kind !== 'dm';
+            return `<div class="stcm-ds-msg" data-k="${i}.${ci ?? 'op'}${ri != null ? '.' + ri : ''}">
+                ${avatar(o.author)}
+                <div class="stcm-ds-mbody">
+                    ${refTo ? `<div class="stcm-ds-ref"><i class="fa-solid fa-reply"></i> <b>${esc(refTo.author)}</b> ${esc(truncate(refTo.body, 60))}</div>` : ''}
+                    <div class="stcm-ds-mhead"><b style="color:${hashColor(o.author)}">${esc(o.author || 'user')}</b>${meBadge(o)}<span>${esc(o.time)}</span>${canDm ? `<a class="stcm-link" data-act="dm-new" data-feed="${esc(feed.id)}" data-to="${esc(o.author)}" title="이 사람에게 DM">DM</a>` : ''}</div>
+                    <div class="stcm-body">${txt(o, 'discord')}</div>
+                    ${ci != null ? itemLinks(feed, i, ci, ri, o) : ''}
+                </div>
+            </div>`;
+        };
+        const side = `<nav class="stcm-ds-side">
+            <div class="stcm-ds-server"><i class="fa-brands fa-discord"></i> ${esc(d.board || '서버')}</div>
+            <div class="stcm-ds-sec">채널</div>
+            ${chans.map(i => `<button class="stcm-ds-ch ${i === sel ? 'active' : ''}" data-act="ds-open" data-feed="${esc(feed.id)}" data-idx="${i}"><i class="fa-solid fa-hashtag"></i><span>${esc(nameOf(d.posts[i]))}</span></button>`).join('') || '<div class="stcm-ds-empty">채널 없음</div>'}
+            <div class="stcm-ds-sec">다이렉트 메시지 <button class="stcm-ds-add" data-act="dm-new" data-feed="${esc(feed.id)}" title="새 DM"><i class="fa-solid fa-plus"></i></button></div>
+            ${dms.map(i => `<button class="stcm-ds-ch dm ${i === sel ? 'active' : ''}" data-act="ds-open" data-feed="${esc(feed.id)}" data-idx="${i}">${avatar(nameOf(d.posts[i]), 'sm')}<span>${esc(nameOf(d.posts[i]))}</span></button>`).join('') || '<div class="stcm-ds-empty">없음</div>'}
+        </nav>`;
+        const panes = d.posts.map((p, i) => {
+            const isDm = p.kind === 'dm';
+            const head = isDm
+                ? `<i class="fa-solid fa-at"></i> ${esc(nameOf(p))} <small>${esc(dmSubtitle(p))}</small>`
+                : `<i class="fa-solid fa-hashtag"></i> ${esc(nameOf(p))}`;
+            const first = !isDm && (p.body || p.author) ? msgHtml(p, i, null, null, null) : '';
+            const msgs = p.comments.map((c, ci) => msgHtml(c, i, ci, null, p) + c.replies.map((r, ri) => msgHtml(r, i, ci, ri, p)).join('')).join('');
+            return `<article class="stcm-ds-pane ${i === sel ? '' : 'stcm-hide'}" data-post="${i}">
+                <div class="stcm-ds-head">${head}</div>
+                <div class="stcm-ds-msgs">${first}${msgs || (isDm ? '<div class="stcm-ds-empty">아직 메시지가 없어요. 아래에서 보내거나 "대화 이어가기"로 상대가 먼저 말을 걸게 해 보세요.</div>' : '')}</div>
+                ${postFooter(feed, i)}
+            </article>`;
+        }).join('');
+        return `<div class="stcm-skin stcm-discord"><div class="stcm-ds-wrap">${side}<div class="stcm-ds-main">${panes || '<div class="stcm-ds-empty">채널이 없어요.</div>'}</div></div></div>`;
+    },
+
+    tdgall(feed) {
+        const d = feed.data;
+        const st = tdState(feed.id);
+        const items = d.posts.map((p, i) => ({ p, i }));
+        const base = tdBaseNo(feed.id);
+        const order = st.sort === 'best'
+            ? [...items].sort((a, b) => (b.p.likes || 0) - (a.p.likes || 0))
+            : [...items].reverse();   // newest first, like a real board
+        const best = tdBestList(feed);
+        const bi = Math.max(0, Math.min(st.best, best.length - 1));
+        const counts = {};
+        for (const { p } of items) counts[tdCatOf(p)] = (counts[tdCatOf(p)] ?? 0) + 1;
+        const fid = esc(feed.id);
+        const who = (o) => `<b>${esc(o.author || 'ㅇㅇ')}</b>${o.handle ? `<small class="stcm-td-code">${esc(o.handle)}</small>` : ''}${meBadge(o)}`;
+        const catList = TD_CATS.map(c => `<button class="stcm-td-catitem ${c === st.cat ? 'active' : ''}" data-act="td-cat" data-feed="${fid}" data-cat="${esc(c)}"><span class="ico">${TD_ICONS[c] ?? '•'}</span><span>${c === '전체' ? '전체 글' : esc(c)}</span>${c !== '전체' && counts[c] ? `<small>${counts[c]}</small>` : ''}${c === '전체' ? '<i class="fa-solid fa-chevron-right"></i>' : ''}</button>`).join('');
+        const chips = TD_CATS.map(c => `<button class="stcm-td-chip ${c === st.cat ? 'active' : ''}" data-act="td-cat" data-feed="${fid}" data-cat="${esc(c)}"><span class="ico">${TD_ICONS[c] ?? '•'}</span>${esc(c)}</button>`).join('');
+        const rows = order.map(({ p, i }) => {
+            const cat = tdCatOf(p);
+            const n = p.comments.reduce((a, c) => a + 1 + c.replies.length, 0);
+            const open = tdOpen.has(`${feed.id}:${i}`) || (composer && composer.feedId === feed.id && composer.postIdx === i);
+            return `<article class="stcm-td-post ${open ? 'open' : ''} ${tdVisible(feed, p) ? '' : 'stcm-hide'}" data-post="${i}">
+                <div class="stcm-td-row" data-act="td-toggle" data-feed="${fid}" data-idx="${i}">
+                    <span class="no">${base + i + 1}</span>
+                    <span class="cat">${esc(cat)}</span>
+                    <span class="tt">${p.isMe ? '<i class="fa-solid fa-pen-nib stcm-td-mine"></i>' : ''}${esc(p.title || truncate(p.body, 40))}${n ? ` <em>[${n}]</em>` : ''}</span>
+                    <span class="au">${esc(p.author || 'ㅇㅇ')}</span>
+                    <span class="tm">${esc(p.time)}</span>
+                    <span class="vw">${num(p.views, 'ko')}</span>
+                    <span class="rc">${num(p.likes)}</span>
+                </div>
+                <div class="stcm-td-detail">
+                    <div class="stcm-td-dhead">
+                        <span class="stcm-td-badge">${esc(cat)}</span>
+                        <h3>${esc(p.title)}</h3>
+                        <div class="stcm-td-meta">${who(p)}<span>${esc(p.time)}</span><span>조회 ${num(p.views, 'ko')}</span><span>추천 ${num(p.likes)}</span><span>댓글 ${n}</span></div>
+                    </div>
+                    <div class="stcm-body">${txt(p, 'tdgall')}</div>
+                    <div class="stcm-td-rec"><span class="up"><i class="fa-solid fa-thumbs-up"></i> 추천 ${num(p.likes)}</span><span><i class="fa-regular fa-thumbs-down"></i> 비추 ${Math.floor((Number(p.likes) || 0) / 9)}</span></div>
+                    <div class="stcm-td-comments">
+                    ${p.comments.length ? `<div class="stcm-td-ctitle">댓글 <b>${n}</b></div>` : ''}
+                    ${p.comments.map((c, ci) => `
+                        <div class="stcm-td-c" data-k="${i}.${ci}"><div class="h">${who(c)}<span>${esc(c.time)}</span></div><div class="stcm-body">${txt(c, 'tdgall')}</div>${itemLinks(feed, i, ci, null, c)}</div>
+                        ${c.replies.map((r, ri) => `<div class="stcm-td-c reply" data-k="${i}.${ci}.${ri}"><div class="h"><i class="fa-solid fa-reply fa-rotate-180"></i> ${who(r)}<span>${esc(r.time)}</span></div><div class="stcm-body">${txt(r, 'tdgall')}</div>${itemLinks(feed, i, ci, ri, r)}</div>`).join('')}
+                        ${slotAt(feed, i, `c${ci}`)}
+                    `).join('')}
+                    </div>
+                    ${postFooter(feed, i)}
+                </div>
+            </article>`;
+        }).join('');
+        const bestPost = best[bi];
+        const banner = best.length ? `<div class="stcm-td-best">
+                <span class="lbl"><i class="fa-solid fa-star"></i> 개념글</span>
+                <a class="tt" data-act="td-open" data-feed="${fid}" data-idx="${bestPost.i}">${esc(bestPost.p.title || truncate(bestPost.p.body, 40))}${bestPost.p.comments.length ? ` <em>[${bestPost.p.comments.length}]</em>` : ''}</a>
+                <span class="pager"><button data-act="td-best" data-feed="${fid}" data-dir="-1" aria-label="이전"><i class="fa-solid fa-chevron-left"></i></button>${bi + 1}/${best.length}<button data-act="td-best" data-feed="${fid}" data-dir="1" aria-label="다음"><i class="fa-solid fa-chevron-right"></i></button></span>
+            </div>` : '';
+        return `<div class="stcm-skin stcm-tdgall">
+            <div class="stcm-td-brand"><span class="logo"><span class="mark">🐧</span>투디갤</span>${d.board ? `<span class="board">${esc(d.board)}</span>` : ''}</div>
+            <div class="stcm-td-layout">
+                <aside class="stcm-td-side">
+                    <div class="stcm-td-sidehead"><i class="fa-solid fa-folder-open"></i> 카테고리</div>
+                    <div class="stcm-td-catlist">${catList}</div>
+                </aside>
+                <div class="stcm-td-mainc">
+                    <div class="stcm-td-card stcm-td-toolbar">
+                        <div class="stcm-td-sorts">
+                            <button class="${st.sort !== 'best' ? 'active' : ''}" data-act="td-sort" data-feed="${fid}" data-sort="latest"><i class="fa-regular fa-clock"></i> 최신</button>
+                            <button class="${st.sort === 'best' ? 'active' : ''}" data-act="td-sort" data-feed="${fid}" data-sort="best"><i class="fa-regular fa-star"></i> 개념글</button>
+                        </div>
+                        <label class="stcm-td-search"><input type="search" class="stcm-td-q" data-feed="${fid}" value="${esc(st.q)}" placeholder="검색어"><i class="fa-solid fa-magnifying-glass"></i></label>
+                    </div>
+                    <div class="stcm-td-chips">${chips}</div>
+                    ${banner}
+                    <div class="stcm-td-card stcm-td-table">
+                        <div class="stcm-td-filter">필터
+                            <span class="seg">${[['all', '전체'], ['best', '개념'], ['me', '내 글']].map(([k, l]) => `<button class="${st.filter === k ? 'active' : ''}" data-act="td-filter" data-feed="${fid}" data-filter="${k}">${l}</button>`).join('')}</span>
+                        </div>
+                        <div class="stcm-td-head"><span class="no">번호</span><span class="cat">카테고리</span><span class="tt">제목</span><span class="au">글쓴이</span><span class="tm">날짜</span><span class="vw">조회</span><span class="rc">추천</span></div>
+                        ${rows || '<div class="stcm-empty">글이 없어요.</div>'}
+                        <div class="stcm-td-none stcm-hide">조건에 맞는 글이 없어요.</div>
+                    </div>
+                </div>
+            </div>
+            <button class="stcm-td-write" data-act="td-write" data-feed="${fid}"><i class="fa-solid fa-pen-to-square"></i> 글쓰기</button>
+        </div>`;
+    },
+
     tieba(feed) {
         const d = feed.data;
         const bar = String(d.board || '贴').replace(/吧$/, '');
@@ -2012,6 +2206,242 @@ const renderers = {
     },
 };
 
+
+// ---------------------------------------------------------------------------
+// Discord: selected channel / DM per feed, DM helpers
+// ---------------------------------------------------------------------------
+const dsSel = new Map();       // feedId → index of the channel / DM shown
+const tdCat = new Map();       // feedId → 투디갤 board tab
+const tdOpen = new Set();      // `${feedId}:${idx}` posts expanded in the 투디갤 list
+const TD_CATS = ['전체', '투디', '웹툰', '소설', '게임', 'AI', '괴담', '남극'];
+
+const TD_ICONS = { '전체': '📌', '투디': '💬', '웹툰': '📺', '소설': '📖', '게임': '🎮', 'AI': '🤖', '괴담': '👻', '남극': '🐧' };
+const tdStates = new Map();   // feedId → { cat, sort, q, filter, best }
+
+function tdState(feedId) {
+    if (!tdStates.has(feedId)) tdStates.set(feedId, { cat: tdCat.get(feedId) ?? '전체', sort: 'latest', q: '', filter: 'all', best: 0 });
+    return tdStates.get(feedId);
+}
+
+/** Stable, believable post numbers per feed. */
+function tdBaseNo(feedId) {
+    let h = 0;
+    for (const ch of String(feedId)) h = (h * 33 + ch.codePointAt(0)) >>> 0;
+    return 100000 + (h % 60000);
+}
+
+function tdBestList(feed) {
+    return feed.data.posts.map((p, i) => ({ p, i }))
+        .filter(x => (x.p.likes || 0) > 0)
+        .sort((a, b) => (b.p.likes || 0) - (a.p.likes || 0))
+        .slice(0, 10);
+}
+
+function tdVisible(feed, p) {
+    const st = tdState(feed.id);
+    if (st.cat !== '전체' && tdCatOf(p) !== st.cat) return false;
+    if (st.filter === 'me' && !(p.isMe || p.comments.some(c => c.isMe || c.replies.some(r => r.isMe)))) return false;
+    if (st.filter === 'best') {
+        const cut = tdBestList(feed).at(-1)?.p.likes ?? Infinity;
+        if ((p.likes || 0) < cut || !(p.likes > 0)) return false;
+    }
+    const q = st.q.trim().toLowerCase();
+    if (q && !`${p.title} ${p.body}`.toLowerCase().includes(q)) return false;
+    return true;
+}
+
+/** Re-apply tab / filter / search without re-rendering (no jumps, keeps typing focus). */
+function tdApply(feedId) {
+    const feed = getFeed(feedId);
+    const skin = document.querySelector('#stcm_feed .stcm-tdgall');
+    if (!feed || !skin) return;
+    const st = tdState(feedId);
+    let shown = 0;
+    skin.querySelectorAll('.stcm-td-post').forEach(a => {
+        const p = feed.data.posts[Number(a.dataset.post)];
+        const vis = p ? tdVisible(feed, p) : false;
+        a.classList.toggle('stcm-hide', !vis);
+        if (vis) shown++;
+    });
+    skin.querySelector('.stcm-td-none')?.classList.toggle('stcm-hide', shown > 0 || !feed.data.posts.length);
+    skin.querySelectorAll('[data-act="td-cat"]').forEach(b => b.classList.toggle('active', b.dataset.cat === st.cat));
+    skin.querySelectorAll('[data-act="td-filter"]').forEach(b => b.classList.toggle('active', b.dataset.filter === st.filter));
+}
+
+function tdCatOf(p) {
+    const t = String(p?.tags?.[0] ?? '').replace(/(갤러리|갤|게시판)$/, '').trim();
+    const hit = TD_CATS.find(c => c !== '전체' && c.toLowerCase() === t.toLowerCase());
+    return hit ?? '투디';
+}
+
+function dsSelected(feed) {
+    const n = feed.data.posts.length;
+    const s = dsSel.get(feed.id);
+    if (Number.isInteger(s) && s >= 0 && s < n) return s;
+    const firstChannel = feed.data.posts.findIndex(p => p.kind !== 'dm');
+    return firstChannel >= 0 ? firstChannel : 0;
+}
+
+/** Display name of one side of a DM ({ as, name|charName, nick }). */
+function dmSideName(side) {
+    if (!side) return '?';
+    if (side.nick?.trim()) return side.nick.trim();
+    if (side.as === 'user') return ctx().name1 || '유저';
+    if (side.as === 'char') return side.charName || side.name || '캐릭터';
+    return side.name || '익명';
+}
+
+/** English description of a DM side for prompts. */
+function dmSideEn(side) {
+    const shown = dmSideName(side);
+    if (side?.as === 'user') return `${ctx().name1 || 'User'} (the story protagonist${shown !== (ctx().name1 || '') ? `, shown as "${shown}"` : ''})`;
+    if (side?.as === 'char') {
+        const real = side.charName || side.name || 'a character';
+        return `${real} (a story character${shown !== real ? `, shown as "${shown}"` : ''})`;
+    }
+    return `${shown} (an ordinary server member, not a story character)`;
+}
+
+function dmPartnerLabel(p) {
+    return dmSideName(p.dm?.partner) || p.title || 'DM';
+}
+
+function dmSubtitle(p) {
+    return `${dmSideName(p.dm?.me)} ↔ ${dmSideName(p.dm?.partner)}`;
+}
+
+/** Who is speaking in a DM item, as a story-level label for pins. */
+function dmSpeakerLabel(post, o) {
+    if (o.isMe) return storyAuthor(o) ? authorLabel(o) : dmSideName(post.dm?.me);
+    const partner = post.dm?.partner;
+    if (partner?.as === 'char') return `${partner.charName || partner.name} (posting as "${o.author || dmSideName(partner)}")`;
+    if (partner?.as === 'user') return `${ctx().name1 || 'User'} (posting as "${o.author || dmSideName(partner)}")`;
+    return o.author || dmSideName(partner);
+}
+
+function dmToPinText(post) {
+    const me = post.dm?.me;
+    const partner = post.dm?.partner;
+    const lines = [`Discord DM between ${dmSideEn(me)} and ${dmSideEn(partner)}:`];
+    const items = post.comments.flatMap(c => [c, ...c.replies]);
+    const shown = items.length > 24 ? [...items.slice(0, 4), null, ...items.slice(-18)] : items;
+    for (const o of shown) {
+        if (!o) { lines.push('  …'); continue; }
+        lines.push(`  ${dmSpeakerLabel(post, o)}: ${truncate(o.body, 300)}`);
+    }
+    return lines.join('\n');
+}
+
+/** Names offered as DM recipients: story characters + people seen in this server's channels. */
+function dmCandidateNames(feed) {
+    const names = new Set(characterNames());
+    for (const p of feed?.data.posts ?? []) {
+        if (p.kind === 'dm') continue;
+        for (const o of [p, ...p.comments, ...p.comments.flatMap(c => c.replies)]) if (o.author && !o.isMe) names.add(o.author);
+    }
+    return [...names].slice(0, 60);
+}
+
+let dmDraft = null;   // { feedId, to }
+
+function showDmCompose(feedId, toName = '') {
+    const feed = getFeed(feedId);
+    if (!feed) return;
+    leaveFeed();
+    view = 'dm-new';
+    dmDraft = { feedId, to: toName };
+    const names = dmCandidateNames(feed);
+    const isChar = toName && characterNames().includes(toName);
+    const bar = document.getElementById('stcm_feedbar');
+    const el = document.getElementById('stcm_feed');
+    bar.innerHTML = `<button id="stcm_back"><i class="fa-solid fa-arrow-left"></i> 돌아가기</button><span class="stcm-fb-info">새 DM · <b>${esc(feed.data.board || '디스코드')}</b></span>`;
+    el.innerHTML = `<div class="stcm-compose-view stcm-dm-view">
+        <p class="stcm-cp-hint">보내는 사람과 받는 사람을 고르세요. 첫 메시지를 비워 두고 "상대가 먼저 말 걸기"를 켜면 상대가 먼저 DM을 보내요.</p>
+        <label class="stcm-cp-check">보내는 사람</label>
+        ${identityControls()}
+        <label class="stcm-cp-check">받는 사람</label>
+        <div class="stcm-cp-row">
+            <select class="stcm-dm-to-as">
+                <option value="char" ${isChar || (!toName && characterNames().length) ? 'selected' : ''}>캐릭터</option>
+                <option value="user">${esc(ctx().name1 || '유저')}</option>
+                <option value="mob" ${toName && !isChar ? 'selected' : ''}>서버 멤버</option>
+            </select>
+            <input class="stcm-dm-to-name" type="text" list="stcm_dm_names" maxlength="60" value="${esc(toName || (characterNames().length === 1 ? characterNames()[0] : ''))}" placeholder="이름">
+            <input class="stcm-dm-to-nick" type="text" maxlength="40" placeholder="표시 닉네임 (선택)">
+        </div>
+        <datalist id="stcm_dm_names">${names.map(n => `<option value="${esc(n)}"></option>`).join('')}</datalist>
+        <textarea class="stcm-cp-body" rows="4" placeholder="첫 메시지 (비워도 돼요)"></textarea>
+        <div class="stcm-cp-ai">
+            <input class="stcm-cp-inst" type="text" maxlength="500" placeholder="AI에게 지시 (선택) — 예: 어제 일 사과하는 DM">
+            <button data-act="ai-write-dm"><i class="fa-solid fa-wand-magic-sparkles"></i> AI로 쓰기</button>
+        </div>
+        <div class="stcm-cp-foot">
+            <label class="stcm-cp-check"><input type="checkbox" class="stcm-cp-react" checked> 답장 / 상대가 먼저 말 걸기</label>
+            <button data-act="dm-cancel">취소</button>
+            <button class="primary" data-act="dm-create"><i class="fa-solid fa-paper-plane"></i> DM 시작</button>
+        </div>
+    </div>`;
+    const sel = el.querySelector('.stcm-dm-to-as');
+    const nameInput = el.querySelector('.stcm-dm-to-name');
+    const sync = () => { nameInput.style.display = sel.value === 'user' ? 'none' : ''; };
+    sel.addEventListener('change', sync);
+    sync();
+    el.scrollTop = 0;
+}
+
+function readDmTarget(box) {
+    const as = box.querySelector('.stcm-dm-to-as')?.value;
+    const name = (box.querySelector('.stcm-dm-to-name')?.value ?? '').trim();
+    const nick = (box.querySelector('.stcm-dm-to-nick')?.value ?? '').trim();
+    if (as === 'user') return { as: 'user', name: ctx().name1 || 'User', nick };
+    if (as === 'char') return { as: 'char', charName: name, name, nick };
+    return { as: 'mob', name, nick };
+}
+
+async function createDm(box) {
+    const feed = getFeed(dmDraft?.feedId);
+    if (!feed) return;
+    const me = readIdentity(box);
+    if (!checkIdentity(me)) return;
+    const partner = readDmTarget(box);
+    if (partner.as !== 'user' && !partner.name) { toastr.warning('받는 사람 이름을 적어 주세요.'); return; }
+    const body = box.querySelector('.stcm-cp-body').value.trim();
+    const react = box.querySelector('.stcm-cp-react').checked;
+    if (!body && !react) { toastr.warning('첫 메시지를 쓰거나 "상대가 먼저 말 걸기"를 켜 주세요.'); return; }
+    await rememberIdentity(me);
+    const post = {
+        kind: 'dm',
+        dm: { me: { as: me.as, nick: me.nick, charName: me.charName }, partner },
+        author: '', handle: '', title: dmSideName(partner), body: '', body_tr: '', time: '', likes: 0, views: 0, shares: 0, tags: [],
+        comments: [],
+    };
+    if (body) post.comments.push({ ...playerItem(feed.platform, { ...me, body }), replies: [] });
+    feed.data.posts.push(post);
+    const idx = feed.data.posts.length - 1;
+    dsSel.set(feed.id, idx);
+    await saveChatStore();
+    showFeed(feed.id, { keepScroll: true });
+    if (react) await generateMoreComments(feed.id, idx, { playerJustPosted: !!body });
+}
+
+function openDsPane(feedId, idx) {
+    dsSel.set(feedId, idx);
+    const feedEl = document.getElementById('stcm_feed');
+    feedEl.querySelectorAll('.stcm-discord .stcm-ds-pane').forEach(a => a.classList.toggle('stcm-hide', Number(a.dataset.post) !== idx));
+    feedEl.querySelectorAll('.stcm-discord .stcm-ds-ch').forEach(b => b.classList.toggle('active', Number(b.dataset.idx) === idx));
+    if (composer && composer.feedId === feedId && composer.postIdx !== idx) {
+        const prev = composer.postIdx;
+        composer = null;
+        updatePost(feedId, prev);
+    }
+    // show the newest messages of the opened channel
+    const pane = feedEl.querySelector(`.stcm-ds-pane[data-post="${idx}"] .stcm-actions`);
+    if (pane) {
+        const fr = feedEl.getBoundingClientRect();
+        const r = pane.getBoundingClientRect();
+        if (r.bottom > fr.bottom || r.top < fr.top) feedEl.scrollBy({ top: r.bottom - fr.bottom + 12, behavior: 'auto' });
+    }
+}
 
 // ---------------------------------------------------------------------------
 // World info selection
@@ -2421,6 +2851,11 @@ function buildOverlay() {
     });
     document.getElementById('stcm_feed').addEventListener('click', onFeedClick);
     document.getElementById('stcm_feed').addEventListener('change', onFeedChange);
+    document.getElementById('stcm_feed').addEventListener('input', (e) => {
+        if (!e.target.classList?.contains('stcm-td-q')) return;
+        tdState(e.target.dataset.feed).q = e.target.value;
+        tdApply(e.target.dataset.feed);
+    });
     document.getElementById('stcm_import_file').addEventListener('change', async (e) => {
         const f = e.target.files?.[0];
         e.target.value = '';
@@ -2464,6 +2899,12 @@ function buildOverlay() {
 }
 
 function readIdentity(root) {
+    const box = root.closest?.('.stcm-composer');
+    const dmPost = box ? getFeed(box.dataset.feed)?.data.posts[Number(box.dataset.idx)] : null;
+    if (dmPost?.kind === 'dm') {
+        const me = dmPost.dm?.me ?? {};
+        return { as: me.as ?? 'mob', nick: me.nick ?? '', charName: me.charName ?? '' };
+    }
     const as = root.querySelector('.stcm-cp-as')?.value;
     return {
         as: ['user', 'char'].includes(as) ? as : 'mob',
@@ -2559,7 +3000,69 @@ async function onFeedClick(e) {
         return;
     }
     if (act === 'reply') {
-        switchComposer({ feedId, postIdx: idx, replyTo: Number(el.dataset.ci), place: `c${el.dataset.ci}` });
+        const chatLike = PLATFORMS[getFeed(feedId)?.platform]?.chat;
+        switchComposer({ feedId, postIdx: idx, replyTo: Number(el.dataset.ci), place: chatLike ? 'end' : `c${el.dataset.ci}` });
+        return;
+    }
+    if (act === 'ds-open') { openDsPane(feedId, idx); return; }
+    if (act === 'dm-new') { showDmCompose(feedId, el.dataset.to ?? ''); return; }
+    if (act === 'dm-cancel') { dmDraft = null; showFeed(currentFeedId); return; }
+    if (act === 'dm-create') { await createDm(el.closest('.stcm-dm-view')); return; }
+    if (act === 'ai-write-dm') {
+        const box = el.closest('.stcm-dm-view');
+        const feed = getFeed(dmDraft?.feedId);
+        if (!feed) return;
+        const identity = readIdentity(box);
+        if (!checkIdentity(identity)) return;
+        const partner = readDmTarget(box);
+        const bodyEl = box.querySelector('.stcm-cp-body');
+        const out = await aiWrite({
+            kind: 'dm', mode: feed.mode, platformId: feed.platform, identity,
+            instruction: box.querySelector('.stcm-cp-inst').value,
+            draft: bodyEl.value, feed, dmTo: dmSideEn(partner),
+        });
+        if (out && document.body.contains(bodyEl)) bodyEl.value = out.body;
+        return;
+    }
+    if (act === 'td-toggle') {
+        const key = `${feedId}:${idx}`;
+        const art = el.closest('.stcm-td-post');
+        if (tdOpen.has(key)) tdOpen.delete(key); else tdOpen.add(key);
+        art?.classList.toggle('open', tdOpen.has(key));
+        return;
+    }
+    if (act === 'td-cat' || act === 'td-filter') {
+        const st = tdState(feedId);
+        if (act === 'td-cat') { st.cat = el.dataset.cat; tdCat.set(feedId, st.cat); }
+        else st.filter = el.dataset.filter;
+        tdApply(feedId);
+        return;
+    }
+    if (act === 'td-sort') {
+        tdState(feedId).sort = el.dataset.sort;
+        showFeed(feedId, { keepScroll: true });
+        return;
+    }
+    if (act === 'td-best') {
+        const st = tdState(feedId);
+        const n = tdBestList(getFeed(feedId)).length;
+        if (n) st.best = (st.best + Number(el.dataset.dir) + n) % n;
+        showFeed(feedId, { keepScroll: true });
+        return;
+    }
+    if (act === 'td-open') {
+        tdOpen.add(`${feedId}:${idx}`);
+        const st = tdState(feedId);
+        const post = getFeed(feedId)?.data.posts[idx];
+        if (post && !tdVisible(getFeed(feedId), post)) { st.cat = '전체'; st.filter = 'all'; st.q = ''; }
+        showFeed(feedId, { keepScroll: true });
+        scrollToPostSmooth(idx);
+        return;
+    }
+    if (act === 'td-write') {
+        const feed = getFeed(feedId);
+        if (feed) { selPlatform = feed.platform; selMode = feed.mode; }
+        showCompose();
         return;
     }
     if (act === 'anchor') {
@@ -2652,7 +3155,10 @@ async function onFeedClick(e) {
     }
     if (act === 'del-post') {
         const { Popup, POPUP_RESULT } = ctx();
-        const ok = Popup?.show?.confirm ? (await Popup.show.confirm('내 글 삭제', '이 글과 달린 댓글을 모두 지울까요?')) === POPUP_RESULT.AFFIRMATIVE : confirm('이 글을 지울까요?');
+        const isDm = getFeed(feedId)?.data.posts[idx]?.kind === 'dm';
+        const ok = Popup?.show?.confirm
+            ? (await Popup.show.confirm(isDm ? 'DM 삭제' : '내 글 삭제', isDm ? '이 DM 대화를 모두 지울까요?' : '이 글과 달린 댓글을 모두 지울까요?')) === POPUP_RESULT.AFFIRMATIVE
+            : confirm('지울까요?');
         if (ok) await deletePlayerItem(feedId, idx, null, null);
         return;
     }
@@ -2666,6 +3172,7 @@ async function onFeedClick(e) {
             title: box.querySelector('.stcm-cp-title')?.value ?? '',
             body: box.querySelector('.stcm-cp-body').value,
             board: box.querySelector('.stcm-cp-board')?.value ?? '',
+            category: box.querySelector('.stcm-cp-cat')?.value ?? '',
             identity: readIdentity(box),
             react: box.querySelector('.stcm-cp-react').checked,
         });
@@ -2928,7 +3435,7 @@ function showFeed(feedId, opts = {}) {
         ${hasTr ? `<button id="stcm_tr_toggle" class="${showTr ? 'on' : ''}" title="${showTr ? '원문 보기' : '번역 보기'}"><i class="fa-solid fa-language"></i> 번역</button>` : ''}`;
     const render = renderers[feed.platform] ?? renderers.naver;
     el.innerHTML = render(feed) + `
-        <div class="stcm-more-posts"><button data-act="more-posts" data-feed="${esc(feed.id)}"><i class="fa-solid fa-plus"></i> 이 게시판에 글 더 불러오기</button></div>`;
+        <div class="stcm-more-posts"><button data-act="more-posts" data-feed="${esc(feed.id)}"><i class="fa-solid fa-plus"></i> ${PLATFORMS[feed.platform]?.chat ? '이 서버에 채널 더 만들기' : '이 게시판에 글 더 불러오기'}</button></div>`;
 
     if (opts.scrollToPost != null) {
         scrollToPostSmooth(opts.scrollToPost, false);
@@ -3068,7 +3575,8 @@ function showCompose() {
             : '선택한 커뮤니티에 새 피드를 만들고 글을 올려요. (위에서 모드·커뮤니티를 바꿀 수 있어요)'}</p>
         ${identityControls()}
         ${appending ? '' : `<input class="stcm-cp-board" type="text" placeholder="게시판 / 갤러리 / 서브레딧 / 해시태그 이름 (선택)">`}
-        ${p.hasTitle ? `<input class="stcm-cp-title" type="text" placeholder="${p.thread ? '스레드 제목' : '제목'}">` : ''}
+        ${p.hasTitle || p.chat ? `<input class="stcm-cp-title" type="text" placeholder="${p.chat ? '채널 이름 (예: 잡담) — 새 채널이 생기고 첫 메시지가 올라가요' : (p.thread ? '스레드 제목' : '제목')}">` : ''}
+        ${selPlatform === 'tdgall' ? `<select class="stcm-cp-cat">${TD_CATS.filter(c => c !== '전체').map(c => `<option value="${esc(c)}" ${feed && tdState(feed.id).cat === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>` : ''}
         <textarea class="stcm-cp-body" rows="7" placeholder="${p.thread ? '>>1 본문' : '본문'}"></textarea>
         <div class="stcm-cp-ai">
             <input class="stcm-cp-inst" type="text" maxlength="500" placeholder="AI에게 지시 (선택) — 비우면 고른 글 주제에 맞게">
@@ -3175,6 +3683,17 @@ function importFeed(f, chatLen) {
         }));
         if (p?.part != null) post.part = intOr(p.part, 1);
         if (p?.watch === true) post.watch = true;
+        if (p?.kind === 'dm' && p.dm && typeof p.dm === 'object') {
+            const side = (x) => ({
+                as: ['user', 'char', 'mob'].includes(x?.as) ? x.as : 'mob',
+                name: String(x?.name ?? '').slice(0, 100),
+                charName: String(x?.charName ?? '').slice(0, 100),
+                nick: String(x?.nick ?? '').slice(0, 60),
+            });
+            post.kind = 'dm';
+            post.dm = { me: side(p.dm.me), partner: side(p.dm.partner) };
+        }
+        post.comments.forEach((c, ci) => { const r = p?.comments?.[ci]?.ref; if (Number.isInteger(r) && r >= 0 && r < ci) c.ref = r; });
         if (p?.crossRef === true) post.crossRef = true;
         for (const k of ['prevIdx', 'nextIdx']) if (Number.isInteger(p?.[k])) post[k] = p[k];
         return post;
@@ -3794,7 +4313,7 @@ function registerCommands() {
         namedArgumentList: [
             SlashCommandNamedArgument.fromProps({
                 name: 'platform',
-                description: 'naver | dcinside | reddit | twitter | fivech | weibo | tieba',
+                description: Object.keys(PLATFORMS).join(' | '),
                 typeList: [ARGUMENT_TYPE.STRING],
                 enumList: Object.keys(PLATFORMS),
             }),
