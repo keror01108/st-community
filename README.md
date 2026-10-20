@@ -8,11 +8,11 @@
 
 ## 설치
 
-1. `st-community` 폴더를 통째로 아래 중 한 곳에 넣습니다.
-   - `SillyTavern/data/default-user/extensions/` (사용자 이름이 다르면 `default-user` 대신 그 이름)
-   - 또는 `SillyTavern/public/scripts/extensions/third-party/`
-2. 실리태번을 새로고침합니다.
-3. 확장 메뉴(블록 모양 아이콘)에 **커뮤니티 피드** 항목이 생기면 성공입니다.
+1. 실리태번 위쪽 **확장 메뉴(블록 모양 아이콘)** → **확장 프로그램 설치 (Install extension)**를 누릅니다.
+2. 주소 칸에 `https://github.com/keror01108/st-community` 를 붙여 넣고 설치합니다.
+3. 채팅창 왼쪽 마법봉 메뉴에 **커뮤니티** 항목이 생기면 성공입니다.
+
+업데이트는 확장 관리에서 이 확장 옆의 업데이트 버튼으로 할 수 있어요.
 
 ## 처음 설정
 
