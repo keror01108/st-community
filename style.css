@@ -916,9 +916,9 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
 /* ---------- API view ---------- */
 .stcm-api-view select, .stcm-api-view input[type="number"] { width: 100%; max-width: 420px; box-sizing: border-box; }
 .stcm-api-info { margin-top: 4px; word-break: break-all; }
-.stcm-api-result { flex: 1; min-width: 0; font-size: 12px; color: var(--s-sub); overflow-wrap: anywhere; }
-.stcm-api-result.ok { color: #2e9e5b; }
-.stcm-api-result.bad { color: #d9534f; }
+.stcm-api-result, .stcm-api-trresult { flex: 1; min-width: 0; font-size: 12px; color: var(--s-sub); overflow-wrap: anywhere; }
+.stcm-api-result.ok, .stcm-api-trresult.ok { color: #2e9e5b; }
+.stcm-api-result.bad, .stcm-api-trresult.bad { color: #d9534f; }
 .stcm-api-view + .stcm-api-view { margin-top: 12px; }
 .stcm-api-view .stcm-cp-row input { flex: 1; min-width: 0; }
 .stcm-api-view .stcm-cp-row button { flex: 0 0 auto; white-space: nowrap; }
@@ -971,7 +971,7 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
 
 /* ---------- settings inside the panel (⚙) ---------- */
 .stcm-settings-view { padding: 12px 14px 20px; color: var(--s-text); }
-.stcm-settings-view > .inline-drawer-content { display: flex !important; flex-direction: column; gap: 6px; padding: 0; margin: 0; border: 0; background: none; }
+.stcm-settings-view > .inline-drawer-content { display: block !important; padding: 0; margin: 0; border: 0; background: none; }
 .stcm-settings-view #stcm_set_open { display: none !important; }
 .stcm-settings-view label { color: var(--s-text); font-size: 13px; }
 .stcm-settings-view small, .stcm-settings-view .stcm-help { color: var(--s-sub); }

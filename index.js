@@ -27,6 +27,7 @@ const defaultSettings = Object.freeze({
     contextMessages: 20,
     npcPosts: 'auto',            // story side characters posting themselves: auto | on | off
     translateConn: '',           // '' = translate in the same call · 'main' · ST profile id · 'api:<id>'
+    translateModel: '',          // model for that translation connection ('' = the connection's own model)
     extMemory: true,             // read memory / summaries other extensions inject (Memoria, VectFox, …)
     extMemoryChoice: {},         // injection key → true/false (unset: memory-looking keys on, others off)
     extMemoryMax: 8000,
@@ -1232,14 +1233,15 @@ async function buildContinuePrompt({ feed, postIdx, count, playerJustPosted }) {
 // ---------------------------------------------------------------------------
 // Model call + parsing
 // ---------------------------------------------------------------------------
-async function callModel(system, user, signal, connValue) {
+async function callModel(system, user, signal, connValue, modelOverride = '') {
     const c = ctx();
     const s = getSettings();
     const conn = resolveConnection(connValue);
+    const forced = String(modelOverride ?? '').trim();
 
     if (conn.type === 'api') {
         if (!conn.api) throw new Error('골라 둔 API가 지워졌어요. 커뮤니티 창의 API 설정에서 다시 골라 주세요.');
-        return callCustomApi(conn.api, system, user, signal);
+        return callCustomApi(forced ? { ...conn.api, model: forced } : conn.api, system, user, signal);
     }
     if (conn.type === 'profile') {
         if (!connectionManagerOn()) throw new Error('Connection Manager 확장이 꺼져 있어요. 커뮤니티 창의 API 설정에서 다른 연결을 고르거나, 확장을 다시 켜 주세요.');
@@ -1250,7 +1252,7 @@ async function callModel(system, user, signal, connValue) {
             { role: 'user', content: user },
         ];
         if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-        const model = String(s.modelOverrides[conn.profile.id] ?? '').trim();
+        const model = forced || String(s.modelOverrides[conn.profile.id] ?? '').trim();
         const prompt = svc.constructPrompt(messages, conn.profile.id);
         const res = await svc.sendRequest(conn.profile.id, prompt, Number(s.maxTokens) || 4000, {
             stream: false,
@@ -1519,7 +1521,7 @@ async function translateFeed(feedId) {
         const user = JSON.stringify({ items: batch.map((t, id) => ({ id, text: t.o[t.field] })) });
         let raw;
         try {
-            raw = await callModel(system, user, null, getSettings().translateConn);
+            raw = await callModel(system, user, null, getSettings().translateConn, getSettings().translateModel);
         } catch (e) {
             batch.forEach(t => mark(t, false));   // the request failed: try these again next time
             throw e;
@@ -4518,7 +4520,9 @@ function trConnOptionsHtml() {
 }
 
 function setTranslateConnection(value) {
-    getSettings().translateConn = String(value ?? '');
+    const s = getSettings();
+    if (s.translateConn !== String(value ?? '')) s.translateModel = '';
+    s.translateConn = String(value ?? '');
     saveSettings();
     if (!resolvedTranslation() && value) toastr.info('번역할 언어를 먼저 골라야 번역이 돼요 (설정 → 번역 함께 생성).', '', { timeOut: 3000 });
 }
@@ -4674,6 +4678,28 @@ function apiFormHtml() {
     </div>`;
 }
 
+/** Default model of the translation connection (what an empty model box means). */
+function trDefaultModel(conn) {
+    if (conn.type === 'api') return conn.api?.model || '';
+    if (conn.type === 'profile') return String(getSettings().modelOverrides[conn.profile?.id] ?? '').trim() || conn.profile?.model || '';
+    return '';
+}
+
+/** Model box + "목록 불러오기" for the translation connection (profiles and added APIs only). */
+function trModelRow() {
+    const s = getSettings();
+    if (!s.translateConn || s.translateConn === 'main') return '';
+    const conn = resolveConnection(s.translateConn);
+    if ((conn.type === 'api' && !conn.api) || (conn.type === 'profile' && !conn.profile)) return '';
+    const key = conn.type === 'api' ? `api:${conn.api.id}` : `p:${conn.profile.id}`;
+    const def = trDefaultModel(conn);
+    return `<label class="stcm-cp-check">번역 모델 <small>비워 두면 ${def ? `그 연결의 모델 (${esc(def)})` : '그 연결의 기본 모델'}을 써요</small></label>
+        <div class="stcm-cp-row">
+            <input class="stcm-api-trmodel" type="text" maxlength="200" placeholder="${esc(def || '모델 이름')}" value="${esc(s.translateModel ?? '')}">
+            <button data-act="api-trmodels"><i class="fa-solid fa-list"></i> 목록 불러오기</button>
+        </div>${modelPickerHtml('stcm-api-trmodelsel', key, s.translateModel || def)}`;
+}
+
 function showApi({ keepScroll = false } = {}) {
     const el = document.getElementById('stcm_feed');
     const top = el.scrollTop;
@@ -4731,9 +4757,11 @@ function showApi({ keepScroll = false } = {}) {
     <div class="stcm-compose-view stcm-api-view">
         <label class="stcm-cp-check">번역에 쓸 연결</label>
         <select class="stcm-api-trconn">${trConnOptionsHtml()}</select>
+        ${trModelRow()}
         <p class="stcm-cp-hint">${resolvedTranslation()
-            ? `번역 언어: <b>${esc(resolvedTranslation())}</b>. 따로 고르면 글을 먼저 만들고, 그 연결이 뒤이어 번역해요 (생성 프롬프트가 짧아지고, 번역은 싼 모델에 맡길 수 있어요). 모델은 위와 같은 방식으로 그 연결의 모델을 써요.`
+            ? `번역 언어: <b>${esc(resolvedTranslation())}</b>. 따로 고르면 글을 먼저 만들고, 그 연결이 뒤이어 번역해요 (생성 프롬프트가 짧아지고, 번역은 싼 모델에 맡길 수 있어요).`
             : '지금은 번역을 안 해요. ⚙ 설정의 "번역 함께 생성"에서 언어를 고르면 번역이 켜져요.'}</p>
+        <div class="stcm-cp-foot"><span class="stcm-api-trresult"></span>${getSettings().translateConn && resolvedTranslation() ? '<button data-act="api-trtest"><i class="fa-solid fa-plug-circle-check"></i> 번역 테스트</button>' : ''}</div>
     </div>
     <div class="stcm-compose-view stcm-api-view stcm-api-custom">
         <label class="stcm-cp-check">직접 추가한 API</label>
@@ -4780,7 +4808,7 @@ async function onApiClick(act, el) {
         s.customApis = s.customApis.filter(x => x.id !== a.id);
         apiModelCache.delete(`api:${a.id}`);
         if (s.profileId === `api:${a.id}`) s.profileId = '';
-        if (s.translateConn === `api:${a.id}`) s.translateConn = '';   // back to translating in the same call
+        if (s.translateConn === `api:${a.id}`) { s.translateConn = ''; s.translateModel = ''; }   // back to translating in the same call
         if (apiEdit?.id === a.id) apiEdit = null;
         saveSettings();
         refreshConnSelectors();
@@ -4841,6 +4869,40 @@ async function onApiClick(act, el) {
         toastr.success(isNew ? `"${esc(entry.name)}" 추가 — 지금부터 이 API로 생성해요.` : `"${esc(entry.name)}" 저장했어요.`);
         return true;
     }
+    if (act === 'api-trtest') {
+        const note = el.closest('.stcm-api-view')?.querySelector('.stcm-api-trresult');
+        el.disabled = true;
+        setNote(note, '확인 중…');
+        try {
+            const system = fillTpl(getPrompt('translate_separate'), { translation: resolvedTranslation() });
+            const raw = await callModel(system, JSON.stringify({ items: [{ id: 0, text: 'Good morning! The festival starts tonight.' }] }), null, s.translateConn, s.translateModel);
+            let text = '';
+            try { const d = extractJson(raw); text = (Array.isArray(d) ? d : d?.items ?? [])[0]?.text ?? ''; } catch { /* not JSON */ }
+            setNote(note, text ? `번역 확인: ${truncate(text, 60)}` : `응답은 왔는데 형식이 달라요: ${truncate(String(raw ?? '').trim(), 60)}`, !!text);
+        } catch (e) {
+            setNote(note, `실패: ${truncate(String(e?.message ?? e), 160)}`, false);
+        } finally { el.disabled = false; }
+        return true;
+    }
+    if (act === 'api-trmodels') {
+        const conn = resolveConnection(s.translateConn);
+        const box = el.closest('.stcm-api-view');
+        const note = box.querySelector('.stcm-api-trresult');
+        el.disabled = true;
+        setNote(note, '목록 불러오는 중…');
+        try {
+            let ids; let key;
+            if (conn.type === 'api' && conn.api) { ids = await listApiModels(conn.api); key = `api:${conn.api.id}`; }
+            else if (conn.type === 'profile' && conn.profile) { ids = await listProfileModels(conn.profile); key = `p:${conn.profile.id}`; }
+            else return true;
+            apiModelCache.set(key, ids);
+            fillModelPicker(box, 'stcm-api-trmodelsel', key, box.querySelector('.stcm-api-trmodel')?.value || trDefaultModel(conn));
+            setNote(note, ids.length ? `모델 ${ids.length}개 — 아래 목록에서 고르세요.` : '목록이 비어 있어요. 모델 이름을 직접 적어 주세요.', ids.length > 0);
+        } catch (e) {
+            setNote(note, `목록을 못 불러왔어요: ${truncate(String(e?.message ?? e), 120)}`, false);
+        } finally { el.disabled = false; }
+        return true;
+    }
     if (act === 'api-models') {
         const conn = resolveConnection();
         const box = el.closest('.stcm-api-view');
@@ -4870,7 +4932,18 @@ function onApiChange(e) {
     if (!box) return false;
     const s = getSettings();
     if (t.classList.contains('stcm-api-trconn')) {
-        if (e.type === 'change') setTranslateConnection(t.value);
+        if (e.type === 'change') { setTranslateConnection(t.value); showApi({ keepScroll: true }); }
+        return true;
+    }
+    if (t.classList.contains('stcm-api-trmodel')) {
+        s.translateModel = t.value.trim().slice(0, 200);
+        saveSettings();
+        return true;
+    }
+    if (t.classList.contains('stcm-api-trmodelsel')) {
+        if (e.type !== 'change' || !t.value) return true;
+        const input = box.querySelector('.stcm-api-trmodel');
+        if (input) { input.value = t.value; input.dispatchEvent(new Event('input', { bubbles: true })); }
         return true;
     }
     if (t.classList.contains('stcm-api-modelsel') || t.classList.contains('stcm-af-modelsel')) {
@@ -5070,7 +5143,8 @@ function addSettingsPanel() {
           <b>커뮤니티 피드</b>
           <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
-        <div class="inline-drawer-content stcm-set">
+        <div class="inline-drawer-content">
+        <div class="stcm-set">
           <div class="menu_button" id="stcm_set_open"><i class="fa-solid fa-comments"></i> 커뮤니티 열기</div>
 
           <small class="stcm-help"><i class="fa-solid fa-server"></i> 피드는 채팅 파일이 아니라 서버의 사용자 파일 폴더(<code>data/사용자/user/files/stcm-feed-*.json</code>)에 저장돼요.</small>
@@ -5189,6 +5263,7 @@ function addSettingsPanel() {
             <div class="menu_button" id="stcm_set_prompt_reset_all">전체 기본값으로</div>
           </div>
           <small class="stcm-help">쓸 수 있는 변수: <code>{{char}}</code> <code>{{user}}</code> <code>{{platform}}</code> (커뮤니티 영어 이름), <code>{{language}}</code> (언어 항목), <code>{{translation}}</code> (번역 항목), <code>{{count}}</code> (개수), <code>{{comments}}</code> (글당 댓글 수). 실리태번 매크로도 쓸 수 있어요. 비워 두면 기본값을 써요.</small>
+        </div>
         </div>
       </div>
     </div>`;
