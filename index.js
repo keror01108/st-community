@@ -160,7 +160,8 @@ Output ONLY a JSON object, no code fences: {"title": "post title, or empty when 
 
     language_native: `Write all posts and comments in {{language}}.`,
 
-    language_fixed: `Write all posts and comments in {{language}}, while keeping the platform's culture, formatting and slang flavor, naturally adapted into {{language}}.`,
+    language_fixed: `Write all posts and comments in {{language}}, while keeping the platform's culture, formatting and slang flavor, naturally adapted into {{language}}. Every word must be {{language}}: never mix in words, set phrases, slang or parenthetical originals from another language (for example no "绝了", "(原文)" or "姊妹快跑 (…)"); only personal names and brand names may stay as they are.`,
+    language_foreign: `This is a {{language}}-localized version of {{platform}}, whose users normally write in {{native}}. The platform guide's example words, slang and emoji tags are written in {{native}} — never copy them; express the same nuance with natural {{language}} (emoji tags too, e.g. [눈물] or [tears] instead of [泪]). Do not borrow slang that belongs to {{language}}-speaking sites either (for Korean: 원덬, 덬, 글쓴덬, 갤러, 념글, 개추, ㅇㅇ and similar terms from Korean communities). Write the way a skilled translator would localize these posts, so it still reads as {{platform}} culture.`,
 
     translation: `ALSO fill "body_tr" for every post and comment with a natural {{translation}} translation that keeps the tone and slang. If the original is already in {{translation}}, leave "body_tr" empty.`,
 
@@ -180,7 +181,7 @@ Output ONLY a JSON object, no code fences: {"title": "post title, or empty when 
       "title": "post title (empty for X/Twitter and Weibo)",
       "body": "post text; use \\n for line breaks",
       "body_tr": "",
-      "time": "relative time as shown on the platform, in the platform's language",
+      "time": "relative time as shown on the platform, written in the output language",
       "likes": 0, "views": 0, "shares": 0,
       "tags": ["optional flair / category / hashtag"],
       "comments": [
@@ -231,6 +232,7 @@ const PROMPT_LABELS = {
     player_mob: '모브로 쓴 글 설명',
     language_native: '언어: 커뮤니티 원어',
     language_fixed: '언어: 지정 언어',
+    language_foreign: '언어: 외국 커뮤니티를 다른 언어로 쓸 때',
     translation: '번역 지시',
     inject_authored: '본편 반영: 캐릭터/유저가 쓴 글',
     inject_world: '본편 반영: 세계관 속 글',
@@ -678,8 +680,10 @@ function num(n, style) {
     return String(n);
 }
 
-function nowLabel(platformId) {
+function nowLabel(platformId, langName = resolvedLanguage()) {
     const p = PLATFORMS[platformId];
+    const w = uiWords(platformId, langName);
+    if (w && platformId !== 'fivech') return w.now;
     if (p.now) return p.now;
     // 2ch-style timestamp
     const d = new Date();
@@ -729,12 +733,61 @@ function resolvedTranslation() {
     return s.translateTo;
 }
 
-function languageInstruction(platformId) {
-    const fixed = resolvedLanguage();
+// The language each community is written in by default (Discord / X follow the story)
+const NATIVE_LANG = { naver: 'ko', dcinside: 'ko', tdgall: 'ko', reddit: 'en', fivech: 'ja', weibo: 'zh', tieba: 'zh' };
+const LANG_LABEL = { ko: 'Korean', en: 'English', ja: 'Japanese', zh: 'Chinese' };
+
+function langCode(name) {
+    const s = String(name ?? '').toLowerCase();
+    if (!s) return '';
+    if (/korean|한국|조선/.test(s)) return 'ko';
+    if (/japanese|日本|일본/.test(s)) return 'ja';
+    if (/chinese|中文|汉语|漢語|중국|mandarin|cantonese/.test(s)) return 'zh';
+    if (/english|영어/.test(s)) return 'en';
+    return 'other';
+}
+
+/** Which label set a skin uses: '' = the platform's own language, else ko / en / ja / zh. */
+function uiLang(platformId, langName) {
+    const code = langCode(langName);
+    const native = NATIVE_LANG[platformId];
+    if (!code || !native || code === native) return '';
+    return code === 'other' ? 'en' : code;
+}
+
+// Fixed UI words of the Chinese / Japanese skins when the feed is written in another language
+const UI_WORDS = {
+    ko: { via: '웨이보 앱', bar: ' 티에바', lz: '글쓴이', floor: (n) => `${n}층`, name: '이름:', now: '방금', anon: { fivech: '이름 없음', weibo: '웨이보 유저', tieba: '익명 유저', reddit: 'throwaway' }, over: (n) => `이 스레드는 ${n}을 넘었어요.<br>새 스레드를 세워 주세요.` },
+    en: { via: 'via Weibo app', bar: ' Bar', lz: 'OP', floor: (n) => `#${n}`, name: 'Name:', now: 'just now', anon: { fivech: 'Anonymous', weibo: 'Weibo user', tieba: 'Anonymous user', reddit: 'throwaway' }, over: (n) => `This thread has passed ${n} posts.<br>Please start a new thread.` },
+    ja: { via: 'Weiboアプリから', bar: 'バー', lz: 'スレ主', floor: (n) => `${n}階`, name: '名前：', now: 'たった今', anon: { fivech: '名無しさん', weibo: 'Weiboユーザー', tieba: '匿名ユーザー', reddit: 'throwaway' }, over: (n) => `このスレッドは${n}を超えました。<br>新しいスレッドを立ててください。` },
+    zh: { via: '来自 微博客户端', bar: '吧', lz: '楼主', floor: (n) => `${n}楼`, name: '名字：', now: '刚刚', anon: { fivech: '无名氏', weibo: '微博用户', tieba: '匿名用户', reddit: 'throwaway' }, over: (n) => `本帖已超过${n}楼。<br>请开新帖。` },
+};
+
+/** UI words for a feed (or for the current language setting when no feed yet). */
+function uiWords(platformId, langName) {
+    const l = uiLang(platformId, langName);
+    return l ? UI_WORDS[l] : null;
+}
+
+/** Output language of a feed: the one it was made in (older feeds: the current setting). '' / null = native. */
+function feedLang(feed) {
+    return feed && typeof feed.lang === 'string' ? feed.lang : resolvedLanguage();
+}
+
+/** "Write in X" rules shared by every prompt. */
+function languageRules(platformId, fixed) {
+    if (!fixed) return [fillTpl(getPrompt('language_native'), { language: PLATFORMS[platformId].lang })];
+    const parts = [fillTpl(getPrompt('language_fixed'), { language: fixed })];
+    const native = NATIVE_LANG[platformId];
+    if (native && langCode(fixed) !== native) {
+        parts.push(fillTpl(getPrompt('language_foreign'), { language: fixed, native: LANG_LABEL[native], platform: PLATFORMS[platformId].name }));
+    }
+    return parts;
+}
+
+function languageInstruction(platformId, fixed = resolvedLanguage()) {
     const tr = resolvedTranslation();
-    const parts = [];
-    if (fixed) parts.push(fillTpl(getPrompt('language_fixed'), { language: fixed }));
-    else parts.push(fillTpl(getPrompt('language_native'), { language: PLATFORMS[platformId].lang }));
+    const parts = languageRules(platformId, fixed);
     if (tr) parts.push(fillTpl(getPrompt('translation'), { translation: tr }));
     else parts.push('Leave "body_tr" empty.');
     return parts.join('\n');
@@ -821,13 +874,13 @@ async function buildContextBlock() {
     return parts.join('\n\n');
 }
 
-function commonBlocks(mode, platformId) {
+function commonBlocks(mode, platformId, lang = resolvedLanguage()) {
     const vars = baseVars(platformId);
     return {
         system: fillTpl(getPrompt('system'), vars),
         task: fillTpl(getPrompt(mode === 'world' ? 'mode_world' : 'mode_meta'), vars),
         style: fillTpl(getPrompt(`guide_${platformId}`), vars),
-        language: languageInstruction(platformId),
+        language: languageInstruction(platformId, lang),
         extra: getSettings().extraInstruction?.trim() || '',
         vars,
     };
@@ -922,7 +975,7 @@ function buildCrossRefBlock(platformId, mode, excludePost = null) {
 async function buildPostsPrompt({ mode, platformId, topic, avoidFeed, background = false }) {
     const s = getSettings();
     const topicBlock = buildTopicBlock(Number(s.postCount) || 4, background);
-    const b = commonBlocks(mode, platformId);
+    const b = commonBlocks(mode, platformId, avoidFeed ? feedLang(avoidFeed) : resolvedLanguage());
     const storyText = await buildContextBlock();
 
     const store = getChatStore();
@@ -1018,7 +1071,7 @@ function threadHasPlayer(post) {
 
 /** Prompt for continuing comments on an existing post. */
 async function buildContinuePrompt({ feed, postIdx, count, playerJustPosted }) {
-    const b = commonBlocks(feed.mode, feed.platform);
+    const b = commonBlocks(feed.mode, feed.platform, feedLang(feed));
     const storyText = await buildContextBlock();
     const post = feed.data.posts[postIdx];
     const pl = threadHasPlayer(post);
@@ -1301,6 +1354,7 @@ function newFeedObject({ platformId, mode, topic, data }) {
         platform: platformId,
         mode,
         topic: topic || '',
+        lang: resolvedLanguage() || '',   // fixed output language at creation ('' = the community's own)
         createdAt: Date.now(),
         atMessage: (ctx().chat?.length ?? 1) - 1,
         data: data ?? { board: '', posts: [] },
@@ -1396,7 +1450,7 @@ async function generateNextThread(feedId, postIdx, { background = false } = {}) 
     const count = Math.max(1, Number(getSettings().continueCount) || 5);
     return runJob('후속 스레를 세우는 중…', background, async ({ signal, stillSameChat }) => {
         if (prev.nextIdx != null && feed.data.posts[prev.nextIdx]) return feed;   // made meanwhile
-        const b = commonBlocks(feed.mode, feed.platform);
+        const b = commonBlocks(feed.mode, feed.platform, feedLang(feed));
         const storyText = await buildContextBlock();
         const user = [
             `<story_context>\n${storyText}\n</story_context>`,
@@ -1477,17 +1531,18 @@ async function generateMoreComments(feedId, postIdx, { playerJustPosted = false,
 // ---------------------------------------------------------------------------
 // Player posts & comments
 // ---------------------------------------------------------------------------
-function playerItem(platformId, { as, nick, charName, body, title }) {
+function playerItem(platformId, { as, nick, charName, body, title }, langName = resolvedLanguage()) {
     const userName = ctx().name1 || 'User';
     const p = PLATFORMS[platformId];
-    const author = nick?.trim() || (as === 'user' ? userName : as === 'char' ? charName : p.anon);
+    const anon = uiWords(platformId, langName)?.anon?.[platformId] ?? p.anon;
+    const author = nick?.trim() || (as === 'user' ? userName : as === 'char' ? charName : anon);
     let handle = '';
     const digits = String(Math.floor(1000 + Math.random() * 9000));
     if (platformId === 'fivech') handle = randomId(8);
     else if (platformId === 'tdgall') handle = randomId(4);
     else if (platformId === 'twitter') handle = nick?.trim() || as !== 'mob' ? author.replace(/\s+/g, '_') : `user${digits}${randomId(3).toLowerCase()}`;
     else if (platformId === 'reddit') handle = nick?.trim() || as !== 'mob' ? author.replace(/\s+/g, '_') : `throwaway_${digits}`;
-    const item = { isMe: true, as, author, handle, body, body_tr: '', time: nowLabel(platformId), likes: 0 };
+    const item = { isMe: true, as, author, handle, body, body_tr: '', time: nowLabel(platformId, langName), likes: 0 };
     if (as === 'char') item.charName = charName;
     if (title !== undefined) Object.assign(item, { title, tags: [], views: 1, shares: 0, comments: [] });
     return item;
@@ -1521,7 +1576,7 @@ async function submitPlayerPost({ title, body, identity, react, board, category 
         await addFeed(feed);
     }
     const pf = PLATFORMS[feed.platform];
-    const post = playerItem(feed.platform, { ...identity, body: body.trim(), title: pf.hasTitle || pf.chat ? (title.trim() || (pf.chat ? '잡담' : '')) : '' });
+    const post = playerItem(feed.platform, { ...identity, body: body.trim(), title: pf.hasTitle || pf.chat ? (title.trim() || (pf.chat ? '잡담' : '')) : '' }, feedLang(feed));
     if (category) post.tags = [category];
     feed.data.posts.push(post);
     const postIdx = feed.data.posts.length - 1;
@@ -1541,7 +1596,7 @@ async function submitPlayerComment({ feedId, postIdx, replyTo, body, identity, r
     if (isThreadFull(feed, post)) { toastr.warning('이 스레드는 꽉 찼어요. 후속 스레에 써 주세요.'); return; }
     await rememberIdentity(identity);
 
-    const item = playerItem(feed.platform, { ...identity, body: body.trim() });
+    const item = playerItem(feed.platform, { ...identity, body: body.trim() }, feedLang(feed));
     const flat = !!PLATFORMS[feed.platform]?.flat;
     if (replyTo != null && replyTo >= 0 && post.comments[replyTo] && !flat) {
         post.comments[replyTo].replies.push(item);
@@ -1624,11 +1679,8 @@ function describeAuthor(identity, platformId) {
     return `an ordinary member of this community, not a story character${nick ? `, nickname "${nick}"` : ` (default name "${PLATFORMS[platformId].anon}")`}. Give them a believable personality of their own.`;
 }
 
-function playerLanguage(platformId) {
-    const fixed = resolvedLanguage();
-    return fixed
-        ? fillTpl(getPrompt('language_fixed'), { language: fixed })
-        : fillTpl(getPrompt('language_native'), { language: PLATFORMS[platformId].lang });
+function playerLanguage(platformId, fixed = resolvedLanguage()) {
+    return languageRules(platformId, fixed).join('\n');
 }
 
 /** Topic for a player-written post: one of the selected topic chips (when the scope allows manual use). */
@@ -1665,7 +1717,7 @@ async function aiWrite({ kind, mode, platformId, identity, instruction, draft, f
         if (topic) parts.push(`<topic>\nWrite it about this topic (it may be written in any language; follow its intent): ${topic.name}${topic.desc ? ` — ${topic.desc}` : ''}\n</topic>`);
         if (draft?.trim()) parts.push(`<draft>\n${draft.trim()}\n</draft>`);
         if (instruction?.trim()) parts.push(`<user_request>\nThe player's instruction for this text (it may be written in any language; follow its intent):\n${instruction.trim()}\n</user_request>`);
-        parts.push(`<language>\n${playerLanguage(platformId)}\n</language>`);
+        parts.push(`<language>\n${playerLanguage(platformId, feed && feed.platform === platformId ? feedLang(feed) : resolvedLanguage())}\n</language>`);
         if (b.extra) parts.push(`<extra_instructions>\n${b.extra}\n</extra_instructions>`);
         parts.push(fillTpl(getPrompt('player_write'), { ...b.vars, kind: kindLabel, author: describeAuthor(identity, platformId) }));
 
@@ -1883,7 +1935,7 @@ function threadNav(feed, i) {
     }
     const closed = isThreadFull(feed, post)
         ? (feed.platform === 'fivech'
-            ? `<div class="stcm-5-res stcm-closed"><div class="stcm-5-head"><span class="n">${threadCap('fivech') + 1}</span> 名前：<span class="name">${threadCap('fivech') + 1}</span> <span class="id">Over ${threadCap('fivech')} Thread</span></div><div class="stcm-body">このスレッドは${threadCap('fivech')}を超えました。<br>新しいスレッドを立ててください。</div></div>`
+            ? `<div class="stcm-5-res stcm-closed"><div class="stcm-5-head"><span class="n">${threadCap('fivech') + 1}</span> ${esc((uiWords('fivech', feed.lang) ?? UI_WORDS.ja).name)}<span class="name">${threadCap('fivech') + 1}</span> <span class="id">Over ${threadCap('fivech')} Thread</span></div><div class="stcm-body">${(uiWords('fivech', feed.lang) ?? UI_WORDS.ja).over(threadCap('fivech'))}</div></div>`
             : `<div class="stcm-closed-banner"><i class="fa-solid fa-lock"></i> This thread has reached the comment limit and is locked.</div>`)
         : '';
     return closed + (links.length ? `<div class="stcm-thread-nav">${links.join('')}</div>` : '');
@@ -2146,9 +2198,10 @@ const renderers = {
 
     fivech(feed) {
         const d = feed.data;
+        const w = uiWords('fivech', feed.lang) ?? UI_WORDS.ja;
         const res = (o, n, links, key) => `
             <div class="stcm-5-res" data-k="${key}">
-                <div class="stcm-5-head"><span class="n">${n}</span> 名前：<span class="name">${esc(o.author || '名無しさん')}</span>${meBadge(o)} <span class="date">${esc(o.time)}</span> <span class="id">ID:${esc(o.handle || '????????')}</span></div>
+                <div class="stcm-5-head"><span class="n">${n}</span> ${esc(w.name)}<span class="name">${esc(o.author || w.anon.fivech)}</span>${meBadge(o)} <span class="date">${esc(o.time)}</span> <span class="id">ID:${esc(o.handle || '????????')}</span></div>
                 <div class="stcm-body">${txt(o, 'fivech')}</div>
                 ${links}
             </div>`;
@@ -2178,7 +2231,7 @@ const renderers = {
             <div class="stcm-w-top"><i class="fa-brands fa-weibo"></i> ${esc(d.board || '微博')}</div>
             ${d.posts.map((p, i) => `
             <article class="stcm-w-post" data-post="${i}">
-                <div class="stcm-w-head">${avatar(p.author)}<div><b>${esc(p.author)}</b>${meBadge(p)}<small>${esc(p.time)} 来自 微博客户端</small></div></div>
+                <div class="stcm-w-head">${avatar(p.author)}<div><b>${esc(p.author)}</b>${meBadge(p)}<small>${esc(p.time)} ${esc(uiWords('weibo', feed.lang)?.via ?? '来自 微博客户端')}</small></div></div>
                 ${p.title ? `<h3>${esc(p.title)}</h3>` : ''}
                 <div class="stcm-body">${txt(p, 'weibo')}</div>
                 <div class="stcm-w-act"><span><i class="fa-solid fa-share"></i> ${num(p.shares, 'zh')}</span><span><i class="fa-regular fa-comment"></i> ${num(p.comments.length, 'zh')}</span><span><i class="fa-regular fa-thumbs-up"></i> ${num(p.likes, 'zh')}</span></div>
@@ -2327,23 +2380,24 @@ const renderers = {
 
     tieba(feed) {
         const d = feed.data;
-        const bar = String(d.board || '贴').replace(/吧$/, '');
+        const w = uiWords('tieba', feed.lang) ?? UI_WORDS.zh;
+        const bar = String(d.board || (w === UI_WORDS.zh ? '贴' : '')).replace(/吧$/, '').replace(/\s*(티에바|Bar|バー)$/i, '');
         return `<div class="stcm-skin stcm-tieba">
-            <div class="stcm-tb-top"><i class="fa-solid fa-paw"></i> ${esc(bar)}吧</div>
+            <div class="stcm-tb-top"><i class="fa-solid fa-paw"></i> ${esc(bar)}${esc(w.bar)}</div>
             ${d.posts.map((p, i) => {
                 let floor = 1;
                 return `<article class="stcm-tb-thread" data-post="${i}">
                 <h3>${esc(p.title)}</h3>
                 <div class="stcm-tb-floor op">
-                    <div class="stcm-tb-user">${avatar(p.author)}<b>${esc(p.author)}</b><span class="lz">楼主</span>${meBadge(p)}</div>
+                    <div class="stcm-tb-user">${avatar(p.author)}<b>${esc(p.author)}</b><span class="lz">${esc(w.lz)}</span>${meBadge(p)}</div>
                     <div class="stcm-body">${txt(p, 'tieba')}</div>
-                    <small>${floor}楼 · ${esc(p.time)}</small>
+                    <small>${w.floor(floor)} · ${esc(p.time)}</small>
                 </div>
                 ${p.comments.map((c, ci) => `
                 <div class="stcm-tb-floor" data-k="${i}.${ci}">
-                    <div class="stcm-tb-user">${avatar(c.author)}<b>${esc(c.author)}</b>${c.author === p.author ? '<span class="lz">楼主</span>' : ''}${meBadge(c)}</div>
+                    <div class="stcm-tb-user">${avatar(c.author)}<b>${esc(c.author)}</b>${c.author === p.author ? `<span class="lz">${esc(w.lz)}</span>` : ''}${meBadge(c)}</div>
                     <div class="stcm-body">${txt(c, 'tieba')}</div>
-                    <small>${++floor}楼 · ${esc(c.time)}</small>${itemLinks(feed, i, ci, null, c)}
+                    <small>${w.floor(++floor)} · ${esc(c.time)}</small>${itemLinks(feed, i, ci, null, c)}
                     ${c.replies.length ? `<div class="stcm-tb-lzl">${c.replies.map((r, ri) => `<div data-k="${i}.${ci}.${ri}"><b>${esc(r.author)}</b>${meBadge(r)}：${txt(r, 'tieba')} <small>${esc(r.time)}</small>${itemLinks(feed, i, ci, ri, r)}</div>`).join('')}</div>` : ''}
                     ${slotAt(feed, i, `c${ci}`)}
                 </div>`).join('')}
@@ -2567,7 +2621,7 @@ async function createDm(box) {
         author: '', handle: '', title: dmSideName(partner), body: '', body_tr: '', time: '', likes: 0, views: 0, shares: 0, tags: [],
         comments: [],
     };
-    if (body) post.comments.push({ ...playerItem(feed.platform, { ...me, body }), replies: [] });
+    if (body) post.comments.push({ ...playerItem(feed.platform, { ...me, body }, feedLang(feed)), replies: [] });
     feed.data.posts.push(post);
     const idx = feed.data.posts.length - 1;
     dsSel.set(feed.id, idx);
@@ -3897,6 +3951,7 @@ function importFeed(f, chatLen) {
         mode: MODES[f.mode] ? f.mode : 'meta',
         topic: String(f.topic ?? '').slice(0, 300),
         topics: Array.isArray(f.topics) ? f.topics.slice(0, 20).map(t => String(t).slice(0, 60)) : [],
+        ...(typeof f.lang === 'string' ? { lang: f.lang.replace(/[\n\r<>{}]/g, '').slice(0, 60) } : {}),
         createdAt: intOr(f.createdAt, Date.now()),
         // keep it inside this chat so branches made later still carry it
         atMessage: Math.min(intOr(f.atMessage), Math.max(0, chatLen - 1)),
