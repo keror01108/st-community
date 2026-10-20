@@ -99,6 +99,8 @@ const PLATFORMS = {
     weibo: { name: 'Sina Weibo', brand: true, label: '웨이보', icon: 'fa-weibo', lang: 'Simplified Chinese', anon: '微博用户', now: '刚刚', thread: false, hasTitle: false },
     discord: { name: 'Discord', brand: true, label: '디스코드', icon: 'fa-discord', lang: 'the language most natural for the story setting and its fandom (if unclear, Korean)', anon: 'user', now: '오늘', thread: false, hasTitle: false, flat: true, chat: true },
     tdgall: { name: '투디갤 (tdgall.com)', brand: false, label: '투디갤', icon: 'fa-snowflake', lang: 'Korean', anon: 'ㅇㅇ', now: '방금', thread: false, hasTitle: true },
+    blind: { name: 'Blind (Korean anonymous workplace community)', brand: false, label: '블라인드', icon: 'fa-user-secret', lang: 'Korean', anon: '회사 비공개', now: '방금', thread: false, hasTitle: true },
+    everytime: { name: 'Everytime (Korean university community)', brand: false, label: '에브리타임', icon: 'fa-graduation-cap', lang: 'Korean', anon: '익명', now: '방금', thread: false, hasTitle: true },
     tieba: { name: 'Baidu Tieba', brand: false, label: '바이두 티에바', icon: 'fa-paw', lang: 'Simplified Chinese', anon: '匿名用户', now: '刚刚', thread: true, hasTitle: true },
 };
 
@@ -223,6 +225,8 @@ Numbers must be plain integers. Escape double quotes inside strings. Every poste
     guide_weibo: `Sina Weibo. Set "board" to a super-topic or trending topic (超话 / 热搜). Posts by bloggers with display names (e.g. 吃瓜群众小王), no title, using #话题# hashtags (with # on both sides), emoji like [doge] [允悲] [泪], words like 绝了, 磕到了, 破防了, 吃瓜, yyds. Metrics: likes, comments, reposts (shares). Comments may have replies.`,
     guide_discord: `Discord server. Set "board" to the server name (a fan server in reader mode, a local / guild / school / work server in the in-world mode). Each post object is one CHANNEL: "title" is the channel name without "#" (e.g. 잡담, 정보, 스포일러, 짤방, 공지, 오프라인), "body" is the first message of the shown chat log and "author" its sender. "comments" are the following chat messages in order — short, casual, fast, several messages in a row from the same person are normal; "replies" stays empty. Use "reply_to" to point at an earlier message only when someone uses Discord's reply. Usernames look like Discord display names; emoji, :custom_emoji:, @mentions, lowercase, typos, "ㅋㅋ", stickers described in brackets. "time" like "오늘 오후 3:12".`,
     guide_tdgall: `투디갤 (tdgall.com), a Korean anonymous community for 2D works — anime, manga, light novels, subculture/mobile games, webtoons — that split off from DCInside. Everyone posts anonymously: set "author" to "ㅇㅇ" and "handle" to a random 4-character code of letters/digits (e.g. "k7Qa"); a person keeps the same code inside one post. Put the board in tags[0]: one of 투디, 웹툰, 소설, 게임, AI, 괴담, 남극. Tone: casual banmal, fast fandom slang and chosung abbreviations (ㅋㅋ, ㅠㅠ, ㄹㅇ, ㄱㅊ), title prefixes such as ㅃ (off-topic chatter), ㅂㅎ (dislike post — replies agree rather than argue), ㅅㅍ (spoiler), ㅂㅇ (translation). Community words: 펭도리 (asking for a source or character name), 소주 (claiming a character as one's spouse), 자표, 갤메이저/갤마이너, 유입 (newcomer, treated warily). Typical posts: short reactions, questions, rants about creators or pacing, shipping, fan theories, recommendation requests. No real-person photos, doxxing or slurs.`,
+    guide_blind: `Blind (블라인드), a Korean anonymous community for verified office workers. Everyone is anonymous, but each post and comment shows the writer's workplace: set "author" to the company or organization name only (e.g. "삼성전자", "네이버", "공무원", "스타트업", "대학병원" — use workplaces that fit the setting and the person; if the setting has no real companies, invent fitting in-world employers) and "handle" to a short random nickname code of 4–6 letters/digits (e.g. "kD8a2"). Put the topic channel in tags[0]: one of 블라블라, 회사생활, 이직·커리어, 연애, 결혼생활, 주식·투자, 부동산, 썸·연애, 육아, 여행, 고민 (or a company lounge like "○○ 라운지"). Tone: blunt, cynical office-worker Korean, often 음슴체/반말 (~함, ~임, ~인듯), salary and workload complaints, 연봉, 성과급, 야근, 팀장, 이직, workplace politics, relationship and marriage advice, comment fights ("ㄹㅇ", "부럽다", "어디 회사임?"). Comments by the post's writer show up as the same company. No real-person defamation, no slurs.`,
+    guide_everytime: `Everytime (에브리타임), the Korean university students' anonymous community and timetable app. Set "board" to the school name (an in-world university if the setting needs one, e.g. "한빛대학교"). Put the board in tags[0]: one of 자유게시판, 비밀게시판, 새내기게시판, 졸업생게시판, 정보게시판, 연애게시판, 시사·이슈, 동아리·학회, 장터게시판. Post "author" is "익명". In comments, anonymous commenters are numbered in order of first appearance — "익명1", "익명2", … (the same person keeps the same number in that post) — and the post's own writer appears as "익명(글쓴이)". Tone: university students' casual Korean, 음슴체 (~함, ~임, ~ㅠ), ㅋㅋ, ㅠㅠ; topics: 과제, 시험, 학점, 교수님, 학식, 수강신청, 동기, 선배, CC, 썸, 알바, 취준, 기숙사, campus gossip. Short punchy titles. "likes" is 공감 count, "shares" is 스크랩 count. No real-person defamation.`,
     guide_tieba: `Baidu Tieba. Set "board" to the bar name WITHOUT the trailing 吧. Each post object is a THREAD with a title and the 楼主 (OP) body as floor 1. Comments are the following floors (2楼, 3楼...) and their "replies" are 楼中楼 replies. Culture: 沙发, 板凳, 前排, 顶, 楼主好人, 233, 水贴, 吧务, heated debates, long analysis posts.`,
 };
 
@@ -260,6 +264,8 @@ const PROMPT_LABELS = {
     guide_twitter: '스타일: X (트위터)',
     guide_fivech: '스타일: 2ch / 5ch',
     guide_weibo: '스타일: 웨이보',
+    guide_blind: '스타일: 블라인드',
+    guide_everytime: '스타일: 에브리타임',
     guide_tieba: '스타일: 바이두 티에바',
     guide_discord: '스타일: 디스코드',
     guide_tdgall: '스타일: 투디갤',
@@ -291,7 +297,30 @@ const API_KINDS = {
         hint: 'Google AI Studio 또는 Gemini 리버스 프록시. 주소는 도메인(또는 프록시 기본 주소)까지만 적어 주세요.',
         strip: /\/v1(beta|alpha)?(\/models.*)?\/?$/i,
     },
+    vertex: {
+        label: 'Vertex AI (Google Cloud)', source: 'vertexai', example: 'https://프록시 주소 (리버스 프록시 방식일 때만)',
+        hint: '실리태번의 API 연결 화면(Chat Completion → Google Vertex AI)에 저장해 둔 키나 서비스 계정 JSON을 그대로 써요. 키를 여기에 따로 적지 않아요. Vertex 리버스 프록시라면 인증 방식을 "리버스 프록시"로 고르세요.',
+        strip: /(?!)/,   // keep the proxy address exactly as SillyTavern's own proxy field would take it
+    },
 };
+// Vertex: ST reads the express key / service account from its own secret store; a proxy uses address + password
+const VERTEX_MODES = {
+    express: 'Express — 실리태번에 저장한 Vertex API 키',
+    full: 'Full — 실리태번에 저장한 서비스 계정 JSON',
+    proxy: '리버스 프록시 — 주소 + 비밀번호',
+};
+// ST has no model list for Vertex, so offer the common Gemini names (any other name can be typed)
+const VERTEX_MODELS = ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash', 'gemini-2.0-flash-lite'];
+
+function vertexUsesProxy(a) {
+    return a?.kind === 'vertex' && a.vxMode === 'proxy';
+}
+
+/** Short "where it goes" text for an added API. */
+function apiWhere(a) {
+    if (a?.kind === 'vertex' && !vertexUsesProxy(a)) return `${a.vxMode === 'full' ? '서비스 계정' : 'Express'} · ${a.vxRegion || 'us-central1'}`;
+    return apiHost(a?.url);
+}
 
 function getSettings() {
     const { extensionSettings } = ctx();
@@ -311,6 +340,11 @@ function getSettings() {
     for (const a of s.customApis) {
         if (!API_KINDS[a.kind]) a.kind = 'openai';
         for (const k of ['name', 'key', 'model']) if (typeof a[k] !== 'string') a[k] = '';
+        if (a.kind === 'vertex') {
+            if (!VERTEX_MODES[a.vxMode]) a.vxMode = 'express';
+            a.vxRegion = /^[a-z0-9-]{2,40}$/.test(String(a.vxRegion ?? '')) ? a.vxRegion : 'us-central1';
+            a.vxProject = String(a.vxProject ?? '').replace(/[^a-z0-9-]/gi, '').slice(0, 64);
+        }
     }
     if (!s.modelOverrides || typeof s.modelOverrides !== 'object' || Array.isArray(s.modelOverrides)) s.modelOverrides = {};
     if (!s.extMemoryChoice || typeof s.extMemoryChoice !== 'object' || Array.isArray(s.extMemoryChoice)) s.extMemoryChoice = {};
@@ -750,7 +784,7 @@ function resolvedTranslation() {
 }
 
 // The language each community is written in by default (Discord / X follow the story)
-const NATIVE_LANG = { naver: 'ko', dcinside: 'ko', tdgall: 'ko', reddit: 'en', fivech: 'ja', weibo: 'zh', tieba: 'zh' };
+const NATIVE_LANG = { naver: 'ko', dcinside: 'ko', tdgall: 'ko', blind: 'ko', everytime: 'ko', reddit: 'en', fivech: 'ja', weibo: 'zh', tieba: 'zh' };
 const LANG_LABEL = { ko: 'Korean', en: 'English', ja: 'Japanese', zh: 'Chinese' };
 
 function langCode(name) {
@@ -1925,6 +1959,16 @@ async function submitPlayerPost({ title, body, identity, react, board, category 
     if (react) await generateMoreComments(feed.id, postIdx, { playerJustPosted: true });
 }
 
+/** Everytime numbers anonymous commenters per post: your own post → 익명(글쓴이); else keep / take the next 익명N. */
+function everytimeName(post) {
+    if (post.isMe) return '익명(글쓴이)';
+    const all = post.comments.flatMap(cm => [cm, ...cm.replies]);
+    const mine = all.find(o => o.isMe && /^익명\d+$/.test(o.author ?? ''));
+    if (mine) return mine.author;
+    const max = all.reduce((m, o) => Math.max(m, Number(/^익명(\d+)$/.exec(o.author ?? '')?.[1] ?? 0)), 0);
+    return `익명${max + 1}`;
+}
+
 async function submitPlayerComment({ feedId, postIdx, replyTo, body, identity, react }) {
     const feed = getFeed(feedId);
     const post = feed?.data.posts[postIdx];
@@ -1935,6 +1979,7 @@ async function submitPlayerComment({ feedId, postIdx, replyTo, body, identity, r
     await rememberIdentity(identity);
 
     const item = playerItem(feed.platform, { ...identity, body: body.trim() }, feedLang(feed));
+    if (feed.platform === 'everytime' && identity.as === 'mob' && !identity.nick?.trim()) item.author = everytimeName(post);
     const flat = !!PLATFORMS[feed.platform]?.flat;
     if (replyTo != null && replyTo >= 0 && post.comments[replyTo] && !flat) {
         post.comments[replyTo].replies.push(item);
@@ -2324,6 +2369,14 @@ function characterNames() {
     return c.name2 ? [c.name2] : [];
 }
 
+/** What the nickname box means on this community. */
+function nickHint(platformId) {
+    if (platformId === 'blind') return '회사 이름 (비우면 "회사 비공개")';
+    if (platformId === 'everytime') return '닉네임 (비우면 익명 · 댓글은 익명N)';
+    if (platformId === 'dcinside' || platformId === 'tdgall') return '닉네임 (비우면 ㅇㅇ)';
+    return '닉네임 (비우면 기본 이름)';
+}
+
 function identityControls(draft) {
     const store = getChatStore();
     const id = draft?.as ? draft : (store?.identity ?? { as: 'mob', nick: '', charName: '' });
@@ -2337,7 +2390,7 @@ function identityControls(draft) {
             <option value="char" ${id.as === 'char' ? 'selected' : ''}>캐릭터로</option>
         </select>
         <input class="stcm-cp-char" type="text" list="stcm_char_names" maxlength="60" value="${esc(charName)}" placeholder="캐릭터 이름" style="${id.as === 'char' ? '' : 'display:none'}">
-        <input class="stcm-cp-nick" type="text" maxlength="40" value="${esc(id.nick)}" placeholder="닉네임 (비우면 기본 이름)">
+        <input class="stcm-cp-nick" type="text" maxlength="40" value="${esc(id.nick)}" placeholder="${esc(nickHint(selPlatform))}">
     </div>
     <datalist id="stcm_char_names">${names.map(n => `<option value="${esc(n)}"></option>`).join('')}</datalist>`;
 }
@@ -2398,7 +2451,7 @@ function postSummaryHtml(feed, p, i) {
     const titled = !!String(p.title ?? '').trim() && pf !== 'twitter';
     const title = titled ? ttl(p) : truncate((trOn(p) && p.body_tr) || p.body, 90);
     let tag = '';
-    if (pf === 'naver') tag = p.tags?.[0] || '';
+    if (pf === 'naver' || pf === 'blind' || pf === 'everytime') tag = p.tags?.[0] || '';
     if (pf === 'reddit') tag = p.tags?.[0] || '';
     const cnt = pf === 'fivech' ? `(${n + 1})`
         : pf === 'reddit' ? `${n} comments`
@@ -2749,6 +2802,59 @@ const renderers = {
                 </div>
             </div>
             <button class="stcm-td-write" data-act="td-write" data-feed="${fid}"><i class="fa-solid fa-pen-to-square"></i> 글쓰기</button>
+        </div>`;
+    },
+
+    blind(feed) {
+        const d = feed.data;
+        const who = (o, op) => `<span class="co">${esc(o.author || '회사 비공개')}</span>${o.handle ? `<span class="nick">· ${esc(o.handle)}</span>` : ''}${op && o.author && o.author === op.author && o.handle === op.handle ? '<span class="stcm-bl-op">작성자</span>' : ''}${meBadge(o)}`;
+        return `<div class="stcm-skin stcm-blind">
+            <div class="stcm-bl-top"><i class="fa-solid fa-user-secret"></i> 블라인드${d.board && !/^블라인드$/i.test(String(d.board).trim()) ? ` <span>· ${esc(d.board)}</span>` : ''}</div>
+            ${d.posts.map((p, i) => {
+                const n = p.comments.reduce((a, cm) => a + 1 + cm.replies.length, 0);
+                return `<article class="stcm-bl-post" data-post="${i}">
+                <div class="stcm-bl-ch">${esc(p.tags?.[0] || '블라블라')}</div>
+                <h3>${esc(ttl(p))}</h3>
+                <div class="stcm-bl-meta">${who(p)}<span class="tm">${esc(p.time)}</span></div>
+                <div class="stcm-body">${txt(p, 'blind')}</div>
+                <div class="stcm-bl-foot"><span><i class="fa-regular fa-eye"></i> ${num(p.views, 'ko')}</span><span><i class="fa-regular fa-thumbs-up"></i> ${num(p.likes, 'ko')}</span><span><i class="fa-regular fa-comment"></i> ${n}</span></div>
+                <div class="stcm-bl-comments">
+                ${p.comments.map((cm, ci) => `
+                    <div class="stcm-bl-c" data-k="${i}.${ci}"><div class="h">${who(cm, p)}<span class="tm">${esc(cm.time)}</span></div><div class="stcm-body">${txt(cm, 'blind')}</div><div class="f"><span><i class="fa-regular fa-thumbs-up"></i> ${num(cm.likes, 'ko')}</span>${itemLinks(feed, i, ci, null, cm)}</div></div>
+                    ${cm.replies.map((r, ri) => `<div class="stcm-bl-c reply" data-k="${i}.${ci}.${ri}"><div class="h"><i class="fa-solid fa-turn-up fa-rotate-90"></i> ${who(r, p)}<span class="tm">${esc(r.time)}</span></div><div class="stcm-body">${txt(r, 'blind')}</div><div class="f"><span><i class="fa-regular fa-thumbs-up"></i> ${num(r.likes, 'ko')}</span>${itemLinks(feed, i, ci, ri, r)}</div></div>`).join('')}
+                    ${slotAt(feed, i, `c${ci}`)}
+                `).join('')}
+                </div>
+                ${postFooter(feed, i)}
+            </article>`;
+            }).join('')}
+        </div>`;
+    },
+
+    everytime(feed) {
+        const d = feed.data;
+        const nameCls = (o) => (/글쓴이/.test(String(o.author ?? '')) ? 'op' : '');
+        return `<div class="stcm-skin stcm-everytime">
+            <div class="stcm-et-top"><i class="fa-solid fa-graduation-cap"></i> ${esc(d.board || '에브리타임')}</div>
+            ${d.posts.map((p, i) => {
+                const n = p.comments.reduce((a, cm) => a + 1 + cm.replies.length, 0);
+                const hot = (Number(p.likes) || 0) >= 10;
+                return `<article class="stcm-et-post" data-post="${i}">
+                <div class="stcm-et-board">${esc(p.tags?.[0] || '자유게시판')}${hot ? ' <span class="hot">HOT</span>' : ''}</div>
+                <div class="stcm-et-head"><span class="stcm-et-pic"><i class="fa-solid fa-user"></i></span><div><b>${esc(p.author || '익명')}</b>${meBadge(p)}<small>${esc(p.time)}</small></div></div>
+                <h3>${esc(ttl(p))}</h3>
+                <div class="stcm-body">${txt(p, 'everytime')}</div>
+                <div class="stcm-et-foot"><span class="like"><i class="fa-regular fa-thumbs-up"></i> ${num(p.likes, 'ko')}</span><span class="cmt"><i class="fa-regular fa-comment"></i> ${n}</span><span class="scrap"><i class="fa-regular fa-star"></i> ${num(p.shares, 'ko')}</span></div>
+                <div class="stcm-et-comments">
+                ${p.comments.map((cm, ci) => `
+                    <div class="stcm-et-c" data-k="${i}.${ci}"><div class="h"><span class="stcm-et-pic sm"><i class="fa-solid fa-user"></i></span><b class="${nameCls(cm)}">${esc(cm.author || '익명')}</b>${meBadge(cm)}<span class="lk">${Number(cm.likes) ? `<i class="fa-regular fa-thumbs-up"></i> ${num(cm.likes, 'ko')}` : ''}</span></div><div class="stcm-body">${txt(cm, 'everytime')}</div><small>${esc(cm.time)}</small>${itemLinks(feed, i, ci, null, cm)}
+                    ${cm.replies.length ? `<div class="stcm-et-replies">${cm.replies.map((r, ri) => `<div class="stcm-et-c reply" data-k="${i}.${ci}.${ri}"><div class="h"><i class="fa-solid fa-turn-up fa-rotate-90"></i><b class="${nameCls(r)}">${esc(r.author || '익명')}</b>${meBadge(r)}</div><div class="stcm-body">${txt(r, 'everytime')}</div><small>${esc(r.time)}</small>${itemLinks(feed, i, ci, ri, r)}</div>`).join('')}</div>` : ''}
+                    ${slotAt(feed, i, `c${ci}`)}
+                    </div>`).join('')}
+                </div>
+                ${postFooter(feed, i)}
+            </article>`;
+            }).join('')}
         </div>`;
     },
 
@@ -4631,7 +4737,7 @@ function connectionSummary(conn = resolveConnection()) {
     if (conn.type === 'api') {
         if (!conn.api) return '고른 API가 지워졌어요. 다른 연결을 골라 주세요.';
         const a = conn.api;
-        return `${API_KINDS[a.kind]?.label ?? a.kind} · ${apiHost(a.url)} · 모델: ${a.model || '(정해지지 않음)'}`;
+        return `${API_KINDS[a.kind]?.label ?? a.kind} · ${apiWhere(a)} · 모델: ${a.model || '(정해지지 않음)'}`;
     }
     if (!conn.profile) {
         return connectionManagerOn()
@@ -4735,14 +4841,25 @@ async function callCustomApi(api, system, user, signal) {
         stream: false,
     };
     if (api.kind === 'claude') body.use_sysprompt = true;
-    if (api.kind === 'google') body.use_makersuite_sysprompt = true;
+    if (api.kind === 'google' || api.kind === 'vertex') body.use_makersuite_sysprompt = true;
+    if (api.kind === 'vertex') {
+        body.vertexai_auth_mode = api.vxMode === 'full' ? 'full' : 'express';
+        body.vertexai_region = api.vxRegion || 'us-central1';
+        if (api.vxProject) body.vertexai_express_project_id = api.vxProject;
+        if (!vertexUsesProxy(api)) { delete body.reverse_proxy; delete body.proxy_password; }   // ST's stored key / account
+    }
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     let json;
     try {
         json = await postBackend('/api/backends/chat-completions/generate', body, signal);
     } catch (e) {
         if (e?.name === 'AbortError') throw e;
-        throw new Error(`${api.name}: ${e?.message ?? e}`);
+        const msg = String(e?.message ?? e);
+        // ST's Vertex errors are in English and name the missing secret; say where to put it
+        const hint = api.kind === 'vertex' && !vertexUsesProxy(api) && /key is required|Service Account|not found|credentials|401|403/i.test(msg)
+            ? ' — 실리태번 API 연결 화면(Chat Completion → Google Vertex AI)에 Vertex 키나 서비스 계정 JSON을 저장했는지, 인증 방식이 맞는지 확인해 주세요.'
+            : '';
+        throw new Error(`${api.name}: ${msg}${hint}`);
     }
     const out = replyText(json);
     if (out == null) throw new Error(`${api.name}: 응답에서 글을 찾지 못했어요.`);
@@ -4760,6 +4877,7 @@ function modelIds(json) {
 
 /** Model list of an added API (or of the form being edited). */
 async function listApiModels({ kind, url, key }) {
+    if (kind === 'vertex') return [...VERTEX_MODELS];   // SillyTavern can't list Vertex models
     const k = API_KINDS[kind] ?? API_KINDS.openai;
     const json = await postBackend('/api/backends/chat-completions/status', { chat_completion_source: k.source, reverse_proxy: url, proxy_password: key || '' });
     return modelIds(json);
@@ -4769,6 +4887,7 @@ async function listApiModels({ kind, url, key }) {
 async function listProfileModels(profile) {
     const map = ctx().CONNECT_API_MAP?.[profile.api];
     if (!map || map.selected !== 'openai' || !map.source) throw new Error('이 프로필은 목록을 불러올 수 없어요. 모델 이름을 직접 적어 주세요.');
+    if (map.source === 'vertexai') return [...VERTEX_MODELS];   // SillyTavern can't list Vertex models
     if (profile.proxy && profile.proxy !== 'None') throw new Error('프록시를 쓰는 프로필이라 목록을 불러올 수 없어요. 모델 이름을 직접 적어 주세요.');
     const body = { chat_completion_source: map.source };
     if (profile['api-url']) body.custom_url = profile['api-url'];
@@ -4812,6 +4931,13 @@ function apiFormHtml() {
         <input class="stcm-af-name" type="text" maxlength="40" placeholder="이름 (예: 내 프록시, OpenAI)" value="${esc(a?.name ?? '')}">
         <select class="stcm-af-kind">${Object.entries(API_KINDS).map(([k, v]) => `<option value="${k}" ${k === kind ? 'selected' : ''}>${esc(v.label)}</option>`).join('')}</select>
         <p class="stcm-cp-hint stcm-af-kindhint">${esc(API_KINDS[kind].hint)}</p>
+        <div class="stcm-af-vertex ${kind === 'vertex' ? '' : 'stcm-hide'}">
+            <select class="stcm-af-vxmode">${Object.entries(VERTEX_MODES).map(([k, v]) => `<option value="${k}" ${k === (a?.vxMode ?? 'express') ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select>
+            <div class="stcm-cp-row">
+                <input class="stcm-af-vxregion" type="text" maxlength="40" placeholder="리전 (기본 us-central1, global도 돼요)" value="${esc(a?.vxRegion ?? '')}">
+                <input class="stcm-af-vxproject" type="text" maxlength="64" placeholder="프로젝트 ID (Express, 선택)" value="${esc(a?.vxProject ?? '')}">
+            </div>
+        </div>
         <input class="stcm-af-url" type="url" maxlength="500" placeholder="${esc(API_KINDS[kind].example)}" value="${esc(a?.url ?? '')}">
         <div class="stcm-cp-row">
             <input class="stcm-af-key" type="password" autocomplete="off" maxlength="500" placeholder="API 키 / 프록시 비밀번호 (없으면 비워 두기)" value="${esc(a?.key ?? '')}">
@@ -4888,7 +5014,7 @@ function showApi({ keepScroll = false } = {}) {
     const list = customApis().map(a => `
         <div class="stcm-li">
             <div class="stcm-li-main"><b>${esc(a.name)}</b>${s.profileId === `api:${a.id}` ? ' <span class="stcm-api-using">사용 중</span>' : ''}
-                <small>${esc(API_KINDS[a.kind]?.label ?? a.kind)} · ${esc(apiHost(a.url))} · ${esc(a.model || '모델 없음')}${a.key ? ' · 키 있음' : ''}</small></div>
+                <small>${esc(API_KINDS[a.kind]?.label ?? a.kind)} · ${esc(apiWhere(a))} · ${esc(a.model || '모델 없음')}${a.key ? ' · 키 있음' : (a.kind === 'vertex' && !vertexUsesProxy(a) ? ' · 실리태번 저장 키' : '')}</small></div>
             <button data-act="api-use" data-api="${esc(a.id)}" title="이 API로 생성"><i class="fa-solid fa-check"></i></button>
             <button data-act="api-edit" data-api="${esc(a.id)}" title="수정"><i class="fa-solid fa-pen"></i></button>
             <button data-act="api-del" data-api="${esc(a.id)}" title="삭제"><i class="fa-solid fa-trash-can"></i></button>
@@ -4923,16 +5049,43 @@ function showApi({ keepScroll = false } = {}) {
         ${list ? `<div class="stcm-list">${list}</div>` : ''}
         ${apiEdit ? apiFormHtml() : '<button class="stcm-api-add" data-act="api-add"><i class="fa-solid fa-plus"></i> API 추가</button>'}
     </div>`;
+    syncApiFormFields(el.querySelector('.stcm-api-form'));
     el.scrollTop = keepScroll ? top : 0;
 }
 
+/** Show the fields the chosen format needs (Vertex without a proxy has no address / key). */
+function syncApiFormFields(form) {
+    if (!form) return;
+    const kind = form.querySelector('.stcm-af-kind')?.value;
+    const k = API_KINDS[kind] ?? API_KINDS.openai;
+    const vx = kind === 'vertex';
+    const proxy = !vx || form.querySelector('.stcm-af-vxmode')?.value === 'proxy';
+    form.querySelector('.stcm-af-kindhint').textContent = k.hint;
+    form.querySelector('.stcm-af-url').placeholder = vx ? 'Vertex 리버스 프록시 주소 (실리태번 프록시 칸에 넣는 주소 그대로)' : k.example;
+    form.querySelector('.stcm-af-vertex')?.classList.toggle('stcm-hide', !vx);
+    form.querySelector('.stcm-af-url')?.classList.toggle('stcm-hide', !proxy);
+    form.querySelector('.stcm-af-key')?.closest('.stcm-cp-row')?.classList.toggle('stcm-hide', !proxy);
+    const model = form.querySelector('.stcm-af-model');
+    if (model) model.placeholder = vx ? '모델 이름 (예: gemini-2.5-flash)' : '모델 이름 (예: gpt-4o-mini)';
+}
+
 function readApiForm(box) {
-    const kind = box.querySelector('.stcm-af-kind').value;
+    const kind = API_KINDS[box.querySelector('.stcm-af-kind').value] ? box.querySelector('.stcm-af-kind').value : 'openai';
     const url = normalizeApiUrl(kind, box.querySelector('.stcm-af-url').value);
     const key = box.querySelector('.stcm-af-key').value.trim();
     const model = box.querySelector('.stcm-af-model').value.trim();
-    const name = box.querySelector('.stcm-af-name').value.trim() || apiHost(url) || 'API';
-    return { id: box.dataset.id || '', name: name.slice(0, 40), kind: API_KINDS[kind] ? kind : 'openai', url, key, model };
+    const out = { id: box.dataset.id || '', kind, url, key, model };
+    if (kind === 'vertex') {
+        const mode = box.querySelector('.stcm-af-vxmode')?.value;
+        out.vxMode = VERTEX_MODES[mode] ? mode : 'express';
+        const region = (box.querySelector('.stcm-af-vxregion')?.value ?? '').trim().toLowerCase();
+        out.vxRegion = /^[a-z0-9-]{2,40}$/.test(region) ? region : 'us-central1';
+        out.vxProject = (box.querySelector('.stcm-af-vxproject')?.value ?? '').trim().replace(/[^a-z0-9-]/gi, '').slice(0, 64);
+        if (out.vxMode !== 'proxy') { out.url = ''; out.key = ''; }   // never keep a key we don't use
+    }
+    const name = box.querySelector('.stcm-af-name').value.trim() || (kind === 'vertex' ? 'Vertex AI' : apiHost(url)) || 'API';
+    out.name = name.slice(0, 40);
+    return out;
 }
 
 function setNote(el, text, ok = null) {
@@ -4978,7 +5131,8 @@ async function onApiClick(act, el) {
         const box = el.closest('.stcm-api-form');
         const note = box.querySelector('.stcm-af-result');
         const f = readApiForm(box);
-        if (!validApiUrl(f.url)) { setNote(note, '주소를 http:// 또는 https:// 로 시작하게 적어 주세요.', false); return true; }
+        const needsUrl = f.kind !== 'vertex' || f.vxMode === 'proxy';
+        if (needsUrl && !validApiUrl(f.url)) { setNote(note, '주소를 http:// 또는 https:// 로 시작하게 적어 주세요.', false); return true; }
         if (act === 'af-models') {
             el.disabled = true;
             setNote(note, '목록 불러오는 중…');
@@ -5007,6 +5161,7 @@ async function onApiClick(act, el) {
         // save
         const isNew = !f.id;
         const entry = { id: f.id || (ctx().uuidv4 ? ctx().uuidv4() : `${Date.now().toString(36)}${randomId(6)}`), name: f.name, kind: f.kind, url: f.url, key: f.key, model: f.model };
+        if (f.kind === 'vertex') Object.assign(entry, { vxMode: f.vxMode, vxRegion: f.vxRegion, vxProject: f.vxProject });
         if (isNew) {
             s.customApis.push(entry);
             if (apiModelCache.has('form')) apiModelCache.set(`api:${entry.id}`, apiModelCache.get('form'));
@@ -5140,11 +5295,9 @@ function onApiChange(e) {
         if (setTok) setTok.value = s.maxTokens;
         return true;
     }
-    if (t.classList.contains('stcm-af-kind')) {
-        const k = API_KINDS[t.value] ?? API_KINDS.openai;
+    if (t.classList.contains('stcm-af-kind') || t.classList.contains('stcm-af-vxmode')) {
         const form = t.closest('.stcm-api-form');
-        form.querySelector('.stcm-af-kindhint').textContent = k.hint;
-        form.querySelector('.stcm-af-url').placeholder = k.example;
+        syncApiFormFields(form);
         return true;
     }
     return t.closest('.stcm-api-form') ? true : false;
