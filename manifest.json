@@ -1,0 +1,12 @@
+{
+    "display_name": "Community Feed (커뮤니티 피드)",
+    "loading_order": 100,
+    "dependencies": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "kekeroro",
+    "version": "1.4.0",
+    "homePage": "",
+    "auto_update": false,
+    "minimum_client_version": "1.13.0"
+}
