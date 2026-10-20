@@ -35,12 +35,14 @@ const defaultSettings = Object.freeze({
     defaultMode: 'meta',         // meta | world
     defaultPlatform: 'naver',
     prompts: {},                 // user overrides of DEFAULT_PROMPTS
+    stores: {},                  // feed file index: storeId → { chat, owner, size, deletedAt }
     topics: '공포: 괴담, 무서운 경험담, 미스터리\n낚시: 어그로성 제목, 반전 있는 낚시글\n웃음: 웃긴 썰, 드립, 짤 설명\n연애: 연애 상담, 썸, 이별, 짝사랑\n고민: 인생·학교·직장 고민 상담\n정보: 정보 공유, 꿀팁, 후기\n질문: 궁금한 거 물어보는 글\n썰: 경험담, 목격담\n논쟁: 의견 대립, 키배 유발 주제',
     topicSelected: [],           // names of selected topics
     topicMix: 'each',            // each: assign one topic per post | mix: let the model mix them
     topicScope: 'all',
     threadCap: 1000,             // max posts per thread on capped platforms (2ch, Reddit)
-    theme: 'theme',              // light | dark | theme (follow SillyTavern theme)           // all: manual + auto generation | auto: auto generation only
+    theme: 'theme',              // light | dark | theme (follow SillyTavern theme)
+    foldControls: null,          // collapse the control rows; null = automatic (short screens)           // all: manual + auto generation | auto: auto generation only
 });
 
 // Languages shown in the selectors. Value = English name used in prompts.
@@ -118,6 +120,13 @@ Treat the story's setting as a real world in which {{platform}} (or its in-world
 - It has {{count}} comments in which the regulars carry the conversation on from where the previous thread stopped; new posters may join.
 Output exactly one post.`,
 
+    player_write: `Write ONE {{kind}} for this platform on behalf of the author described below. The human player will review and post it.
+Author: {{author}}
+- Stay in the author's own voice. A story character writes with their own personality, knowledge, opinions and current situation as of the latest story messages, and only reveals what they would choose to reveal online.
+- Follow the platform's culture, formatting and length conventions for a {{kind}}.
+- If a draft is given, keep its intent and improve or expand it rather than replacing it with something unrelated.
+Output ONLY a JSON object, no code fences: {"title": "post title, or empty when the platform has none / for comments", "body": "text, use \\n for line breaks"}`,
+
     amount_posts: `Write {{count}} posts. Each post has roughly {{comments}} comments (vary it: popular posts more, boring ones fewer). Add replies to some comments where natural, unless the platform style says otherwise.`,
 
     continue: `Continue the post/thread shown in <thread>. Write {{count}} NEW comments that naturally follow the existing ones, in chronological order. Earlier posters may come back with the same voice; new posters may join. React to the most recent comments first. Do not repeat or paraphrase earlier comments. Keep the platform's culture and the same mode rules.`,
@@ -191,6 +200,7 @@ const PROMPT_LABELS = {
     topic_assign: '글 주제: 글마다 배정할 때 ({{topics}}=주제 목록)',
     topic_mix: '글 주제: 섞어서 쓸 때 ({{topics}}=주제 목록)',
     thread_next: '후속 스레 작성 지시 ({{cap}}=상한, {{part}}=몇 번째)',
+    player_write: 'AI로 쓰기 (내 신분으로 대신 쓰기)',
     amount_posts: '새 글 생성: 개수 지시',
     continue: '이어서 생성 지시',
     react_focus: '내 글/댓글에 반응하라는 지시',
@@ -260,12 +270,236 @@ function hasChat() {
     return !!c.getCurrentChatId?.() && (c.characterId !== undefined || !!c.groupId);
 }
 
+// ---------------------------------------------------------------------------
+// Feed storage: a JSON file in the user's SillyTavern files folder (data/<user>/user/files/).
+// The chat file only keeps a small pointer (storeId + owner) plus pins and per-chat settings.
+// Branches / checkpoints copy chat metadata but get a fresh `integrity` id from SillyTavern;
+// when the owner doesn't match, the feeds are copied into a new file (cut at the branch point).
+// ---------------------------------------------------------------------------
+const FILE_PREFIX = 'stcm-feed-';
+const feedState = {
+    key: null,        // owner key of the chat the cache belongs to
+    chatId: null,     // chat the cache belongs to (cache validity)
+    storeId: null,
+    feeds: [],
+    ready: false,
+    loading: null,    // Promise while loading
+    lastWritten: '',  // JSON last uploaded, to skip no-op writes
+    timer: null,
+    writing: Promise.resolve(),
+    error: false,
+};
+
+function chatOwnerKey() {
+    const c = ctx();
+    const integrity = c.chatMetadata?.integrity;
+    return integrity ? `i:${integrity}` : `c:${c.getCurrentChatId?.() ?? ''}`;
+}
+
+function fileNameFor(storeId) {
+    return `${FILE_PREFIX}${storeId}.json`;
+}
+
+function newStoreId() {
+    const id = ctx().uuidv4 ? ctx().uuidv4() : `${Date.now().toString(36)}${randomId(10)}`;
+    return String(id).replace(/[^a-zA-Z0-9-]/g, '');
+}
+
+function toBase64(str) {
+    const bytes = new TextEncoder().encode(str);
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(bin);
+}
+
+async function uploadStore(storeId, feeds) {
+    const json = JSON.stringify({ version: 1, storeId, savedAt: Date.now(), feeds });
+    const res = await fetch('/api/files/upload', {
+        method: 'POST',
+        headers: ctx().getRequestHeaders(),
+        body: JSON.stringify({ name: fileNameFor(storeId), data: toBase64(json) }),
+    });
+    if (!res.ok) throw new Error(`파일 저장 실패 (${res.status})`);
+    return json.length;
+}
+
+async function downloadStore(storeId) {
+    const res = await fetch(`/user/files/${fileNameFor(storeId)}`, { cache: 'no-store' });
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`파일 읽기 실패 (${res.status})`);
+    const data = await res.json();
+    return Array.isArray(data?.feeds) ? data.feeds : [];
+}
+
+async function deleteStoreFile(storeId) {
+    const res = await fetch('/api/files/delete', {
+        method: 'POST',
+        headers: ctx().getRequestHeaders(),
+        body: JSON.stringify({ path: `user/files/${fileNameFor(storeId)}` }),
+    });
+    return res.ok || res.status === 404;
+}
+
+/** Index of store files in extension settings, used for cleanup after chats are deleted. */
+function storeIndex() {
+    const s = getSettings();
+    if (!s.stores || typeof s.stores !== 'object') s.stores = {};
+    return s.stores;
+}
+
+function indexStore(storeId, patch) {
+    const idx = storeIndex();
+    idx[storeId] = { ...(idx[storeId] ?? {}), ...patch, updated: Date.now() };
+    saveSettings();
+}
+
+/** Debounced write of the in-memory feeds to the current store file. */
+function scheduleFeedWrite() {
+    if (!feedState.ready) return;
+    if (!feedState.storeId) {
+        if (!feedState.feeds.length) return;
+        // first feed in this chat: create its file and remember it in the chat
+        const st = getChatStore();
+        st.storeId = newStoreId();
+        st.storeOwner = chatOwnerKey();
+        feedState.storeId = st.storeId;
+        indexStore(st.storeId, { chat: ctx().getCurrentChatId?.() ?? '', owner: st.storeOwner });
+        ctx().saveMetadata();
+    }
+    clearTimeout(feedState.timer);
+    const storeId = feedState.storeId;
+    const feeds = feedState.feeds;
+    feedState.timer = setTimeout(() => queueWrite(storeId, feeds), 700);
+}
+
+function queueWrite(storeId, feeds) {
+    feedState.writing = feedState.writing.then(async () => {
+        const json = JSON.stringify(feeds);
+        if (storeId === feedState.storeId && json === feedState.lastWritten) return;
+        try {
+            const size = await uploadStore(storeId, feeds);
+            if (storeId === feedState.storeId) feedState.lastWritten = json;
+            indexStore(storeId, { size, chat: ctx().getCurrentChatId?.() ?? '' });
+            if (feedState.error) { feedState.error = false; toastr.success('커뮤니티 피드를 다시 저장했어요.'); }
+        } catch (e) {
+            console.error(`[${MODULE}] failed to save feed file`, e);
+            if (!feedState.error) toastr.error('커뮤니티 피드를 서버에 저장하지 못했어요. 다음 변경 때 다시 시도해요.', '커뮤니티');
+            feedState.error = true;
+        }
+    });
+    return feedState.writing;
+}
+
+/** Write any pending change right away (before switching chats). */
+async function flushFeedWrite() {
+    if (feedState.timer) {
+        clearTimeout(feedState.timer);
+        feedState.timer = null;
+        if (feedState.ready && feedState.storeId) await queueWrite(feedState.storeId, feedState.feeds);
+    }
+    await feedState.writing;
+}
+
+/** Load (or migrate / fork) the feeds of the chat that is open now. */
+function loadFeedsForCurrentChat() {
+    const run = (async () => {
+        feedState.ready = false;
+        feedState.feeds = [];
+        feedState.storeId = null;
+        feedState.lastWritten = '';
+        if (!hasChat()) { feedState.key = null; feedState.chatId = null; return; }
+
+        const c = ctx();
+        const key = chatOwnerKey();
+        const chatId = c.getCurrentChatId();
+        feedState.key = key;
+        feedState.chatId = chatId;
+        const st = getChatStore();
+        const chatLen = c.chat?.length ?? 0;
+        let feeds = [];
+        let metaChanged = false;
+
+        const legacy = Object.getOwnPropertyDescriptor(st, 'feeds');
+        if (legacy && legacy.enumerable && Array.isArray(legacy.value)) {
+            // v1.5 and older kept feeds inside the chat file → move them out
+            feeds = legacy.value;
+            delete st.feeds;
+            metaChanged = true;
+        } else if (st.storeId) {
+            try {
+                feeds = (await downloadStore(st.storeId)) ?? [];
+            } catch (e) {
+                console.error(`[${MODULE}] failed to load feed file`, e);
+                toastr.error('커뮤니티 피드 파일을 불러오지 못했어요.', '커뮤니티');
+                if (feedState.key === key) feedState.loadFailed = true;
+                return;   // stay not-ready so nothing overwrites the file
+            }
+        }
+        if (feedState.chatId !== chatId) return;   // chat switched meanwhile
+
+        // Owner recorded by chat id (no integrity at the time) counts as the same chat
+        const sameOwner = st.storeOwner === key || st.storeOwner === `c:${chatId}`;
+        const forked = !!(st.storeId && st.storeOwner && !sameOwner);
+        if (sameOwner && st.storeOwner !== key) { st.storeOwner = key; metaChanged = true; }
+        if (forked) {
+            // Branch / checkpoint: keep only what existed up to the branch point
+            feeds = feeds.filter(f => (Number(f.atMessage) || 0) < chatLen);
+            const ids = new Set(feeds.map(f => f.id));
+            st.pins = (st.pins ?? []).filter(p => ids.has(p.feedId));
+        }
+        const needNewFile = forked || (legacy && legacy.enumerable) || (!st.storeId && feeds.length > 0);
+        if (needNewFile) {
+            st.storeId = newStoreId();
+            st.storeOwner = key;
+            metaChanged = true;
+        }
+        if (st.storeId && !st.storeOwner) { st.storeOwner = key; metaChanged = true; }
+
+        feedState.storeId = st.storeId ?? null;   // null: chat without feeds yet, file made on first save
+        feedState.feeds = feeds;
+        feedState.loadFailed = false;
+        attachFeeds(st);
+        feedState.ready = true;
+
+        if (needNewFile) await queueWrite(st.storeId, feeds);   // copy for branches, migration
+        else feedState.lastWritten = JSON.stringify(feeds);
+        if (metaChanged) {
+            indexStore(st.storeId, { chat: c.getCurrentChatId?.() ?? '', owner: key, from: forked ? 'branch' : undefined });
+            await c.saveMetadata();
+        }
+        if (forked) refreshInjection();
+    })();
+    feedState.loading = run;
+    return run;
+}
+
+async function ensureFeedsReady() {
+    if (feedState.loading) {
+        try { await feedState.loading; } catch { /* reported already */ }
+    }
+    if (hasChat() && feedState.chatId !== ctx().getCurrentChatId()) await loadFeedsForCurrentChat();
+    return feedState.ready;
+}
+
+/** Expose the cached feeds as store.feeds without putting them into the chat file. */
+function attachFeeds(st) {
+    const d = Object.getOwnPropertyDescriptor(st, 'feeds');
+    if (d && !d.enumerable && d.get) return;
+    if (d && d.enumerable) return;   // legacy data, migrated by the loader
+    Object.defineProperty(st, 'feeds', {
+        configurable: true,
+        enumerable: false,   // not serialized into the chat file / not copied into branches
+        get: () => (feedState.ready && feedState.chatId === ctx().getCurrentChatId?.() ? feedState.feeds : []),
+        set: (v) => { if (feedState.ready && feedState.chatId === ctx().getCurrentChatId?.()) feedState.feeds = Array.isArray(v) ? v : []; },
+    });
+}
+
 function getChatStore() {
     const { chatMetadata } = ctx();
     if (!chatMetadata) return null;
     if (!chatMetadata[MODULE]) chatMetadata[MODULE] = {};
     const st = chatMetadata[MODULE];
-    st.feeds ??= [];
+    attachFeeds(st);
     st.pins ??= [];
     st.counter ??= 0;
     st.unread ??= 0;
@@ -280,6 +514,7 @@ function getChatStore() {
 
 async function saveChatStore() {
     await ctx().saveMetadata();
+    scheduleFeedWrite();
 }
 
 function getFeed(feedId) {
@@ -295,7 +530,7 @@ function esc(str) {
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
+        .replace(/'/g, '&apos;');
 }
 
 function stripMarkup(text) {
@@ -384,12 +619,6 @@ function resolvedTranslation() {
     if (!s.translateTo) return null;
     if (s.translateTo === 'custom') return s.customTranslate?.trim() || null;
     return s.translateTo;
-}
-
-function languageLabel(value, custom) {
-    if (value === 'native') return '커뮤니티 원어';
-    if (value === 'custom') return custom || '직접 입력';
-    return LANGUAGES.find(([v]) => v === value)?.[1] ?? value;
 }
 
 function languageInstruction(platformId) {
@@ -672,6 +901,7 @@ async function callModel(system, user, signal) {
             { role: 'system', content: system },
             { role: 'user', content: user },
         ];
+        if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
         const prompt = svc.constructPrompt(messages, s.profileId);
         const res = await svc.sendRequest(s.profileId, prompt, Number(s.maxTokens) || 4000, {
             stream: false,
@@ -684,13 +914,15 @@ async function callModel(system, user, signal) {
         return res?.content ?? '';
     }
 
-    // Fallback: main API
-    return await c.generateRaw({
+    // Fallback: main API (generateRaw takes no AbortSignal, so check afterwards)
+    const out = await c.generateRaw({
         systemPrompt: system,
         prompt: user,
         responseLength: Number(s.maxTokens) || 4000,
         trimNames: false,
     });
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    return out;
 }
 
 function extractJson(raw) {
@@ -731,23 +963,31 @@ function escapeControlCharsInStrings(json) {
     return out;
 }
 
+const toInt = (v) => {
+    const n = Math.round(Number(v));
+    return Number.isFinite(n) && n >= 0 ? Math.min(n, 1e12) : 0;
+};
+
+/** Only whitelisted fields survive; flags such as isMe / as / charName / prevIdx can't come from the model. */
 function normItem(o) {
     o = o && typeof o === 'object' ? o : {};
     return {
-        ...o,
-        author: String(o.author ?? ''),
-        handle: String(o.handle ?? ''),
+        author: String(o.author ?? '').slice(0, 200),
+        handle: String(o.handle ?? '').slice(0, 200),
         body: String(o.body ?? ''),
         body_tr: String(o.body_tr ?? o.body_ko ?? ''),
-        time: String(o.time ?? ''),
+        time: String(o.time ?? '').slice(0, 100),
+        likes: toInt(o.likes),
     };
 }
 
 function normPost(p) {
     return {
         ...normItem(p),
-        title: String(p?.title ?? ''),
-        tags: Array.isArray(p?.tags) ? p.tags : [],
+        title: String(p?.title ?? '').slice(0, 500),
+        views: toInt(p?.views),
+        shares: toInt(p?.shares),
+        tags: Array.isArray(p?.tags) ? p.tags.slice(0, 10).map(t => String(t).slice(0, 60)) : [],
         comments: Array.isArray(p?.comments) ? p.comments.map(cm => ({
             ...normItem(cm),
             replies: Array.isArray(cm?.replies) ? cm.replies.map(normItem) : [],
@@ -758,16 +998,14 @@ function normPost(p) {
 function parseFeed(raw) {
     const data = extractJson(raw);
     if (!Array.isArray(data.posts)) throw new Error('posts 배열이 없어요');
-    data.posts = data.posts.map(normPost);
-    data.board = String(data.board ?? '');
-    return data;
+    return { board: String(data.board ?? '').slice(0, 200), posts: data.posts.slice(0, 50).map(normPost) };
 }
 
 function parseComments(raw) {
     const data = extractJson(raw);
     const list = Array.isArray(data.comments) ? data.comments : (Array.isArray(data) ? data : null);
     if (!list) throw new Error('comments 배열이 없어요');
-    return list.map(c => ({ ...normItem(c), reply_to: Number.isInteger(Number(c?.reply_to)) ? Number(c.reply_to) : -1 }));
+    return list.slice(0, 200).map(c => ({ ...normItem(c), reply_to: Number.isInteger(Number(c?.reply_to)) ? Number(c.reply_to) : -1 }));
 }
 
 // ---------------------------------------------------------------------------
@@ -778,8 +1016,12 @@ let abortCtl = null;
 
 /** Shared wrapper: busy state, abort, chat-switch guard, error UI. */
 async function runJob(label, background, job) {
+    if (hasChat() && !(await ensureFeedsReady())) {
+        if (!background) toastr.error('피드 파일을 불러오지 못해서 지금은 생성할 수 없어요. 채팅을 다시 열어 보세요.', '커뮤니티');
+        return null;
+    }
     if (busy) {
-        toastr.info('이미 생성 중이에요.');
+        if (!background) toastr.info('이미 생성 중이에요.');
         return null;
     }
     if (!hasChat()) {
@@ -800,12 +1042,12 @@ async function runJob(label, background, job) {
             toastr.info('생성을 멈췄어요.');
         } else if (e?.isParse) {
             console.error(`[${MODULE}] parse failed`, e.cause, e.raw);
-            if (background) toastr.error(`응답 해석 실패: ${e.message}`, '커뮤니티');
+            if (background) toastr.error(`응답 해석 실패: ${esc(e.message)}`, '커뮤니티');
             else showError(`응답을 해석하지 못했어요: ${e.message}`, e.raw);
         } else {
             console.error(`[${MODULE}] generation failed`, e);
             const cause = e?.cause?.message || e?.message || String(e);
-            if (background) toastr.error(`생성 실패: ${cause}`, '커뮤니티');
+            if (background) toastr.error(`생성 실패: ${esc(cause)}`, '커뮤니티');
             else showError(`생성 실패: ${cause}`);
         }
         return null;
@@ -869,7 +1111,8 @@ async function generateFeed({ mode, platformId, topic = '', background = false }
             if (!isOpen()) { store.unread += 1; await saveChatStore(); }
             toastr.success(`${PLATFORMS[platformId].label}에 새 글이 올라왔어요`, '커뮤니티', { onclick: () => openPanel(feed.id) });
             updateBadge();
-            if (isOpen() && view === 'feed') showFeed(feed.id);
+            // Don't yank the reader away from what they're reading; only show it if nothing is open
+            if (isOpen() && view === 'feed' && !getFeed(currentFeedId)) showFeed(feed.id);
         } else {
             showFeed(feed.id);
         }
@@ -891,7 +1134,8 @@ async function generateMorePosts(feedId, topic = '') {
         feed.data.posts.push(...data.posts);
         if (!feed.data.board && data.board) feed.data.board = data.board;
         await saveChatStore();
-        showFeed(feed.id, { keepScroll: true, scrollToPost: firstNew });
+        showFeed(feed.id, { keepScroll: true });
+        toastr.success(`글 ${data.posts.length}개가 아래에 추가됐어요.`, '', { timeOut: 1500 });
         return feed;
     });
 }
@@ -918,7 +1162,7 @@ async function generateNextThread(feedId, postIdx) {
     const prev = feed?.data.posts[postIdx];
     if (!prev) return null;
     if (prev.nextIdx != null && feed.data.posts[prev.nextIdx]) {
-        showFeed(feed.id, { scrollToPost: prev.nextIdx });
+        scrollToPostSmooth(prev.nextIdx);
         return feed;
     }
     const part = (Number(prev.part) || 1) + 1;
@@ -947,7 +1191,8 @@ async function generateNextThread(feedId, postIdx) {
         feed.data.posts.push(next);
         prev.nextIdx = feed.data.posts.length - 1;
         await saveChatStore();
-        showFeed(feed.id, { scrollToPost: prev.nextIdx });
+        showFeed(feed.id, { keepScroll: true });
+        toastr.success('후속 스레가 섰어요. "다음 스레" 링크로 이동할 수 있어요.', '', { timeOut: 2000 });
         return feed;
     });
 }
@@ -978,7 +1223,7 @@ async function generateMoreComments(feedId, postIdx, { playerJustPosted = false 
             }
         }
         await saveChatStore();
-        showFeed(feed.id, { keepScroll: true });
+        updatePost(feed.id, postIdx);
         return feed;
     });
 }
@@ -1016,6 +1261,7 @@ function checkIdentity(id) {
 
 async function submitPlayerPost({ title, body, identity, react, board }) {
     if (!body.trim()) { toastr.warning('내용을 입력해 주세요.'); return; }
+    if (!(await ensureFeedsReady())) return;
     if (!checkIdentity(identity)) return;
     await rememberIdentity(identity);
 
@@ -1050,7 +1296,7 @@ async function submitPlayerComment({ feedId, postIdx, replyTo, body, identity, r
     }
     composer = null;
     await saveChatStore();
-    showFeed(feed.id, { keepScroll: true });
+    updatePost(feed.id, postIdx);
     if (react) await generateMoreComments(feed.id, postIdx, { playerJustPosted: true });
 }
 
@@ -1058,6 +1304,8 @@ async function deletePlayerItem(feedId, postIdx, ci, ri) {
     const feed = getFeed(feedId);
     const post = feed?.data.posts[postIdx];
     if (!post) return;
+    const target = ci == null ? post : (ri == null ? post.comments[ci] : post.comments[ci]?.replies[ri]);
+    if (!target?.isMe) return;
     if (ci == null) {
         // Delete the whole post (only allowed for player posts); drop pins pointing at it and shift later ones
         feed.data.posts.splice(postIdx, 1);
@@ -1079,7 +1327,78 @@ async function deletePlayerItem(feedId, postIdx, ci, ri) {
         post.comments[ci]?.replies.splice(ri, 1);
     }
     await saveChatStore();
-    showFeed(feedId, { keepScroll: true });
+    if (ci == null) showFeed(feedId, { keepScroll: true });
+    else updatePost(feedId, postIdx);
+}
+
+// ---------------------------------------------------------------------------
+// "AI로 쓰기": the model writes a post / comment as the identity the player picked
+// ---------------------------------------------------------------------------
+function describeAuthor(identity, platformId) {
+    const userName = ctx().name1 || 'User';
+    const nick = identity.nick?.trim();
+    if (identity.as === 'char') {
+        return `the story character ${identity.charName} themself${nick ? `, posting under the nickname "${nick}"` : ''}.`;
+    }
+    if (identity.as === 'user') {
+        return `the story protagonist ${userName} (the user's persona) themself${nick ? `, posting under the nickname "${nick}"` : ''}.`;
+    }
+    return `an ordinary member of this community, not a story character${nick ? `, nickname "${nick}"` : ` (default name "${PLATFORMS[platformId].anon}")`}. Give them a believable personality of their own.`;
+}
+
+function playerLanguage(platformId) {
+    const fixed = resolvedLanguage();
+    return fixed
+        ? fillTpl(getPrompt('language_fixed'), { language: fixed })
+        : fillTpl(getPrompt('language_native'), { language: PLATFORMS[platformId].lang });
+}
+
+/** Topic for a player-written post: one of the selected topic chips (when the scope allows manual use). */
+function pickPlayerTopic() {
+    if (getSettings().topicScope === 'auto') return null;
+    const topics = selectedTopics();
+    return topics.length ? topics[Math.floor(Math.random() * topics.length)] : null;
+}
+
+async function aiWrite({ kind, mode, platformId, identity, instruction, draft, feed, postIdx, replyTo, anchorN, topic }) {
+    return runJob('글을 쓰는 중…', false, async ({ signal, stillSameChat }) => {
+        const b = commonBlocks(mode, platformId);
+        const storyText = await buildContextBlock();
+        const kindLabel = { post: platformId === 'fivech' ? 'thread (title + opening post)' : 'post', comment: 'comment', reply: 'reply' }[kind] ?? kind;
+        const parts = [
+            `<story_context>\n${storyText}\n</story_context>`,
+            `<task>\n${b.task}\n</task>`,
+            `<platform_style>\n${b.style}\n</platform_style>`,
+        ];
+        if (feed && postIdx != null) {
+            parts.push(`<thread>\n${serializeThread(feed, postIdx)}\n</thread>`);
+            const target = replyTo != null ? feed.data.posts[postIdx].comments[replyTo] : null;
+            if (target) parts.push(`<reply_target>\nThe new text replies to this comment by ${target.author || 'anon'}: ${truncate(target.body, 400)}\n</reply_target>`);
+            if (anchorN) parts.push(`<reply_target>\nThe new post replies to >>${anchorN}; start with that anchor.\n</reply_target>`);
+        } else if (feed?.data?.board) {
+            parts.push(`<board>\nThe post goes on: ${feed.data.board}\n</board>`);
+        }
+        if (topic) parts.push(`<topic>\nWrite it about this topic (it may be written in any language; follow its intent): ${topic.name}${topic.desc ? ` — ${topic.desc}` : ''}\n</topic>`);
+        if (draft?.trim()) parts.push(`<draft>\n${draft.trim()}\n</draft>`);
+        if (instruction?.trim()) parts.push(`<user_request>\nThe player's instruction for this text (it may be written in any language; follow its intent):\n${instruction.trim()}\n</user_request>`);
+        parts.push(`<language>\n${playerLanguage(platformId)}\n</language>`);
+        if (b.extra) parts.push(`<extra_instructions>\n${b.extra}\n</extra_instructions>`);
+        parts.push(fillTpl(getPrompt('player_write'), { ...b.vars, kind: kindLabel, author: describeAuthor(identity, platformId) }));
+
+        const raw = await callModel(b.system, parts.join('\n\n'), signal);
+        if (!stillSameChat()) return null;
+        let title = '';
+        let body = '';
+        try {
+            const data = extractJson(raw);
+            title = String(data.title ?? '').slice(0, 500);
+            body = String(data.body ?? '');
+        } catch {
+            body = String(raw ?? '').replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '').replace(/```(?:json)?/gi, '').trim();
+        }
+        if (!body.trim()) throw Object.assign(new Error('빈 글이 왔어요'), { isParse: true, raw });
+        return { title, body };
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -1143,10 +1462,15 @@ function refreshInjection() {
     for (const p of pins) {
         const feed = store.feeds.find(f => f.id === p.feedId);
         const post = feed?.data.posts[p.postIdx];
-        if (post) p.text = postToPinText(post);
-        const where = `${PLATFORMS[p.platform]?.name ?? p.platform}${feed?.data.board ? ` / ${feed.data.board}` : ''}`;
+        // Feeds may not be loaded yet (they live in a separate file); fall back to what the pin cached
+        if (post) {
+            p.text = postToPinText(post);
+            p.authored = postHasStoryAuthor(post);
+            p.where = `${PLATFORMS[p.platform]?.name ?? p.platform}${feed.data.board ? ` / ${feed.data.board}` : ''}`;
+        }
+        const where = p.where ?? (PLATFORMS[p.platform]?.name ?? p.platform);
         const entry = `(${where})\n${p.text}`;
-        if (post && postHasStoryAuthor(post)) authored.push(entry);
+        if (p.authored) authored.push(entry);
         else if (p.mode === 'world') world.push(entry);
         else meta.push(p.text);
     }
@@ -1177,7 +1501,7 @@ async function togglePin(feedId, postIdx) {
         });
         const authors = [...new Set([post, ...post.comments, ...post.comments.flatMap(c => c.replies)].map(storyAuthor).filter(Boolean))];
         toastr.success(authors.length
-            ? `${authors.join(', ')}이(가) 이 글을 썼다는 걸 본편에 반영할게요.`
+            ? `${esc(authors.join(', '))}이(가) 이 글을 썼다는 걸 본편에 반영할게요.`
             : (feed.mode === 'world' ? '세계에 퍼진 소문으로 반영할게요.' : '독자 반응을 참고로 반영할게요.'));
     }
     await saveChatStore();
@@ -1218,7 +1542,8 @@ function itemLinks(feed, i, ci, ri, o, n = null) {
         links.push(`<a class="stcm-link" data-act="reply" data-feed="${esc(feed.id)}" data-idx="${i}" data-ci="${ci}">답글</a>`);
     }
     if (feed.platform === 'fivech') {
-        links.push(`<a class="stcm-link" data-act="anchor" data-feed="${esc(feed.id)}" data-idx="${i}" data-n="${n}">&gt;&gt;${n}</a>`);
+        const place = ci == null ? 'op' : (ri == null ? `c${ci}` : `r${ci}.${ri}`);
+        links.push(`<a class="stcm-link" data-act="anchor" data-feed="${esc(feed.id)}" data-idx="${i}" data-n="${n}" data-place="${place}">&gt;&gt;${n}</a>`);
     }
     if (o?.isMe) {
         links.push(`<a class="stcm-link danger" data-act="del-item" data-feed="${esc(feed.id)}" data-idx="${i}" data-ci="${ci}"${ri != null ? ` data-ri="${ri}"` : ''}>삭제</a>`);
@@ -1233,7 +1558,7 @@ function postActions(feed, i) {
     const full = isThreadFull(feed, post);
     const hasNext = post.nextIdx != null && feed.data.posts[post.nextIdx];
     const cap = threadCap(feed.platform);
-    return `${threadNav(feed, i)}<div class="stcm-actions">
+    return `${threadNav(feed, i)}<div class="stcm-actions" data-k="${i}.act">
         ${cap !== Infinity ? `<span class="stcm-count ${full ? 'full' : ''}">${threadCount(post)} / ${cap}</span>` : ''}
         ${full ? '' : `<button data-act="comment" data-feed="${esc(feed.id)}" data-idx="${i}"><i class="fa-regular fa-pen-to-square"></i>${thread ? '레스 쓰기' : '댓글 쓰기'}</button>`}
         ${full
@@ -1270,9 +1595,9 @@ function characterNames() {
     return c.name2 ? [c.name2] : [];
 }
 
-function identityControls() {
+function identityControls(draft) {
     const store = getChatStore();
-    const id = store?.identity ?? { as: 'mob', nick: '', charName: '' };
+    const id = draft?.as ? draft : (store?.identity ?? { as: 'mob', nick: '', charName: '' });
     const userName = esc(ctx().name1 || '유저');
     const names = characterNames();
     const charName = id.charName || (names.length === 1 ? names[0] : '');
@@ -1288,15 +1613,26 @@ function identityControls() {
     <datalist id="stcm_char_names">${names.map(n => `<option value="${esc(n)}"></option>`).join('')}</datalist>`;
 }
 
+/** Composer rendered at a given spot of a post: 'end' (under the buttons), 'op', 'c<ci>', 'r<ci>.<ri>'. */
+function slotAt(feed, i, place) {
+    if (!composer || composer.feedId !== feed.id || composer.postIdx !== i) return '';
+    if ((composer.place ?? 'end') !== place) return '';
+    return composerSlot(feed, i);
+}
+
 function composerSlot(feed, i) {
     if (!composer || composer.feedId !== feed.id || composer.postIdx !== i) return '';
     const post = feed.data.posts[i];
     const target = composer.replyTo != null ? post.comments[composer.replyTo] : null;
     const thread = PLATFORMS[feed.platform].thread;
     return `<div class="stcm-composer" data-feed="${esc(feed.id)}" data-idx="${i}">
-        ${identityControls()}
+        ${identityControls(composer.draft)}
         ${target ? `<div class="stcm-cp-target">↳ <b>${esc(target.author)}</b>님에게 답글 <a class="stcm-link" data-act="reply-cancel">취소</a></div>` : ''}
-        <textarea class="stcm-cp-body" rows="3" placeholder="${thread ? '레스 내용 (>>번호 로 앵커)' : '댓글 내용'}">${esc(composer.prefill ?? '')}</textarea>
+        <textarea class="stcm-cp-body" rows="3" placeholder="${thread ? '레스 내용 (>>번호 로 앵커)' : '댓글 내용'}">${esc(composer.draft?.body ?? '')}</textarea>
+        <div class="stcm-cp-ai">
+            <input class="stcm-cp-inst" type="text" maxlength="500" value="${esc(composer.draft?.inst ?? '')}" placeholder="AI에게 지시 (선택) — 비우면 알아서">
+            <button data-act="ai-write-comment" title="고른 신분으로 AI가 써 줘요. 칸에 글이 있으면 그걸 다듬어요."><i class="fa-solid fa-wand-magic-sparkles"></i> AI로 쓰기</button>
+        </div>
         <div class="stcm-cp-foot">
             <label class="stcm-cp-check"><input type="checkbox" class="stcm-cp-react" checked> 반응 생성</label>
             <button data-act="cancel-comment">취소</button>
@@ -1306,7 +1642,7 @@ function composerSlot(feed, i) {
 }
 
 function postFooter(feed, i) {
-    return postActions(feed, i) + composerSlot(feed, i);
+    return postActions(feed, i) + slotAt(feed, i, 'end');
 }
 
 // ---------------------------------------------------------------------------
@@ -1326,8 +1662,9 @@ const renderers = {
                 <div class="stcm-n-foot"><span><i class="fa-regular fa-heart"></i> 좋아요 ${num(p.likes, 'ko')}</span><span><i class="fa-regular fa-comment"></i> 댓글 ${p.comments.reduce((a, c) => a + 1 + c.replies.length, 0)}</span></div>
                 <div class="stcm-n-comments">
                 ${p.comments.map((c, ci) => `
-                    <div class="stcm-n-c">${avatar(c.author, 'sm')}<div><b>${esc(c.author)}</b>${meBadge(c)}<div class="stcm-body">${txt(c, 'naver')}</div><small>${esc(c.time)}</small>${itemLinks(feed, i, ci, null, c)}</div></div>
-                    ${c.replies.map((r, ri) => `<div class="stcm-n-c reply"><span class="stcm-ret">ㄴ</span>${avatar(r.author, 'sm')}<div><b>${esc(r.author)}</b>${meBadge(r)}<div class="stcm-body">${txt(r, 'naver')}</div><small>${esc(r.time)}</small>${itemLinks(feed, i, ci, ri, r)}</div></div>`).join('')}
+                    <div class="stcm-n-c" data-k="${i}.${ci}">${avatar(c.author, 'sm')}<div><b>${esc(c.author)}</b>${meBadge(c)}<div class="stcm-body">${txt(c, 'naver')}</div><small>${esc(c.time)}</small>${itemLinks(feed, i, ci, null, c)}</div></div>
+                    ${c.replies.map((r, ri) => `<div class="stcm-n-c reply" data-k="${i}.${ci}.${ri}"><span class="stcm-ret">ㄴ</span>${avatar(r.author, 'sm')}<div><b>${esc(r.author)}</b>${meBadge(r)}<div class="stcm-body">${txt(r, 'naver')}</div><small>${esc(r.time)}</small>${itemLinks(feed, i, ci, ri, r)}</div></div>`).join('')}
+                    ${slotAt(feed, i, `c${ci}`)}
                 `).join('')}
                 </div>
                 ${postFooter(feed, i)}
@@ -1348,8 +1685,9 @@ const renderers = {
                 <div class="stcm-dc-rec"><span class="up">개추 ${num(p.likes)}</span><span class="down">비추 ${Math.floor((Number(p.likes) || 0) / 7)}</span></div>
                 <div class="stcm-dc-comments">
                 ${p.comments.map((c, ci) => `
-                    <div class="stcm-dc-c"><div class="nick">${who(c)}</div><div class="stcm-body">${txt(c, 'dcinside')}${itemLinks(feed, i, ci, null, c)}</div><div class="time">${esc(c.time)}</div></div>
-                    ${c.replies.map((r, ri) => `<div class="stcm-dc-c reply"><div class="nick">↳ ${who(r)}</div><div class="stcm-body">${txt(r, 'dcinside')}${itemLinks(feed, i, ci, ri, r)}</div><div class="time">${esc(r.time)}</div></div>`).join('')}
+                    <div class="stcm-dc-c" data-k="${i}.${ci}"><div class="nick">${who(c)}</div><div class="stcm-body">${txt(c, 'dcinside')}${itemLinks(feed, i, ci, null, c)}</div><div class="time">${esc(c.time)}</div></div>
+                    ${c.replies.map((r, ri) => `<div class="stcm-dc-c reply" data-k="${i}.${ci}.${ri}"><div class="nick">↳ ${who(r)}</div><div class="stcm-body">${txt(r, 'dcinside')}${itemLinks(feed, i, ci, ri, r)}</div><div class="time">${esc(r.time)}</div></div>`).join('')}
+                    ${slotAt(feed, i, `c${ci}`)}
                 `).join('')}
                 </div>
                 ${postFooter(feed, i)}
@@ -1362,11 +1700,11 @@ const renderers = {
         const sub = String(d.board || 'r/community').startsWith('r/') ? d.board : `r/${d.board}`;
         const uname = (o) => `u/${String(o.handle || o.author || 'anon').replace(/^u\//, '')}`;
         const comment = (c, i, ci, ri) => `
-            <div class="stcm-r-c" style="--depth:${ri == null ? 0 : 1}">
+            <div class="stcm-r-c" style="--depth:${ri == null ? 0 : 1}" data-k="${i}.${ci}${ri == null ? '' : '.' + ri}">
                 <div class="stcm-r-cmeta">${avatar(c.handle || c.author, 'sm')}<b>${esc(uname(c))}</b>${meBadge(c)}<span>· ${esc(c.time)}</span></div>
                 <div class="stcm-body">${txt(c, 'reddit')}</div>
                 <div class="stcm-r-cact"><i class="fa-solid fa-arrow-up"></i> ${num(c.likes)} <i class="fa-solid fa-arrow-down"></i>${itemLinks(feed, i, ci, ri, c)}</div>
-                ${ri == null ? (c.replies ?? []).map((r, rj) => comment(r, i, ci, rj)).join('') : ''}
+                ${ri == null ? (c.replies ?? []).map((r, rj) => comment(r, i, ci, rj)).join('') + slotAt(feed, i, `c${ci}`) : ''}
             </div>`;
         return `<div class="stcm-skin stcm-reddit">
             <div class="stcm-r-top"><i class="fa-brands fa-reddit-alien"></i> ${esc(sub)}</div>
@@ -1385,8 +1723,8 @@ const renderers = {
     twitter(feed) {
         const d = feed.data;
         const handle = (o) => `@${esc(String(o.handle || o.author || 'user').replace(/^@/, ''))}`;
-        const tweet = (o, isReply, links = '', replyCount = 0) => `
-            <div class="stcm-t-tweet ${isReply ? 'reply' : ''}">
+        const tweet = (o, isReply, links = '', replyCount = 0, key = '') => `
+            <div class="stcm-t-tweet ${isReply ? 'reply' : ''}" data-k="${key}">
                 ${avatar(o.author)}
                 <div class="stcm-t-main">
                     <div class="stcm-t-head"><b>${esc(o.author)}</b>${meBadge(o)}<span>${handle(o)} · ${esc(o.time)}</span></div>
@@ -1404,8 +1742,8 @@ const renderers = {
             <div class="stcm-t-top"><i class="fa-brands fa-x-twitter"></i> ${esc(d.board || 'Trending')}</div>
             ${d.posts.map((p, i) => `
             <article class="stcm-t-thread" data-post="${i}">
-                ${tweet(p, false, '', p.comments.length)}
-                ${p.comments.map((c, ci) => tweet(c, true, itemLinks(feed, i, ci, null, c), c.replies.length) + c.replies.map((r, ri) => tweet(r, true, itemLinks(feed, i, ci, ri, r))).join('')).join('')}
+                ${tweet(p, false, '', p.comments.length, `${i}.op`)}
+                ${p.comments.map((c, ci) => tweet(c, true, itemLinks(feed, i, ci, null, c), c.replies.length, `${i}.${ci}`) + c.replies.map((r, ri) => tweet(r, true, itemLinks(feed, i, ci, ri, r), 0, `${i}.${ci}.${ri}`)).join('') + (slotAt(feed, i, `c${ci}`) ? `<div class="stcm-t-foot">${slotAt(feed, i, `c${ci}`)}</div>` : '')).join('')}
                 <div class="stcm-t-foot">${postFooter(feed, i)}</div>
             </article>`).join('')}
         </div>`;
@@ -1413,8 +1751,8 @@ const renderers = {
 
     fivech(feed) {
         const d = feed.data;
-        const res = (o, n, links) => `
-            <div class="stcm-5-res">
+        const res = (o, n, links, key) => `
+            <div class="stcm-5-res" data-k="${key}">
                 <div class="stcm-5-head"><span class="n">${n}</span> 名前：<span class="name">${esc(o.author || '名無しさん')}</span>${meBadge(o)} <span class="date">${esc(o.time)}</span> <span class="id">ID:${esc(o.handle || '????????')}</span></div>
                 <div class="stcm-body">${txt(o, 'fivech')}</div>
                 ${links}
@@ -1423,11 +1761,11 @@ const renderers = {
             <div class="stcm-5-top">${esc(d.board || '板')}</div>
             ${d.posts.map((p, i) => {
                 let n = 1;
-                const all = [res(p, n, itemLinks(feed, i, null, null, p, 1))];
+                const all = [res(p, n, itemLinks(feed, i, null, null, p, 1), `${i}.op`) + slotAt(feed, i, 'op')];
                 p.comments.forEach((c, ci) => {
-                    all.push(res(c, ++n, itemLinks(feed, i, ci, null, c, n)));
+                    all.push(res(c, ++n, itemLinks(feed, i, ci, null, c, n), `${i}.${ci}`) + slotAt(feed, i, `c${ci}`));
                     c.replies.forEach((r, ri) => {
-                        all.push(res(r, ++n, itemLinks(feed, i, ci, ri, r, n)));
+                        all.push(res(r, ++n, itemLinks(feed, i, ci, ri, r, n), `${i}.${ci}.${ri}`) + slotAt(feed, i, `r${ci}.${ri}`));
                     });
                 });
                 return `<article class="stcm-5-thread" data-post="${i}">
@@ -1451,8 +1789,9 @@ const renderers = {
                 <div class="stcm-w-act"><span><i class="fa-solid fa-share"></i> ${num(p.shares, 'zh')}</span><span><i class="fa-regular fa-comment"></i> ${num(p.comments.length, 'zh')}</span><span><i class="fa-regular fa-thumbs-up"></i> ${num(p.likes, 'zh')}</span></div>
                 <div class="stcm-w-comments">
                 ${p.comments.map((c, ci) => `
-                    <div class="stcm-w-c">${avatar(c.author, 'sm')}<div><b>${esc(c.author)}</b>${meBadge(c)}：<span class="stcm-body">${txt(c, 'weibo')}</span><small>${esc(c.time)} <i class="fa-regular fa-thumbs-up"></i> ${num(c.likes, 'zh')}</small>${itemLinks(feed, i, ci, null, c)}
-                    ${c.replies.length ? `<div class="stcm-w-replies">${c.replies.map((r, ri) => `<div><b>${esc(r.author)}</b>${meBadge(r)}：${txt(r, 'weibo')}${itemLinks(feed, i, ci, ri, r)}</div>`).join('')}</div>` : ''}
+                    <div class="stcm-w-c" data-k="${i}.${ci}">${avatar(c.author, 'sm')}<div><b>${esc(c.author)}</b>${meBadge(c)}：<span class="stcm-body">${txt(c, 'weibo')}</span><small>${esc(c.time)} <i class="fa-regular fa-thumbs-up"></i> ${num(c.likes, 'zh')}</small>${itemLinks(feed, i, ci, null, c)}
+                    ${c.replies.length ? `<div class="stcm-w-replies">${c.replies.map((r, ri) => `<div data-k="${i}.${ci}.${ri}"><b>${esc(r.author)}</b>${meBadge(r)}：${txt(r, 'weibo')}${itemLinks(feed, i, ci, ri, r)}</div>`).join('')}</div>` : ''}
+                    ${slotAt(feed, i, `c${ci}`)}
                     </div></div>`).join('')}
                 </div>
                 ${postFooter(feed, i)}
@@ -1475,11 +1814,12 @@ const renderers = {
                     <small>${floor}楼 · ${esc(p.time)}</small>
                 </div>
                 ${p.comments.map((c, ci) => `
-                <div class="stcm-tb-floor">
+                <div class="stcm-tb-floor" data-k="${i}.${ci}">
                     <div class="stcm-tb-user">${avatar(c.author)}<b>${esc(c.author)}</b>${c.author === p.author ? '<span class="lz">楼主</span>' : ''}${meBadge(c)}</div>
                     <div class="stcm-body">${txt(c, 'tieba')}</div>
                     <small>${++floor}楼 · ${esc(c.time)}</small>${itemLinks(feed, i, ci, null, c)}
-                    ${c.replies.length ? `<div class="stcm-tb-lzl">${c.replies.map((r, ri) => `<div><b>${esc(r.author)}</b>${meBadge(r)}：${txt(r, 'tieba')} <small>${esc(r.time)}</small>${itemLinks(feed, i, ci, ri, r)}</div>`).join('')}</div>` : ''}
+                    ${c.replies.length ? `<div class="stcm-tb-lzl">${c.replies.map((r, ri) => `<div data-k="${i}.${ci}.${ri}"><b>${esc(r.author)}</b>${meBadge(r)}：${txt(r, 'tieba')} <small>${esc(r.time)}</small>${itemLinks(feed, i, ci, ri, r)}</div>`).join('')}</div>` : ''}
+                    ${slotAt(feed, i, `c${ci}`)}
                 </div>`).join('')}
                 ${postFooter(feed, i)}
             </article>`;
@@ -1570,6 +1910,7 @@ let wiFilter = '';
 
 async function showWorldInfo() {
     if (!hasChat()) { toastr.warning('먼저 채팅을 열어주세요.'); return; }
+    leaveFeed();
     view = 'wi';
     syncSelectors();
     const store = getChatStore();
@@ -1718,6 +2059,7 @@ async function onWorldInfoClick(el) {
 // Panel UI
 // ---------------------------------------------------------------------------
 let currentFeedId = null;
+const feedScroll = new Map();   // feedId → scrollTop, restored when coming back
 let view = 'feed';   // feed | history | pins | compose | wi | topics
 let selMode = 'meta';
 let selPlatform = 'naver';
@@ -1742,6 +2084,19 @@ function applyTheme() {
     if (sel) sel.value = t;
 }
 
+function isFolded() {
+    const f = getSettings().foldControls;
+    if (f === true || f === false) return f;
+    return window.innerHeight < 600;
+}
+
+function applyFold() {
+    const folded = isFolded();
+    document.getElementById('stcm_overlay')?.classList.toggle('folded', folded);
+    const i = document.querySelector('#stcm_btn_fold i');
+    if (i) i.className = `fa-solid ${folded ? 'fa-chevron-down' : 'fa-chevron-up'}`;
+}
+
 function isOpen() {
     return document.getElementById('stcm_overlay')?.classList.contains('open');
 }
@@ -1761,9 +2116,10 @@ function buildOverlay() {
     <div id="stcm_overlay">
       <div class="stcm-modal" role="dialog" aria-label="커뮤니티">
         <div class="stcm-header">
-          <div class="stcm-title"><i class="fa-solid fa-comments"></i> 커뮤니티</div>
+          <div class="stcm-title"><i class="fa-solid fa-comments"></i><span class="stcm-title-text"> 커뮤니티</span></div>
           <div class="stcm-hbtns">
             <button id="stcm_btn_write" title="글쓰기"><i class="fa-solid fa-pen"></i></button>
+            <button id="stcm_btn_fold" title="위쪽 메뉴 접기/펴기"><i class="fa-solid fa-chevron-up"></i></button>
             <button id="stcm_btn_theme" title="화면 테마"><i class="fa-solid fa-circle-half-stroke"></i></button>
             <button id="stcm_btn_wi" title="참고할 월드 인포"><i class="fa-solid fa-book-atlas"></i></button>
             <button id="stcm_btn_history" title="지난 피드"><i class="fa-solid fa-clock-rotate-left"></i></button>
@@ -1782,12 +2138,16 @@ function buildOverlay() {
           <div class="stcm-genrow">
             <input id="stcm_topic" type="text" placeholder="주제/요청 (선택) — 예: 방금 고백 장면 반응, 축제 날 시장 풍경" />
             <select id="stcm_lang" title="생성 언어">${languageOptions(true, false)}</select>
-            <button id="stcm_btn_gen" class="stcm-gen"><i class="fa-solid fa-wand-magic-sparkles"></i> 생성</button>
-            <button id="stcm_btn_stop" class="stcm-stop"><i class="fa-solid fa-stop"></i> 중지</button>
+            <span class="stcm-genbtns">
+              <button id="stcm_btn_gen" class="stcm-gen"><i class="fa-solid fa-wand-magic-sparkles"></i> 생성</button>
+              <button id="stcm_btn_stop" class="stcm-stop"><i class="fa-solid fa-stop"></i> 중지</button>
+            </span>
           </div>
         </div>
         <div class="stcm-feedbar" id="stcm_feedbar"></div>
         <div class="stcm-feed" id="stcm_feed"></div>
+        <div class="stcm-errbox" id="stcm_errbox"></div>
+        <input type="file" id="stcm_import_file" accept=".json,application/json" hidden>
         <div class="stcm-busy" id="stcm_busy"><i class="fa-solid fa-spinner fa-spin"></i> <span></span></div>
       </div>
     </div>`;
@@ -1798,6 +2158,12 @@ function buildOverlay() {
     document.getElementById('stcm_btn_close').addEventListener('click', closePanel);
     document.getElementById('stcm_btn_history').addEventListener('click', showHistory);
     document.getElementById('stcm_btn_pins').addEventListener('click', showPins);
+    document.getElementById('stcm_btn_fold').addEventListener('click', () => {
+        const s = getSettings();
+        s.foldControls = !isFolded();
+        saveSettings();
+        applyFold();
+    });
     document.getElementById('stcm_btn_theme').addEventListener('click', () => {
         const s = getSettings();
         const order = ['theme', 'light', 'dark'];
@@ -1846,6 +2212,14 @@ function buildOverlay() {
     });
     document.getElementById('stcm_feed').addEventListener('click', onFeedClick);
     document.getElementById('stcm_feed').addEventListener('change', onFeedChange);
+    document.getElementById('stcm_import_file').addEventListener('change', async (e) => {
+        const f = e.target.files?.[0];
+        e.target.value = '';
+        await readImportFile(f);
+    });
+    document.getElementById('stcm_errbox').addEventListener('click', (e) => {
+        if (e.target.closest('[data-act="err-close"]')) document.getElementById('stcm_errbox').classList.remove('show');
+    });
     document.getElementById('stcm_topics').addEventListener('click', (e) => {
         const b = e.target.closest('button');
         if (!b) return;
@@ -1864,6 +2238,14 @@ function buildOverlay() {
     });
     document.getElementById('stcm_feedbar').addEventListener('click', onFeedClick);
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && isOpen()) closePanel(); });
+    let resizeTimer = null;
+    window.addEventListener('resize', () => {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+            const f = getSettings().foldControls;
+            if (isOpen() && f !== true && f !== false) applyFold();
+        }, 150);
+    });
 }
 
 function readIdentity(root) {
@@ -1880,6 +2262,21 @@ async function onFeedClick(e) {
     if (!el) return;
     const act = el.dataset.act;
     if (act?.startsWith('wi-')) { await onWorldInfoClick(el); return; }
+    if (act === 'feed-export') { exportFeeds(); return; }
+    if (act === 'feed-import') { document.getElementById('stcm_import_file')?.click(); return; }
+    if (act === 'import-cancel') { pendingImport = null; showHistory(); return; }
+    if (act === 'import-merge' || act === 'import-replace') {
+        const withPins = document.getElementById('stcm_import_pins')?.checked ?? false;
+        if (act === 'import-replace') {
+            const { Popup, POPUP_RESULT } = ctx();
+            const ok = Popup?.show?.confirm
+                ? (await Popup.show.confirm('피드 바꾸기', '이 채팅의 지금 피드와 반영 목록을 지우고 파일 내용으로 바꿀까요? (먼저 내보내기로 백업해 두면 안전해요)')) === POPUP_RESULT.AFFIRMATIVE
+                : confirm('지금 피드를 파일 내용으로 바꿀까요?');
+            if (!ok) return;
+        }
+        await applyImport(act === 'import-replace' ? 'replace' : 'merge', withPins);
+        return;
+    }
     if (act === 'goto-post') {
         document.querySelector(`#stcm_feed [data-post="${el.dataset.idx}"]`)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
         return;
@@ -1908,34 +2305,45 @@ async function onFeedClick(e) {
 
     if (act === 'pin') {
         await togglePin(feedId, idx);
-        showFeed(currentFeedId, { keepScroll: true });
+        updatePost(feedId, idx);
         return;
     }
+    // Opening/closing the composer re-renders only the posts involved
+    const switchComposer = (next) => {
+        captureDraft();
+        const prevPost = composer && composer.feedId === feedId ? composer.postIdx : null;
+        const keepDraft = composer && next && composer.feedId === next.feedId && composer.postIdx === next.postIdx ? composer.draft : null;
+        composer = next ? { ...next, draft: next.draft ?? keepDraft } : null;
+        if (prevPost != null && prevPost !== idx) updatePost(feedId, prevPost);
+        updatePost(feedId, idx, { focusComposer: !!composer });
+    };
     if (act === 'comment') {
-        composer = (composer && composer.feedId === feedId && composer.postIdx === idx && composer.replyTo == null) ? null : { feedId, postIdx: idx, replyTo: null };
-        showFeed(currentFeedId, { keepScroll: true, focusComposer: true });
+        const isOpenHere = composer && composer.feedId === feedId && composer.postIdx === idx && composer.replyTo == null;
+        switchComposer(isOpenHere ? null : { feedId, postIdx: idx, replyTo: null, place: 'end' });
         return;
     }
     if (act === 'reply') {
-        composer = { feedId, postIdx: idx, replyTo: Number(el.dataset.ci) };
-        showFeed(currentFeedId, { keepScroll: true, focusComposer: true });
+        switchComposer({ feedId, postIdx: idx, replyTo: Number(el.dataset.ci), place: `c${el.dataset.ci}` });
         return;
     }
     if (act === 'anchor') {
-        const prev = document.querySelector('.stcm-composer .stcm-cp-body')?.value ?? '';
-        const add = `>>${el.dataset.n}\n`;
-        composer = { feedId, postIdx: idx, replyTo: null, prefill: (composer?.feedId === feedId && composer?.postIdx === idx ? prev : '') + add };
-        showFeed(currentFeedId, { keepScroll: true, focusComposer: true });
+        captureDraft();
+        const same = composer?.feedId === feedId && composer?.postIdx === idx;
+        const prevBody = same ? (composer.draft?.body ?? '') : '';
+        const body = `${prevBody}${prevBody && !prevBody.endsWith('\n') ? '\n' : ''}>>${el.dataset.n}\n`;
+        switchComposer({ feedId, postIdx: idx, replyTo: null, place: el.dataset.place || 'end', draft: { ...(same ? composer.draft : {}), body } });
         return;
     }
     if (act === 'reply-cancel') {
-        if (composer) composer.replyTo = null;
-        showFeed(currentFeedId, { keepScroll: true, focusComposer: true });
+        if (composer) { composer.replyTo = null; }
+        updatePost(composer?.feedId ?? feedId, composer?.postIdx ?? idx, { focusComposer: true });
         return;
     }
     if (act === 'cancel-comment') {
+        const at = composer?.postIdx ?? idx;
+        const fid = composer?.feedId ?? feedId;
         composer = null;
-        showFeed(currentFeedId, { keepScroll: true });
+        updatePost(fid, at);
         return;
     }
     if (act === 'submit-comment') {
@@ -1948,6 +2356,53 @@ async function onFeedClick(e) {
             identity: readIdentity(box),
             react: box.querySelector('.stcm-cp-react').checked,
         });
+        return;
+    }
+    if (act === 'ai-write-post') {
+        const box = el.closest('.stcm-compose-view');
+        const identity = readIdentity(box);
+        if (!checkIdentity(identity)) return;
+        const feed = getFeed(currentFeedId);
+        const appending = feed && feed.platform === selPlatform && feed.mode === selMode;
+        const bodyEl = box.querySelector('.stcm-cp-body');
+        const out = await aiWrite({
+            kind: 'post', mode: selMode, platformId: selPlatform, identity,
+            instruction: box.querySelector('.stcm-cp-inst').value,
+            draft: bodyEl.value,
+            feed: appending ? feed : { data: { board: box.querySelector('.stcm-cp-board')?.value ?? '' } },
+            topic: box.querySelector('.stcm-cp-inst').value.trim() ? null : pickPlayerTopic(),
+        });
+        if (out && document.body.contains(bodyEl)) {
+            const titleEl = box.querySelector('.stcm-cp-title');
+            if (titleEl && out.title && !titleEl.value.trim()) titleEl.value = out.title;
+            bodyEl.value = out.body;
+            toastr.success('AI가 쓴 글을 채웠어요. 고친 뒤 올리기를 누르세요.', '', { timeOut: 2000 });
+        }
+        return;
+    }
+    if (act === 'ai-write-comment') {
+        const box = el.closest('.stcm-composer');
+        const identity = readIdentity(box);
+        if (!checkIdentity(identity)) return;
+        const fid = box.dataset.feed;
+        const pi = Number(box.dataset.idx);
+        const feed = getFeed(fid);
+        if (!feed) return;
+        const bodyEl = box.querySelector('.stcm-cp-body');
+        const anchor = feed.platform === 'fivech' ? (bodyEl.value.match(/^>>(\d+)/)?.[1] ?? null) : null;
+        const out = await aiWrite({
+            kind: composer?.replyTo != null ? 'reply' : 'comment', mode: feed.mode, platformId: feed.platform, identity,
+            instruction: box.querySelector('.stcm-cp-inst').value,
+            draft: anchor && bodyEl.value.trim() === `>>${anchor}` ? '' : bodyEl.value,
+            feed, postIdx: pi, replyTo: composer?.replyTo ?? null, anchorN: anchor,
+        });
+        // the composer may have been re-rendered while generating
+        const live = document.querySelector(`#stcm_feed .stcm-composer[data-feed="${CSS.escape(fid)}"][data-idx="${pi}"] .stcm-cp-body`);
+        if (out && live) {
+            live.value = out.body;
+            if (composer) composer.draft = { ...(composer.draft ?? {}), body: out.body };
+            try { live.focus({ preventScroll: true }); } catch { /* ignore */ }
+        }
         return;
     }
     if (act === 'more') {
@@ -2014,6 +2469,7 @@ async function onFeedClick(e) {
     }
     if (el.id === 'stcm_tr_toggle') {
         showTr = !showTr;
+        captureDraft();
         showFeed(currentFeedId, { keepScroll: true });
         return;
     }
@@ -2041,14 +2497,17 @@ function renderTopicChips() {
     const topics = parseTopics();
     const anySel = topics.some(t => sel.has(t.name));
     const scopeNote = s.topicScope === 'auto' ? ' title="자동 생성에만 적용돼요"' : '';
+    const keepLeft = el.scrollLeft;
     el.innerHTML = `<span class="stcm-topic-label"${scopeNote}><i class="fa-solid fa-tags"></i> 글 주제${s.topicScope === 'auto' ? '(자동만)' : ''}</span>
         <button data-topic-act="free" class="${anySel ? '' : 'active'}">자유</button>
         ${topics.map(t => `<button data-topic="${esc(t.name)}" class="${sel.has(t.name) ? 'active' : ''}" title="${esc(t.desc)}">${esc(t.name)}</button>`).join('')}
-        ${sel.size > 1 ? `<button data-topic-act="mix" class="stcm-topic-mix" title="여러 주제를 골랐을 때 배정 방식">${s.topicMix === 'mix' ? '섞어서' : '글마다 하나씩'}</button>` : ''}
-        <button data-topic-act="edit" title="주제 추가·관리"><i class="fa-solid fa-plus"></i></button>`;
+        <button data-topic-act="edit" title="주제 추가·관리"><i class="fa-solid fa-plus"></i></button>
+        <button data-topic-act="mix" class="stcm-topic-mix" title="여러 주제를 골랐을 때 배정 방식" style="${sel.size > 1 ? '' : 'visibility:hidden'}">${s.topicMix === 'mix' ? '섞어서' : '글마다 하나씩'}</button>`;
+    el.scrollLeft = keepLeft;
 }
 
 function showTopicEditor() {
+    leaveFeed();
     view = 'topics';
     const s = getSettings();
     const sel = new Set(s.topicSelected ?? []);
@@ -2118,7 +2577,7 @@ async function onTopicAction(el) {
         const desc = document.getElementById('stcm_tp_desc').value.replace(/\n/g, ' ').trim();
         if (!name) { toastr.warning('주제 이름을 적어 주세요.'); return; }
         const found = list.find(t => t.name === name);
-        if (found) { found.desc = desc || found.desc; toastr.info(`"${name}" 설명을 바꿨어요.`); }
+        if (found) { found.desc = desc || found.desc; toastr.info(`"${esc(name)}" 설명을 바꿨어요.`); }
         else list.push({ name, desc });
         writeTopics(list);
         s.topicSelected = [...new Set([...(s.topicSelected ?? []), name])];
@@ -2155,8 +2614,6 @@ async function onTopicAction(el) {
 
 function syncTopicSettings() {
     const s = getSettings();
-    const t = document.getElementById('stcm_set_topics');
-    if (t && document.activeElement !== t) t.value = s.topics;
     const sc = document.getElementById('stcm_set_topicscope');
     if (sc) sc.value = s.topicScope;
     const mx = document.getElementById('stcm_set_topicmix');
@@ -2191,24 +2648,29 @@ function setBusyUI(on, label = '') {
 }
 
 function showError(msg, raw) {
-    if (!isOpen()) { toastr.error(msg, '커뮤니티'); return; }
+    if (!isOpen()) { toastr.error(esc(msg), '커뮤니티'); return; }
     const feedEl = document.getElementById('stcm_feed');
     const box = `<div class="stcm-empty error"><i class="fa-solid fa-triangle-exclamation"></i> ${esc(msg)}
         ${raw ? `<details><summary>원본 응답 보기</summary><pre>${esc(String(raw).slice(0, 8000))}</pre></details>` : ''}
         <p>최대 토큰을 늘리거나, 글/댓글 수를 줄이거나, 다른 연결 프로필을 써 보세요.</p></div>`;
-    // Keep the current feed visible; put the error on top
-    document.getElementById('stcm_error')?.remove();
-    feedEl.insertAdjacentHTML('afterbegin', `<div id="stcm_error">${box}</div>`);
-    feedEl.scrollTop = 0;
+    // Show over the feed without moving it
+    const eb = document.getElementById('stcm_errbox');
+    if (!eb) { feedEl.insertAdjacentHTML('afterbegin', box); return; }
+    eb.innerHTML = `<button class="stcm-err-close" data-act="err-close" title="닫기"><i class="fa-solid fa-xmark"></i></button>${box}`;
+    eb.classList.add('show');
 }
 
 function showFeed(feedId, opts = {}) {
+    const sameView = view === 'feed';
+    leaveFeed();
     view = 'feed';
     const store = hasChat() ? getChatStore() : null;
     const bar = document.getElementById('stcm_feedbar');
     const el = document.getElementById('stcm_feed');
     if (!el) return;
     const prevScroll = el.scrollTop;
+    const anchor = sameView ? captureAnchor(el) : null;
+    document.getElementById('stcm_errbox')?.classList.remove('show');
     syncSelectors();
 
     if (!store) {
@@ -2227,30 +2689,124 @@ function showFeed(feedId, opts = {}) {
     const hasTr = feed.data.posts.some(p => p.body_tr || p.body_ko || p.comments.some(c => c.body_tr || c.body_ko));
     const when = new Date(feed.createdAt).toLocaleString();
     bar.innerHTML = `<span class="stcm-fb-info"><b>${esc(PLATFORMS[feed.platform]?.label)}</b> · ${esc(MODES[feed.mode]?.label)} · #${feed.atMessage} 시점 · ${esc(when)}${feed.topics?.length ? ` · 주제: ${esc(feed.topics.join(', '))}` : ''}${feed.topic ? ` · “${esc(truncate(feed.topic, 30))}”` : ''}</span>
-        ${hasTr ? `<button id="stcm_tr_toggle" class="${showTr ? 'on' : ''}"><i class="fa-solid fa-language"></i> ${showTr ? '원문 보기' : '번역 보기'}</button>` : ''}`;
+        ${hasTr ? `<button id="stcm_tr_toggle" class="${showTr ? 'on' : ''}" title="${showTr ? '원문 보기' : '번역 보기'}"><i class="fa-solid fa-language"></i> 번역</button>` : ''}`;
     const render = renderers[feed.platform] ?? renderers.naver;
     el.innerHTML = render(feed) + `
         <div class="stcm-more-posts"><button data-act="more-posts" data-feed="${esc(feed.id)}"><i class="fa-solid fa-plus"></i> 이 게시판에 글 더 불러오기</button></div>`;
 
     if (opts.scrollToPost != null) {
-        el.querySelector(`[data-post="${opts.scrollToPost}"]`)?.scrollIntoView({ block: 'start' });
-    } else if (opts.keepScroll) {
-        el.scrollTop = prevScroll;
+        scrollToPostSmooth(opts.scrollToPost, false);
+    } else if (opts.keepScroll && sameView) {
+        if (!restoreAnchor(el, anchor)) el.scrollTop = prevScroll;
+    } else if (feedScroll.has(feed.id)) {
+        el.scrollTop = feedScroll.get(feed.id);
     } else {
         el.scrollTop = 0;
     }
-    if (opts.focusComposer) {
-        const ta = el.querySelector('.stcm-composer .stcm-cp-body');
-        if (ta) {
-            ta.focus();
-            ta.setSelectionRange(ta.value.length, ta.value.length);
-            ta.closest('.stcm-composer').scrollIntoView({ block: 'nearest' });
-        }
+    if (opts.focusComposer) focusComposer();
+}
+
+/** The topmost visible block (comment / reply / post) and its offset, keyed so a re-render keeps it in place. */
+function captureAnchor(feedEl) {
+    const fr = feedEl.getBoundingClientRect();
+    let best = null;
+    for (const el of feedEl.querySelectorAll('[data-k], [data-post]')) {
+        const r = el.getBoundingClientRect();
+        if (r.height === 0 || r.bottom <= fr.top + 1) continue;
+        const key = el.dataset.k != null ? `k:${el.dataset.k}` : `p:${el.dataset.post}`;
+        if (r.top >= fr.top) { best = { key, offset: r.top - fr.top }; break; }
+        best = { key, offset: r.top - fr.top };
     }
+    return best;
+}
+
+function restoreAnchor(feedEl, anchor) {
+    if (!anchor) return false;
+    const [kind, val] = [anchor.key.slice(0, 1), anchor.key.slice(2)];
+    const el = feedEl.querySelector(kind === 'k' ? `[data-k="${CSS.escape(val)}"]` : `[data-post="${CSS.escape(val)}"]`);
+    if (!el) return false;
+    const fr = feedEl.getBoundingClientRect();
+    feedEl.scrollTop += (el.getBoundingClientRect().top - fr.top) - anchor.offset;
+    return true;
+}
+
+/** Remember where the reader was in the current feed before switching views. */
+function leaveFeed() {
+    const el = document.getElementById('stcm_feed');
+    if (view === 'feed' && currentFeedId && el) feedScroll.set(currentFeedId, el.scrollTop);
+}
+
+function scrollToPostSmooth(idx, smooth = true) {
+    const feedEl = document.getElementById('stcm_feed');
+    const target = feedEl?.querySelector(`[data-post="${idx}"]`);
+    if (!target) return;
+    const top = target.getBoundingClientRect().top - feedEl.getBoundingClientRect().top + feedEl.scrollTop - 6;
+    feedEl.scrollTo({ top, behavior: smooth ? 'smooth' : 'auto' });
+}
+
+/** Focus the inline composer without letting the browser jump the page. */
+function focusComposer() {
+    const feedEl = document.getElementById('stcm_feed');
+    const box = feedEl?.querySelector('.stcm-composer');
+    const ta = box?.querySelector('.stcm-cp-body');
+    if (!ta) return;
+    try { ta.focus({ preventScroll: true }); } catch { ta.focus(); }
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+    // Reveal the form only if it is (partly) outside the visible area
+    const fr = feedEl.getBoundingClientRect();
+    const tr = ta.getBoundingClientRect();
+    const foot = box.querySelector('.stcm-cp-foot')?.getBoundingClientRect() ?? tr;
+    // smallest scroll that shows the text box (and its send button when there is room)
+    const need = Math.min(foot.bottom, tr.top + fr.height - 16);
+    if (need > fr.bottom) feedEl.scrollBy({ top: need - fr.bottom + 8, behavior: 'smooth' });
+    else if (tr.top < fr.top) feedEl.scrollBy({ top: tr.top - fr.top - 8, behavior: 'smooth' });
+}
+
+/** Keep what the player typed when a post is re-rendered. */
+function captureDraft() {
+    if (!composer) return;
+    const box = document.querySelector('#stcm_feed .stcm-composer');
+    if (!box) return;
+    composer.draft = { body: box.querySelector('.stcm-cp-body')?.value ?? '', inst: box.querySelector('.stcm-cp-inst')?.value ?? '', ...readIdentity(box) };
+}
+
+/** Re-render a single post in place; the rest of the feed and the scroll position stay put. */
+function updatePost(feedId, idx, opts = {}) {
+    const feedEl = document.getElementById('stcm_feed');
+    const feed = getFeed(feedId);
+    if (!feedEl || !feed || view !== 'feed' || currentFeedId !== feedId) {
+        showFeed(feedId, { keepScroll: true, focusComposer: opts.focusComposer });
+        return;
+    }
+    captureDraft();
+    const tpl = document.createElement('template');
+    tpl.innerHTML = (renderers[feed.platform] ?? renderers.naver)(feed);
+    const fresh = tpl.content.querySelector(`[data-post="${idx}"]`);
+    const old = feedEl.querySelector(`[data-post="${idx}"]`);
+    if (!fresh || !old) {
+        showFeed(feedId, { keepScroll: true, focusComposer: opts.focusComposer });
+        return;
+    }
+    const scroll = feedEl.scrollTop;
+    const anchor = captureAnchor(feedEl);
+    old.replaceWith(fresh);
+    feedEl.scrollTop = scroll;
+    // Elements before the replaced post keep their index, so this pins the view in place
+    restoreAnchor(feedEl, anchor);
+    updatePinCount();
+    if (opts.focusComposer) focusComposer();
+}
+
+function updatePinCount() {
+    const store = hasChat() ? getChatStore() : null;
+    const cnt = store?.pins.length ?? 0;
+    const el = document.getElementById('stcm_pin_count');
+    if (el) el.textContent = cnt ? String(cnt) : '';
 }
 
 function showCompose() {
     if (!hasChat()) { toastr.warning('먼저 채팅을 열어주세요.'); return; }
+    leaveFeed();
     view = 'compose';
     syncSelectors();
     const p = PLATFORMS[selPlatform];
@@ -2267,6 +2823,10 @@ function showCompose() {
         ${appending ? '' : `<input class="stcm-cp-board" type="text" placeholder="게시판 / 갤러리 / 서브레딧 / 해시태그 이름 (선택)">`}
         ${p.hasTitle ? `<input class="stcm-cp-title" type="text" placeholder="${p.thread ? '스레드 제목' : '제목'}">` : ''}
         <textarea class="stcm-cp-body" rows="7" placeholder="${p.thread ? '>>1 본문' : '본문'}"></textarea>
+        <div class="stcm-cp-ai">
+            <input class="stcm-cp-inst" type="text" maxlength="500" placeholder="AI에게 지시 (선택) — 비우면 고른 글 주제에 맞게">
+            <button data-act="ai-write-post" title="고른 신분으로 AI가 제목과 본문을 써 줘요. 본문 칸에 글이 있으면 그걸 다듬어요."><i class="fa-solid fa-wand-magic-sparkles"></i> AI로 쓰기</button>
+        </div>
         <div class="stcm-cp-foot">
             <label class="stcm-cp-check"><input type="checkbox" class="stcm-cp-react" checked> 올리고 바로 반응 생성</label>
             <button data-act="cancel-post">취소</button>
@@ -2278,14 +2838,27 @@ function showCompose() {
 }
 
 function showHistory() {
+    leaveFeed();
     view = 'history';
     const store = hasChat() ? getChatStore() : null;
     const bar = document.getElementById('stcm_feedbar');
     const el = document.getElementById('stcm_feed');
-    bar.innerHTML = `<button id="stcm_back"><i class="fa-solid fa-arrow-left"></i> 돌아가기</button><span class="stcm-fb-info">지난 피드 (이 채팅)</span>`;
+    bar.innerHTML = `<button id="stcm_back"><i class="fa-solid fa-arrow-left"></i> 돌아가기</button><span class="stcm-fb-info">지난 피드 (이 채팅)</span>
+        <button data-act="feed-export" title="이 채팅의 피드를 파일로 내보내기"><i class="fa-solid fa-file-export"></i> 내보내기</button>
+        <button data-act="feed-import" title="피드 파일 불러오기"><i class="fa-solid fa-file-import"></i> 불러오기</button>`;
     const feeds = [...(store?.feeds ?? [])].reverse();
-    if (!feeds.length) { el.innerHTML = `<div class="stcm-empty">저장된 피드가 없어요.</div>`; return; }
-    el.innerHTML = `<div class="stcm-list">${feeds.map(f => `
+    const pi = pendingImport;
+    const importPanel = pi ? `<div class="stcm-import">
+        <div><i class="fa-solid fa-file-import"></i> <b>${esc(pi.fileName)}</b> — 피드 ${pi.feeds.length}개${pi.pins.length ? `, 반영 ${pi.pins.length}개` : ''}${pi.chat ? ` <small>(원래 채팅: ${esc(pi.chat)})</small>` : ''}</div>
+        ${pi.pins.length ? '<label class="stcm-cp-check"><input type="checkbox" id="stcm_import_pins" checked> 📌 반영 목록도 불러오기</label>' : ''}
+        <div class="stcm-cp-foot">
+            <button data-act="import-cancel">취소</button>
+            <button data-act="import-replace" title="지금 피드를 지우고 파일 내용으로 바꿔요">바꾸기</button>
+            <button class="primary" data-act="import-merge" title="지금 피드에 더해요">합치기</button>
+        </div>
+    </div>` : '';
+    if (!feeds.length) { el.innerHTML = importPanel + `<div class="stcm-empty">저장된 피드가 없어요.</div>`; return; }
+    el.innerHTML = importPanel + `<div class="stcm-list">${feeds.map(f => `
         <div class="stcm-li">
             <div class="stcm-li-main" data-open-feed="${esc(f.id)}">
                 <b>${esc(PLATFORMS[f.platform]?.label)}</b> · ${esc(MODES[f.mode]?.label)} · #${f.atMessage} · 글 ${f.data.posts.length}개${f.topics?.length ? ` · ${esc(f.topics.join(', '))}` : ''}
@@ -2295,7 +2868,157 @@ function showHistory() {
         </div>`).join('')}</div>`;
 }
 
+// ---------------------------------------------------------------------------
+// Export / import of this chat's feed file
+// ---------------------------------------------------------------------------
+const EXPORT_FORMAT = 'st-community-feed';
+let pendingImport = null;   // { feeds, pins, fileName }
+
+function safeFileName(str) {
+    return String(str ?? 'chat').replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 80) || 'chat';
+}
+
+function exportFeeds() {
+    const store = getChatStore();
+    const feeds = store?.feeds ?? [];
+    if (!feeds.length) { toastr.info('내보낼 피드가 없어요.'); return; }
+    const payload = {
+        format: EXPORT_FORMAT,
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        chat: ctx().getCurrentChatId?.() ?? '',
+        feeds,
+        pins: store.pins ?? [],
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 1)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const d = new Date();
+    const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+    a.href = url;
+    a.download = `community-feed_${safeFileName(payload.chat)}_${stamp}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    toastr.success(`피드 ${feeds.length}개를 내보냈어요.`);
+}
+
+// Imported files may come from anyone: rebuild every field with known types.
+const intOr = (v, d = 0) => (Number.isFinite(Number(v)) ? Math.max(0, Math.floor(Number(v))) : d);
+
+function importItem(o) {
+    const item = normItem(o);
+    if (o?.isMe === true) {
+        item.isMe = true;
+        item.as = ['user', 'char', 'mob'].includes(o.as) ? o.as : 'mob';
+        if (item.as === 'char') item.charName = String(o.charName ?? '').slice(0, 100);
+    }
+    return item;
+}
+
+function importFeed(f, chatLen) {
+    if (!f || typeof f !== 'object' || !PLATFORMS[f.platform] || !Array.isArray(f.data?.posts)) return null;
+    const posts = f.data.posts.slice(0, 500).map((p) => {
+        const post = { ...normPost(p), ...importItem(p) };
+        post.title = String(p?.title ?? '').slice(0, 500);
+        post.comments = (Array.isArray(p?.comments) ? p.comments : []).slice(0, 5000).map(c => ({
+            ...importItem(c),
+            replies: (Array.isArray(c?.replies) ? c.replies : []).slice(0, 2000).map(importItem),
+        }));
+        if (p?.part != null) post.part = intOr(p.part, 1);
+        for (const k of ['prevIdx', 'nextIdx']) if (Number.isInteger(p?.[k])) post[k] = p[k];
+        return post;
+    });
+    for (const p of posts) for (const k of ['prevIdx', 'nextIdx']) if (p[k] != null && (p[k] < 0 || p[k] >= posts.length)) delete p[k];
+    return {
+        id: String(f.id ?? '').replace(/[^a-zA-Z0-9-]/g, '').slice(0, 64) || newStoreId(),
+        platform: f.platform,
+        mode: MODES[f.mode] ? f.mode : 'meta',
+        topic: String(f.topic ?? '').slice(0, 300),
+        topics: Array.isArray(f.topics) ? f.topics.slice(0, 20).map(t => String(t).slice(0, 60)) : [],
+        createdAt: intOr(f.createdAt, Date.now()),
+        // keep it inside this chat so branches made later still carry it
+        atMessage: Math.min(intOr(f.atMessage), Math.max(0, chatLen - 1)),
+        data: { board: String(f.data.board ?? '').slice(0, 200), posts },
+    };
+}
+
+function importPin(p, idMap) {
+    if (!p || typeof p !== 'object') return null;
+    const feedId = idMap.get(String(p.feedId));
+    if (!feedId || !Number.isInteger(p.postIdx)) return null;
+    return {
+        feedId,
+        postIdx: p.postIdx,
+        platform: PLATFORMS[p.platform] ? p.platform : 'naver',
+        mode: p.mode === 'world' ? 'world' : 'meta',
+        text: String(p.text ?? '').slice(0, 6000),
+    };
+}
+
+async function readImportFile(file) {
+    if (!file) return;
+    if (file.size > 50 * 1024 * 1024) { toastr.error('파일이 너무 커요 (50MB 이하).'); return; }
+    let data;
+    try {
+        data = JSON.parse(await file.text());
+    } catch {
+        toastr.error('JSON 파일이 아니에요.');
+        return;
+    }
+    // Accept our export, or a raw stcm-feed-*.json from the server folder
+    const feedsIn = Array.isArray(data?.feeds) ? data.feeds : null;
+    if (!feedsIn || (data.format && data.format !== EXPORT_FORMAT)) {
+        toastr.error('커뮤니티 피드 파일이 아니에요.');
+        return;
+    }
+    const chatLen = ctx().chat?.length ?? 0;
+    const feeds = feedsIn.slice(0, 200).map(f => importFeed(f, chatLen)).filter(Boolean);
+    if (!feeds.length) { toastr.error('불러올 수 있는 피드가 없어요.'); return; }
+    pendingImport = { feeds, pins: Array.isArray(data.pins) ? data.pins : [], fileName: file.name, chat: String(data.chat ?? '') };
+    showHistory();
+}
+
+async function applyImport(mode, withPins) {
+    if (!pendingImport || !(await ensureFeedsReady())) return;
+    const store = getChatStore();
+    const idMap = new Map();
+    const existing = new Set(mode === 'merge' ? store.feeds.map(f => f.id) : []);
+    const incoming = pendingImport.feeds.map((f) => {
+        const oldId = f.id;
+        let id = oldId;
+        while (existing.has(id)) id = newStoreId();
+        existing.add(id);
+        idMap.set(oldId, id);
+        return { ...f, id };
+    });
+    const pins = withPins ? pendingImport.pins.map(p => importPin(p, idMap)).filter(Boolean) : [];
+    if (mode === 'replace') {
+        store.feeds = incoming;
+        store.pins = pins;
+    } else {
+        store.feeds = [...store.feeds, ...incoming].sort((a, b) => a.createdAt - b.createdAt);
+        const have = new Set(store.pins.map(p => `${p.feedId}|${p.postIdx}`));
+        for (const p of pins) if (!have.has(`${p.feedId}|${p.postIdx}`)) store.pins.push(p);
+    }
+    if (store.feeds.length > MAX_FEEDS_PER_CHAT) {
+        const removed = store.feeds.splice(0, store.feeds.length - MAX_FEEDS_PER_CHAT);
+        const gone = new Set(removed.map(f => f.id));
+        store.pins = store.pins.filter(p => !gone.has(p.feedId));
+        toastr.warning(`채팅당 최대 ${MAX_FEEDS_PER_CHAT}개라서 오래된 피드 ${removed.length}개는 빠졌어요.`);
+    }
+    const n = incoming.length;
+    pendingImport = null;
+    currentFeedId = null;
+    await saveChatStore();
+    refreshInjection();
+    toastr.success(`피드 ${n}개를 ${mode === 'replace' ? '바꿔서' : '합쳐서'} 불러왔어요.`);
+    showHistory();
+}
+
 function showPins() {
+    leaveFeed();
     view = 'pins';
     const store = hasChat() ? getChatStore() : null;
     const bar = document.getElementById('stcm_feedbar');
@@ -2325,12 +3048,18 @@ function openPanel(feedId) {
     if (!PLATFORMS[selPlatform]) selPlatform = 'naver';
     if (!MODES[selMode]) selMode = 'meta';
     applyTheme();
+    applyFold();
     document.getElementById('stcm_overlay').classList.add('open');
     if (store && store.unread) {
         store.unread = 0;
         saveChatStore();
     }
     updateBadge();
+    if (hasChat() && !feedState.ready) {
+        showLoadingFeed();
+        ensureFeedsReady().then(() => { if (isOpen() && view === 'feed') showFeed(feedId); });
+        return;
+    }
     showFeed(feedId);
 }
 
@@ -2371,6 +3100,9 @@ function addSettingsPanel() {
         </div>
         <div class="inline-drawer-content stcm-set">
           <div class="menu_button" id="stcm_set_open"><i class="fa-solid fa-comments"></i> 커뮤니티 열기</div>
+
+          <small class="stcm-help"><i class="fa-solid fa-server"></i> 피드는 채팅 파일이 아니라 서버의 사용자 파일 폴더(<code>data/사용자/user/files/stcm-feed-*.json</code>)에 저장돼요.</small>
+          <div class="menu_button" id="stcm_set_cleanup">삭제된 채팅의 피드 파일 정리</div>
 
           <label>화면 테마</label>
           <select id="stcm_set_theme" class="text_pole">
@@ -2463,6 +3195,8 @@ function addSettingsPanel() {
     host?.insertAdjacentHTML('beforeend', html);
 
     document.getElementById('stcm_set_open').addEventListener('click', () => openPanel());
+    document.getElementById('stcm_set_cleanup').addEventListener('click', cleanupDeletedStores);
+    updateCleanupLabel();
 
     const bind = (id, key, type = 'value') => {
         const el = document.getElementById(id);
@@ -2574,7 +3308,8 @@ async function onMessageReceived(messageId, type) {
     const store = getChatStore();
     store.counter = (store.counter || 0) + 1;
     if (store.counter < Math.max(1, Number(s.autoEvery) || 5)) {
-        await saveChatStore();
+        const c = ctx();
+        if (c.saveMetadataDebounced) c.saveMetadataDebounced(); else await saveChatStore();
         return;
     }
     store.counter = 0;
@@ -2591,10 +3326,17 @@ async function onMessageReceived(messageId, type) {
     setTimeout(() => generateFeed({ mode, platformId, background: true }), 300);
 }
 
-function onChatChanged() {
+async function onChatChanged() {
     abortCtl?.abort();
     composer = null;
     currentFeedId = null;
+    pendingImport = null;
+    feedScroll.clear();
+    await flushFeedWrite();   // previous chat's pending change
+    refreshInjection();       // pins live in the chat file, so this works before the feeds load
+    updateBadge();
+    if (isOpen()) showLoadingFeed();
+    await loadFeedsForCurrentChat();
     refreshInjection();
     updateBadge();
     if (isOpen()) {
@@ -2603,6 +3345,58 @@ function onChatChanged() {
         selPlatform = store?.lastPlatform ?? getSettings().defaultPlatform;
         showFeed();
     }
+}
+
+function showLoadingFeed() {
+    const el = document.getElementById('stcm_feed');
+    const bar = document.getElementById('stcm_feedbar');
+    if (bar) bar.innerHTML = '';
+    if (el) el.innerHTML = '<div class="stcm-empty"><i class="fa-solid fa-spinner fa-spin"></i> 피드를 불러오는 중…</div>';
+}
+
+/** A chat was deleted: its feed file becomes a cleanup candidate (unopened branches may still need it). */
+function onChatDeleted(name) {
+    const chatName = String(name ?? '').replace(/\.jsonl$/, '');
+    const idx = storeIndex();
+    let changed = false;
+    for (const [id, info] of Object.entries(idx)) {
+        if (info.chat === chatName && !info.deletedAt) { info.deletedAt = Date.now(); changed = true; }
+    }
+    if (changed) { saveSettings(); updateCleanupLabel(); }
+}
+
+function onChatRenamed(data) {
+    const from = String(data?.oldFileName ?? '').replace(/\.jsonl$/, '');
+    const to = String(data?.newFileName ?? '').replace(/\.jsonl$/, '');
+    if (!from || !to) return;
+    const idx = storeIndex();
+    for (const info of Object.values(idx)) if (info.chat === from) info.chat = to;
+    saveSettings();
+}
+
+async function cleanupDeletedStores() {
+    const idx = storeIndex();
+    const targets = Object.entries(idx).filter(([, i]) => i.deletedAt);
+    if (!targets.length) { toastr.info('정리할 파일이 없어요.'); return; }
+    const { Popup, POPUP_RESULT } = ctx();
+    const msg = `삭제된 채팅의 피드 파일 ${targets.length}개를 지울까요?<br><small>아직 한 번도 열지 않은 브랜치·체크포인트가 그 채팅에서 갈라져 나왔다면, 그 브랜치는 피드를 이어받지 못해요.</small>`;
+    const ok = Popup?.show?.confirm ? (await Popup.show.confirm('피드 파일 정리', msg)) === POPUP_RESULT.AFFIRMATIVE : confirm('삭제된 채팅의 피드 파일을 지울까요?');
+    if (!ok) return;
+    let done = 0;
+    for (const [id] of targets) {
+        if (id === feedState.storeId) { delete idx[id].deletedAt; continue; }
+        if (await deleteStoreFile(id)) { delete idx[id]; done++; }
+    }
+    saveSettings();
+    updateCleanupLabel();
+    toastr.success(`파일 ${done}개를 정리했어요.`);
+}
+
+function updateCleanupLabel() {
+    const el = document.getElementById('stcm_set_cleanup');
+    if (!el) return;
+    const n = Object.values(storeIndex()).filter(i => i.deletedAt).length;
+    el.textContent = n ? `삭제된 채팅의 피드 파일 정리 (${n}개)` : '삭제된 채팅의 피드 파일 정리';
 }
 
 function registerCommands() {
@@ -2657,7 +3451,11 @@ function registerCommands() {
         registerCommands();
         refreshInjection();
         updateBadge();
+        if (hasChat()) loadFeedsForCurrentChat();
     });
     eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
+    if (event_types.CHAT_DELETED) eventSource.on(event_types.CHAT_DELETED, onChatDeleted);
+    if (event_types.GROUP_CHAT_DELETED) eventSource.on(event_types.GROUP_CHAT_DELETED, onChatDeleted);
+    if (event_types.CHAT_RENAMED) eventSource.on(event_types.CHAT_RENAMED, onChatRenamed);
     eventSource.on(event_types.MESSAGE_RECEIVED, onMessageReceived);
 })();
