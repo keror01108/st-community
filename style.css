@@ -1003,3 +1003,7 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
 .stcm-modelpick select { width: 100%; box-sizing: border-box; margin-top: 4px; }
 .stcm-boards button small { opacity: 0.65; margin-left: 2px; font-size: 10px; }
 .stcm-boards button.active small { opacity: 0.85; }
+
+/* ---------- translation shown under the original ---------- */
+.stcm-tr-below { display: block; margin-top: 6px; padding: 6px 0 0 10px; border-top: 1px dashed var(--k-line, var(--s-border)); border-left: 3px solid var(--k-accent, var(--s-accent)); opacity: 0.92; }
+.stcm-actions button.icon { padding-left: 8px; padding-right: 8px; }

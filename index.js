@@ -28,6 +28,8 @@ const defaultSettings = Object.freeze({
     npcPosts: 'auto',            // story side characters posting themselves: auto | on | off
     translateConn: '',           // '' = translate in the same call · 'main' · ST profile id · 'api:<id>'
     translateModel: '',          // model for that translation connection ('' = the connection's own model)
+    translateWhen: 'auto',       // 'auto' = with every generation · 'manual' = only from a post's 번역 button
+    trDisplay: 'replace',        // 'replace' = translation instead of the original · 'both' = original above, translation below
     extMemory: true,             // read memory / summaries other extensions inject (Memoria, VectFox, …)
     extMemoryChoice: {},         // injection key → true/false (unset: memory-looking keys on, others off)
     extMemoryMax: 8000,
@@ -802,7 +804,7 @@ function languageRules(platformId, fixed) {
 function languageInstruction(platformId, fixed = resolvedLanguage()) {
     const tr = resolvedTranslation();
     const parts = languageRules(platformId, fixed);
-    if (tr && !translateSeparately()) parts.push(fillTpl(getPrompt('translation'), { translation: tr }));
+    if (tr && !translateSeparately() && getSettings().translateWhen !== 'manual') parts.push(fillTpl(getPrompt('translation'), { translation: tr }));
     else parts.push('Leave "body_tr" empty.');   // no translation, or another model translates afterwards
     return parts.join('\n');
 }
@@ -1482,28 +1484,32 @@ const trTriedTitle = new WeakSet();   // same for post titles
 let trChain = Promise.resolve();
 
 function scheduleTranslate(feedId) {
-    if (!translateSeparately()) return;
+    if (!translateSeparately() || getSettings().translateWhen === 'manual') return;
     trChain = trChain.then(() => translateFeed(feedId)).catch((e) => {
         console.warn(`[${MODULE}] translation failed`, e);
         toastr.error(`번역 실패: ${esc(truncate(String(e?.message ?? e), 120))}`, '커뮤니티');
     });
 }
 
-async function translateFeed(feedId) {
-    const feed = getFeed(feedId);
-    const target = resolvedTranslation();
-    if (!feed || !target || !translateSeparately()) return;
-    const chatId = ctx().getCurrentChatId?.();
-    const todo = [];   // { o, postIdx, field: 'body' | 'title' }
-    feed.data.posts.forEach((p, i) => {
-        if (String(p.title ?? '').trim() && !p.title_tr && !trTriedTitle.has(p)) todo.push({ o: p, postIdx: i, field: 'title' });
-        for (const o of [p, ...p.comments, ...p.comments.flatMap(c => c.replies)]) {
-            if (o && String(o.body ?? '').trim() && !o.body_tr && !o.body_ko && !trTried.has(o)) todo.push({ o, postIdx: i, field: 'body' });
-        }
-    });
-    if (!todo.length) return;
+/** Language to translate into: the setting, or Korean for a post's 번역 button when none is set. */
+function trTarget() {
+    return resolvedTranslation() || 'Korean';
+}
+
+/** Connection + model a translation uses: the translation connection, else the generation one. */
+function trConnection() {
+    const s = getSettings();
+    return s.translateConn ? { conn: s.translateConn, model: s.translateModel } : { conn: s.profileId, model: '' };
+}
+
+/**
+ * Translate items [{ o, postIdx, field: 'body' | 'title' }] in small batches; returns the post indexes touched.
+ * `mark` (optional) records attempts so the automatic pass doesn't resend texts that need no translation.
+ */
+async function translateItems(feedId, todo, { target, conn, model, mark = null, chatId = ctx().getCurrentChatId?.() } = {}) {
+    const touched = new Set();
+    if (!todo.length) return touched;
     const system = fillTpl(getPrompt('translate_separate'), { translation: target });
-    // small batches keep each answer short enough to come back whole
     const batches = [];
     let cur = [];
     let size = 0;
@@ -1515,38 +1521,130 @@ async function translateFeed(feedId) {
     }
     if (cur.length) batches.push(cur);
     for (const batch of batches) {
-        if (ctx().getCurrentChatId?.() !== chatId || !getFeed(feedId)) return;
-        const mark = (t, on) => { const set = t.field === 'title' ? trTriedTitle : trTried; if (on) set.add(t.o); else set.delete(t.o); };
-        batch.forEach(t => mark(t, true));
+        if (ctx().getCurrentChatId?.() !== chatId || !getFeed(feedId)) return touched;
+        batch.forEach(t => mark?.(t, true));
         const user = JSON.stringify({ items: batch.map((t, id) => ({ id, text: t.o[t.field] })) });
         let raw;
         try {
-            raw = await callModel(system, user, null, getSettings().translateConn, getSettings().translateModel);
+            raw = await callModel(system, user, null, conn, model);
         } catch (e) {
-            batch.forEach(t => mark(t, false));   // the request failed: try these again next time
+            batch.forEach(t => mark?.(t, false));   // the request failed: try these again next time
             throw e;
         }
-        if (ctx().getCurrentChatId?.() !== chatId) return;
+        if (ctx().getCurrentChatId?.() !== chatId) return touched;
         let data;
         try { data = extractJson(raw); } catch { data = null; }
         const list = Array.isArray(data) ? data : (Array.isArray(data?.items) ? data.items : []);
-        const touched = new Set();
         for (const r of list) {
             const t = batch[Number(r?.id)];
             const text = typeof r?.text === 'string' ? r.text.trim() : '';
             if (!t || !text || text === String(t.o[t.field]).trim()) continue;
             if (t.field === 'title') t.o.title_tr = text.slice(0, 500);
-            else t.o.body_tr = text.slice(0, 8000);
+            else { t.o.body_tr = text.slice(0, 8000); delete t.o.body_ko; }
             touched.add(t.postIdx);
         }
-        if (!touched.size) continue;
-        await saveChatStore();
-        if (isOpen() && view === 'feed' && currentFeedId === feedId) {
-            // the 번역 button appears with the first translation; afterwards update only the posts that changed
-            if (!document.getElementById('stcm_tr_toggle')) showFeed(feedId, { keepScroll: true });
-            else for (const i of touched) updatePost(feedId, i);
-        }
     }
+    return touched;
+}
+
+/** Automatic pass after a generation (translation connection set, "자동 번역"). */
+async function translateFeed(feedId) {
+    const feed = getFeed(feedId);
+    const target = resolvedTranslation();
+    if (!feed || !target || !translateSeparately() || getSettings().translateWhen === 'manual') return;
+    const todo = [];
+    feed.data.posts.forEach((p, i) => {
+        if (String(p.title ?? '').trim() && !p.title_tr && !trTriedTitle.has(p)) todo.push({ o: p, postIdx: i, field: 'title' });
+        for (const o of [p, ...p.comments, ...p.comments.flatMap(cm => cm.replies)]) {
+            if (o && String(o.body ?? '').trim() && !o.body_tr && !o.body_ko && !trTried.has(o)) todo.push({ o, postIdx: i, field: 'body' });
+        }
+    });
+    if (!todo.length) return;
+    const mark = (t, on) => { const set = t.field === 'title' ? trTriedTitle : trTried; if (on) set.add(t.o); else set.delete(t.o); };
+    const chatId = ctx().getCurrentChatId?.();
+    const touched = await translateItems(feedId, todo, { target, ...trConnection(), mark, chatId });
+    if (!touched.size || ctx().getCurrentChatId?.() !== chatId) return;   // chat switched meanwhile: don't save into the new one
+    await saveChatStore();
+    if (isOpen() && view === 'feed' && currentFeedId === feedId) {
+        // the 번역 button appears with the first translation; afterwards update only the posts that changed
+        if (!document.getElementById('stcm_tr_toggle')) showFeed(feedId, { keepScroll: true });
+        else for (const i of touched) updatePost(feedId, i);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// One post: 번역 / 원문 toggle, 재번역, 번역 수정
+// ---------------------------------------------------------------------------
+// Keyed by the post object itself, so deleting or adding posts never moves the choice to another post
+const trView = new WeakMap();        // post → true (translation) / false (original); unset = the 번역 bar button
+let itemPost = new WeakMap();      // post / comment object → its post (rebuilt on every render)
+const trBusy = new WeakSet();      // posts being translated now
+
+function indexItems(feed) {
+    itemPost = new WeakMap();
+    for (const p of feed?.data.posts ?? []) {
+        itemPost.set(p, p);
+        for (const cm of p.comments) { itemPost.set(cm, p); for (const r of cm.replies) itemPost.set(r, p); }
+    }
+}
+
+/** Is this post / comment shown translated right now? */
+function trOn(o) {
+    const post = itemPost.get(o);
+    const v = post ? trView.get(post) : undefined;
+    return v ?? showTr;
+}
+
+function postHasTr(p) {
+    return !!(p.title_tr || p.body_tr || p.body_ko || p.comments.some(cm => cm.body_tr || cm.body_ko || cm.replies.some(r => r.body_tr || r.body_ko)));
+}
+
+function postTrItems(p, i, force) {
+    const out = [];
+    if (String(p.title ?? '').trim() && (force || !p.title_tr)) out.push({ o: p, postIdx: i, field: 'title' });
+    for (const o of [p, ...p.comments, ...p.comments.flatMap(cm => cm.replies)]) {
+        if (String(o.body ?? '').trim() && (force || !(o.body_tr || o.body_ko))) out.push({ o, postIdx: i, field: 'body' });
+    }
+    return out;
+}
+
+async function translatePost(feedId, idx, { force = false } = {}) {
+    const feed = getFeed(feedId);
+    const post = feed?.data.posts[idx];
+    if (!post) return;
+    if (trBusy.has(post)) return;
+    const todo = postTrItems(post, idx, force);
+    if (!todo.length) { trView.set(post, true); updatePost(feedId, idx); return; }
+    trBusy.add(post);
+    updatePost(feedId, idx);   // shows "번역 중…"
+    const chatId = ctx().getCurrentChatId?.();
+    try {
+        const touched = await translateItems(feedId, todo, { target: trTarget(), ...trConnection(), chatId });
+        if (ctx().getCurrentChatId?.() !== chatId) return;   // chat switched meanwhile
+        if (touched.size) await saveChatStore();
+        else toastr.info('번역할 내용이 없거나, 이미 그 언어예요.');
+        trView.set(post, true);
+    } catch (e) {
+        toastr.error(`번역 실패: ${esc(truncate(String(e?.message ?? e), 140))}`, '커뮤니티');
+    } finally {
+        trBusy.delete(post);
+        const at = getFeed(feedId)?.data.posts.indexOf(post);
+        if (at >= 0) updatePost(feedId, at);
+    }
+}
+
+async function editTranslation(o, field, label) {
+    const { Popup } = ctx();
+    const cur = field === 'title' ? (o.title_tr ?? '') : (o.body_tr || o.body_ko || '');
+    const original = field === 'title' ? o.title : o.body;
+    const val = Popup?.show?.input
+        ? await Popup.show.input(label, `<small>원문: ${esc(truncate(original, 200))}</small>`, cur, { rows: field === 'title' ? 2 : 8 })
+        : prompt(label, cur);
+    if (val == null) return false;   // cancelled
+    const text = String(val).trim();
+    if (field === 'title') o.title_tr = text.slice(0, 500);
+    else { o.body_tr = text.slice(0, 8000); delete o.body_ko; }
+    return true;
 }
 
 function parseOrThrow(fn, raw) {
@@ -2116,14 +2214,16 @@ let showTr = false;
 
 /** Post title as shown: the translation while 번역 보기 is on (when there is one). */
 function ttl(p) {
-    return showTr && p?.title_tr ? p.title_tr : (p?.title ?? '');
+    if (!(p?.title_tr && trOn(p))) return p?.title ?? '';
+    return getSettings().trDisplay === 'both' ? `${p.title} — ${p.title_tr}` : p.title_tr;
 }
 let composer = null;   // { feedId, postIdx, replyTo }
 
 function txt(o, platform) {
     const tr = o.body_tr || o.body_ko;
-    const useTr = showTr && tr && String(tr).trim();
-    return fmt(useTr ? tr : o.body, platform);
+    if (!(trOn(o) && tr && String(tr).trim())) return fmt(o.body, platform);
+    if (getSettings().trDisplay === 'both') return `${fmt(o.body, platform)}<span class="stcm-tr-below">${fmt(tr, platform)}</span>`;
+    return fmt(tr, platform);
 }
 
 function avatar(name, cls = '') {
@@ -2156,6 +2256,9 @@ function itemLinks(feed, i, ci, ri, o, n = null) {
         const place = ci == null ? 'op' : (ri == null ? `c${ci}` : `r${ci}.${ri}`);
         links.push(`<a class="stcm-link" data-act="anchor" data-feed="${esc(feed.id)}" data-idx="${i}" data-n="${n}" data-place="${place}">&gt;&gt;${n}</a>`);
     }
+    if (o && ci != null && (o.body_tr || o.body_ko) && trOn(o)) {
+        links.push(`<a class="stcm-link" data-act="tr-edit-item" data-feed="${esc(feed.id)}" data-idx="${i}" data-ci="${ci}"${ri != null ? ` data-ri="${ri}"` : ''}>번역 수정</a>`);
+    }
     if (o && ci != null) {   // any comment / reply / message can be removed, generated ones too
         links.push(`<a class="stcm-link danger" data-act="del-item" data-feed="${esc(feed.id)}" data-idx="${i}" data-ci="${ci}"${ri != null ? ` data-ri="${ri}"` : ''}>삭제</a>`);
     }
@@ -2178,9 +2281,21 @@ function postActions(feed, i) {
             : `<button data-act="more" data-feed="${esc(feed.id)}" data-idx="${i}"><i class="fa-solid fa-angles-down"></i>${chat ? '대화 이어가기' : (thread ? '스레드 이어가기' : '댓글 더 보기')}</button>`}
         <button class="stcm-tog ${post.watch ? 'on' : ''}" data-act="watch" data-feed="${esc(feed.id)}" data-idx="${i}" title="${post.watch ? '자동 이어가기 끄기' : '본 채팅이 진행되면 이 글에 자동으로 레스/댓글 달기'}"><i class="fa-solid fa-eye"></i><span class="lbl">${post.watch ? '지켜보는 중' : '지켜보기'}</span></button>
         ${post.kind === 'dm' ? '' : `<button class="stcm-tog icon ${crossRefOn(post) ? 'on' : ''}" data-act="crossref" data-feed="${esc(feed.id)}" data-idx="${i}" title="${getSettings().crossRef ? '전체 설정에서 켜져 있어요' : (post.crossRef ? '이 글만 다른 글 참고 끄기' : '이 글을 이어갈 때 다른 게시글도 참고')}"><i class="fa-solid fa-link"></i></button>`}
+        ${trButtons(feed, i)}
         <button class="stcm-pin ${on ? 'on' : ''}" data-act="pin" data-feed="${esc(feed.id)}" data-idx="${i}" title="본편에 반영"><i class="fa-solid fa-thumbtack"></i>${on ? '반영 중' : '반영'}</button>
         <button data-act="del-post" data-feed="${esc(feed.id)}" data-idx="${i}" title="${esc(postKindLabel(feed, post))} 삭제"><i class="fa-solid fa-trash-can"></i></button>
     </div>`;
+}
+
+function trButtons(feed, i) {
+    const post = feed.data.posts[i];
+    const fid = esc(feed.id);
+    if (trBusy.has(post)) return `<button disabled><i class="fa-solid fa-spinner fa-spin"></i> 번역 중…</button>`;
+    const has = postHasTr(post);
+    const shown = has && trOn(post);
+    return `<button class="stcm-tog ${shown ? 'on' : ''}" data-act="tr-post" data-feed="${fid}" data-idx="${i}" title="${shown ? '원문 보기' : (has ? '번역 보기' : `${esc(trTarget())}로 번역`)}"><i class="fa-solid fa-language"></i>${shown ? '원문' : '번역'}</button>
+        ${shown ? `<button class="icon" data-act="tr-redo" data-feed="${fid}" data-idx="${i}" title="다시 번역"><i class="fa-solid fa-rotate"></i></button>
+        <button class="icon" data-act="tr-edit" data-feed="${fid}" data-idx="${i}" title="이 글의 번역 고치기"><i class="fa-solid fa-pen"></i></button>` : ''}`;
 }
 
 function threadNav(feed, i) {
@@ -2281,7 +2396,7 @@ function postSummaryHtml(feed, p, i) {
     const pf = feed.platform;
     const n = p.comments.reduce((a, c) => a + 1 + c.replies.length, 0);
     const titled = !!String(p.title ?? '').trim() && pf !== 'twitter';
-    const title = titled ? ttl(p) : truncate((showTr && p.body_tr) || p.body, 90);
+    const title = titled ? ttl(p) : truncate((trOn(p) && p.body_tr) || p.body, 90);
     let tag = '';
     if (pf === 'naver') tag = p.tags?.[0] || '';
     if (pf === 'reddit') tag = p.tags?.[0] || '';
@@ -3625,6 +3740,42 @@ async function onFeedClick(e) {
         await generateMorePosts(feedId);
         return;
     }
+    if (act === 'tr-post') {
+        const post = getFeed(feedId)?.data.posts[idx];
+        if (!post) return;
+        if (postHasTr(post)) {
+            trView.set(post, !trOn(post));
+            captureDraft();
+            updatePost(feedId, idx);
+            // a translation made earlier may be missing parts added since (new comments): fill them in
+            if (trView.get(post) && postTrItems(post, idx, false).length) await translatePost(feedId, idx);
+        } else {
+            await translatePost(feedId, idx);
+        }
+        return;
+    }
+    if (act === 'tr-redo') { captureDraft(); await translatePost(feedId, idx, { force: true }); return; }
+    if (act === 'tr-edit' || act === 'tr-edit-item') {
+        const post = getFeed(feedId)?.data.posts[idx];
+        if (!post) return;
+        let changed = false;
+        if (act === 'tr-edit') {
+            if (String(post.title ?? '').trim() && await editTranslation(post, 'title', '제목 번역 고치기')) changed = true;
+            if (String(post.body ?? '').trim() && await editTranslation(post, 'body', '본문 번역 고치기')) changed = true;
+        } else {
+            const ci = Number(el.dataset.ci);
+            const ri = el.dataset.ri != null ? Number(el.dataset.ri) : null;
+            const item = ri == null ? post.comments[ci] : post.comments[ci]?.replies[ri];
+            if (item && await editTranslation(item, 'body', '번역 고치기')) changed = true;
+        }
+        if (changed) {
+            await saveChatStore();
+            captureDraft();
+            updatePost(feedId, getFeed(feedId).data.posts.indexOf(post));
+            if (isPinned(feedId, idx)) refreshInjection();
+        }
+        return;
+    }
     if (act === 'del-post') {
         const { Popup, POPUP_RESULT } = ctx();
         const f = getFeed(feedId);
@@ -3713,6 +3864,7 @@ async function onFeedClick(e) {
     }
     if (el.id === 'stcm_tr_toggle') {
         showTr = !showTr;
+        for (const p of getFeed(currentFeedId)?.data.posts ?? []) trView.delete(p);   // the bar button sets every post
         captureDraft();
         showFeed(currentFeedId, { keepScroll: true });
         return;
@@ -4015,6 +4167,7 @@ function showFeed(feedId, opts = {}) {
         ${hasTr ? `<button id="stcm_tr_toggle" class="${showTr ? 'on' : ''}" title="${showTr ? '원문 보기' : '번역 보기'}"><i class="fa-solid fa-language"></i> 번역</button>` : ''}`;
     updateFoldAllButton(feed);
     const render = renderers[feed.platform] ?? renderers.naver;
+    indexItems(feed);
     el.innerHTML = render(feed) + `
         <div class="stcm-more-posts"><button data-act="more-posts" data-feed="${esc(feed.id)}"><i class="fa-solid fa-plus"></i> ${PLATFORMS[feed.platform]?.chat ? '이 서버에 채널 더 만들기' : '이 게시판에 글 더 불러오기'}</button></div>`;
 
@@ -4153,6 +4306,7 @@ function updatePost(feedId, idx, opts = {}) {
         : null;
     captureDraft();
     const tpl = document.createElement('template');
+    indexItems(feed);
     tpl.innerHTML = (renderers[feed.platform] ?? renderers.naver)(feed);
     applyFolding(feed, tpl.content);
     const fresh = tpl.content.querySelector(`[data-post="${idx}"]`);
@@ -4524,7 +4678,7 @@ function setTranslateConnection(value) {
     if (s.translateConn !== String(value ?? '')) s.translateModel = '';
     s.translateConn = String(value ?? '');
     saveSettings();
-    if (!resolvedTranslation() && value) toastr.info('번역할 언어를 먼저 골라야 번역이 돼요 (설정 → 번역 함께 생성).', '', { timeOut: 3000 });
+    if (!resolvedTranslation() && value) toastr.info('번역할 언어를 먼저 골라야 자동 번역이 돼요 (⚙ 설정 → 번역 언어).', '', { timeOut: 3000 });
 }
 
 /** Re-fill the extension settings dropdown (and the panel's API view when it is open and idle). */
@@ -4760,8 +4914,8 @@ function showApi({ keepScroll = false } = {}) {
         ${trModelRow()}
         <p class="stcm-cp-hint">${resolvedTranslation()
             ? `번역 언어: <b>${esc(resolvedTranslation())}</b>. 따로 고르면 글을 먼저 만들고, 그 연결이 뒤이어 번역해요 (생성 프롬프트가 짧아지고, 번역은 싼 모델에 맡길 수 있어요).`
-            : '지금은 번역을 안 해요. ⚙ 설정의 "번역 함께 생성"에서 언어를 고르면 번역이 켜져요.'}</p>
-        <div class="stcm-cp-foot"><span class="stcm-api-trresult"></span>${getSettings().translateConn && resolvedTranslation() ? '<button data-act="api-trtest"><i class="fa-solid fa-plug-circle-check"></i> 번역 테스트</button>' : ''}</div>
+            : '번역 언어가 정해지지 않았어요. ⚙ 설정의 "번역 언어"에서 고르면 자동 번역이 켜져요. (글의 번역 버튼은 언어를 안 골라도 한국어로 번역해요)'}</p>
+        <div class="stcm-cp-foot"><span class="stcm-api-trresult"></span>${getSettings().translateConn ? '<button data-act="api-trtest"><i class="fa-solid fa-plug-circle-check"></i> 번역 테스트</button>' : ''}</div>
     </div>
     <div class="stcm-compose-view stcm-api-view stcm-api-custom">
         <label class="stcm-cp-check">직접 추가한 API</label>
@@ -4874,7 +5028,7 @@ async function onApiClick(act, el) {
         el.disabled = true;
         setNote(note, '확인 중…');
         try {
-            const system = fillTpl(getPrompt('translate_separate'), { translation: resolvedTranslation() });
+            const system = fillTpl(getPrompt('translate_separate'), { translation: trTarget() });
             const raw = await callModel(system, JSON.stringify({ items: [{ id: 0, text: 'Good morning! The festival starts tonight.' }] }), null, s.translateConn, s.translateModel);
             let text = '';
             try { const d = extractJson(raw); text = (Array.isArray(d) ? d : d?.items ?? [])[0]?.text ?? ''; } catch { /* not JSON */ }
@@ -5164,9 +5318,23 @@ function addSettingsPanel() {
           <select id="stcm_set_language" class="text_pole">${languageOptions(true, false)}</select>
           <input id="stcm_set_custom_lang" class="text_pole" type="text" placeholder="언어 이름 (예: Catalan, Brazilian Portuguese)">
 
-          <label>번역 함께 생성 <small>(피드에서 번역 보기로 전환, 토큰 많이 씀 — 번역만 다른 API로 하려면 커뮤니티 창의 🔌 API 설정에서)</small></label>
+          <label>번역 언어 <small>(번역 보기에 쓸 언어 — 번역만 다른 API로 하려면 커뮤니티 창의 🔌 API 설정에서)</small></label>
           <select id="stcm_set_translate" class="text_pole">${languageOptions(false, true)}</select>
           <input id="stcm_set_custom_tr" class="text_pole" type="text" placeholder="번역할 언어 이름">
+          <div class="stcm-set-grid">
+            <label>번역 시점
+              <select id="stcm_set_trwhen" class="text_pole">
+                <option value="auto">생성할 때 자동으로</option>
+                <option value="manual">글의 번역 버튼을 누를 때만</option>
+              </select>
+            </label>
+            <label>번역 보기
+              <select id="stcm_set_trdisplay" class="text_pole">
+                <option value="replace">번역문만</option>
+                <option value="both">원문 위 · 번역문 아래</option>
+              </select>
+            </label>
+          </div>
 
           <div class="stcm-set-grid">
             <label>새로 생성할 글 개수 <input id="stcm_set_posts" type="number" min="1" max="10" class="text_pole"></label>
@@ -5336,6 +5504,9 @@ function addSettingsPanel() {
     document.getElementById('stcm_set_theme')?.addEventListener('change', applyTheme);
     bind('stcm_set_mode', 'defaultMode');
     bind('stcm_set_npc', 'npcPosts');
+    bind('stcm_set_trwhen', 'translateWhen');
+    bind('stcm_set_trdisplay', 'trDisplay');
+    document.getElementById('stcm_set_trdisplay')?.addEventListener('change', () => { if (isOpen() && view === 'feed' && currentFeedId) showFeed(currentFeedId, { keepScroll: true }); });
 
     bind('stcm_set_pf', 'defaultPlatform');
     bind('stcm_set_extra', 'extraInstruction');
