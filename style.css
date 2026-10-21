@@ -183,7 +183,7 @@ dialog#stcm_overlay #toast-container { position: fixed; }
 .stcm-topic-label { flex: 0 0 auto; font-size: 12px; color: var(--s-sub); margin-right: 2px; white-space: nowrap; }
 
 .stcm-genrow { display: flex; gap: 6px; }
-.stcm-genrow input, #stcm_lang,
+.stcm-genrow input, #stcm_lang, #stcm_locale,
 .stcm-wi select, #stcm_wi_filter {
     background: var(--s-input);
     color: var(--s-text);
@@ -193,7 +193,10 @@ dialog#stcm_overlay #toast-container { position: fixed; }
     font-size: 13px;
 }
 .stcm-genrow input { flex: 1; min-width: 0; }
-#stcm_lang { max-width: 130px; padding: 6px; font-size: 12px; }
+#stcm_lang, #stcm_locale { max-width: 130px; padding: 6px; font-size: 12px; }
+#stcm_locale:disabled { opacity: 0.5; }
+.stcm-space-form { display: flex; flex-direction: column; gap: 8px; margin: 6px 0 12px; }
+.stcm-space-view .stcm-list { margin-top: 6px; }
 #stcm_overlay select option { background: var(--s-bg); color: var(--s-text); }
 .stcm-gen, .stcm-stop {
     border: 0;
@@ -1063,3 +1066,90 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
 @media (max-width: 600px) {
     .stcm-bl-post, .stcm-et-post { margin: 6px 2px; padding-left: 10px; padding-right: 10px; }
 }
+
+/* ---------- 간략한 화면 (settings → compactUi) ---------- */
+.stcm-header { position: relative; z-index: 6; }
+.stcm-mlbl, #stcm_btn_more, .stcm-cpick, .stcm-gbreak { display: none; }
+#stcm_more_dot:empty { display: none; }
+#stcm_more_dot {
+    position: absolute; top: -6px; right: -6px; min-width: 16px; height: 16px; padding: 0 4px;
+    border-radius: 999px; background: #ffb300; color: #222; font-size: 10px; font-weight: 700; line-height: 16px; pointer-events: none;
+}
+.stcm-compact #stcm_btn_more { display: inline-flex; }
+.stcm-compact .stcm-cpick { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.stcm-pick {
+    flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 6px;
+    padding: 7px 12px; border: 1px solid var(--s-border); border-radius: 12px;
+    background: var(--s-input); color: var(--s-text); font-size: 14px; cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-align: left;
+}
+.stcm-pick:hover { background: var(--s-hover); }
+.stcm-pick b { flex: 0 0 auto; }
+.stcm-pick .sep { opacity: 0.45; flex: 0 0 auto; }
+.stcm-pick .sp { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+.stcm-pick .cv { margin-left: auto; padding-left: 4px; opacity: 0.6; flex: 0 0 auto; }
+.stcm-compact .stcm-cpick .stcm-seg { flex: 0 0 auto; border-radius: 999px; }
+.stcm-compact .stcm-cpick .stcm-seg button { flex: 0 0 auto; padding: 6px 10px; font-size: 12.5px; white-space: nowrap; }
+
+/* ⋯ menu */
+.stcm-more-menu {
+    display: none; position: absolute; top: calc(100% + 4px); right: 8px; z-index: 30;
+    min-width: 200px; flex-direction: column; gap: 2px; padding: 6px;
+    background: var(--s-bg); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    border: 1px solid var(--s-border); border-radius: 12px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+.stcm-more-menu.show { display: flex; }
+.stcm-more-menu button {
+    display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px;
+    background: transparent; color: inherit; border: 0; border-radius: 8px; cursor: pointer; font-size: 14px; text-align: left;
+}
+.stcm-more-menu button:hover { background: var(--s-hover); }
+.stcm-more-menu button > i { width: 16px; text-align: center; opacity: 0.85; }
+.stcm-more-menu .stcm-mlbl { display: inline; }
+.stcm-more-menu #stcm_pin_count { position: static; margin-left: auto; }
+
+/* language / background become a small line under the request box */
+.stcm-compact .stcm-genrow { flex-wrap: wrap; row-gap: 4px; align-items: center; }
+.stcm-compact .stcm-genrow input { order: 1; flex: 1 1 0 !important; width: auto; min-width: 0; }
+.stcm-compact .stcm-genbtns { order: 2; flex: 0 0 auto !important; }
+.stcm-compact .stcm-genbtns > button { width: auto !important; }
+.stcm-compact .stcm-gbreak { display: block; order: 3; flex-basis: 100%; height: 0; }
+.stcm-compact #stcm_lang, .stcm-compact #stcm_locale {
+    order: 4; flex: 0 1 auto !important; width: auto !important; max-width: 48%;
+    background: transparent; border: 0; padding: 2px 4px; color: var(--s-sub); font-size: 12.5px !important; cursor: pointer;
+}
+.stcm-compact #stcm_locale { order: 5; }
+.stcm-compact #stcm_lang:hover, .stcm-compact #stcm_locale:hover { color: var(--s-text); }
+
+/* bottom sheet: community · space · board */
+.stcm-sheet-bg { display: none; position: absolute; inset: 0; z-index: 40; background: rgba(0, 0, 0, 0.35); }
+.stcm-sheet-bg.show { display: block; }
+.stcm-sheet {
+    position: absolute; left: 0; right: 0; bottom: 0; max-height: 78%; overflow-y: auto;
+    display: flex; flex-direction: column; gap: 10px;
+    padding: 10px 14px calc(16px + env(safe-area-inset-bottom));
+    background: var(--s-bg); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    border-top: 1px solid var(--s-border); border-radius: 18px 18px 0 0; box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.45);
+}
+.stcm-sheet-grip { width: 44px; height: 5px; padding: 0; border: 0; border-radius: 3px; background: var(--s-border); margin: 0 auto 2px; cursor: pointer; flex: 0 0 auto; }
+.stcm-sheet-h { font-size: 12px; color: var(--s-sub); }
+.stcm-sheet #stcm_platforms { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 6px; overflow: visible; padding: 0; }
+.stcm-sheet #stcm_platforms button {
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+    padding: 10px 4px; border-radius: 12px; font-size: 12px; white-space: normal; text-align: center;
+}
+.stcm-sheet #stcm_platforms button i { font-size: 18px; }
+.stcm-sheet .stcm-chips { flex-wrap: wrap; overflow: visible; row-gap: 6px; }
+/* phones: in 간략한 화면 the mode buttons keep only their icons so the picker has room */
+@media (max-width: 480px) {
+    .stcm-compact .stcm-cpick .stcm-mode-lbl { display: none; }
+    .stcm-compact .stcm-cpick .stcm-seg button { padding: 6px 11px; font-size: 14px; }
+}
+/* only 5 header buttons in 간략한 화면: there is room for the title again */
+@media (min-width: 360px) and (max-width: 440px) {
+    .stcm-compact .stcm-title-text { display: inline; }
+}
+/* long option text must not widen the settings drawer on narrow phones */
+.stcm-set select, .stcm-set input.text_pole, .stcm-set textarea { max-width: 100%; box-sizing: border-box; }
+.stcm-set label > select { display: block; width: 100%; }
+.stcm-sheet { overscroll-behavior: contain; }

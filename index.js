@@ -26,6 +26,8 @@ const defaultSettings = Object.freeze({
     continueCount: 5,
     contextMessages: 20,
     npcPosts: 'auto',
+    customSpaces: [],            // [{ id, platform, name, desc, locale: { mode: inherit|story|country|custom, country, custom } }]
+    spaceSelected: {},           // platform → space id ('' = 기본)
     nickMode: 'random',          // empty nickname box: 'random' (instant, community style) · 'ai' (fits the person and the post)
     minReasoning: false,         // ask reasoning models to think as little as possible            // story side characters posting themselves: auto | on | off
     translateConn: '',           // '' = translate in the same call · 'main' · ST profile id · 'api:<id>'
@@ -63,6 +65,7 @@ const defaultSettings = Object.freeze({
     topicScope: 'all',           // all: manual + auto generation | auto: auto generation only
     threadCap: 1000,             // max posts per thread on capped platforms (2ch, Reddit)
     theme: 'theme',              // light | dark | theme (follow SillyTavern theme)
+    compactUi: false,            // 간략한 화면: community/space/board in one picker, some header buttons in ⋯
     foldPrefs: {},               // { short?: bool, tall?: bool } — unset: folded on short screens only
 });
 
@@ -177,6 +180,11 @@ Output ONLY a JSON object, no code fences: {"title": "post title, or empty when 
 
     npc_on: `Named side characters (NPCs) from the story — friends, family, classmates, coworkers, rivals and other people who appear in the story or the world information, but not {{char}} or {{user}} — DO use this community. Let one or two of them post or comment as themselves under fitting handles, in their own voice, knowing only what they would know. They may talk about {{char}}/{{user}} from their own point of view.`,
     npc_off: `Named side characters (NPCs) from the story — anyone who appears in the story or the world information besides {{char}} and {{user}} — do NOT post or comment themselves. Every poster is an ordinary member with no name in the story; story characters may only be mentioned, rumored about or described by others.`,
+    community_space: `COMMUNITY SPACE (made by the user): this happens in "{{space}}" on {{platform}}. About it: {{about}}
+Set "board" to "{{space}}". Its members are the kind of people who would join it, and its culture, in-jokes and usual topics color every post and comment. Any chosen topics still decide each post's subject — seen through this community (e.g. a dating-advice post written by members of a game community).`,
+    setting_country: `COMMUNITY LOCATION: this community's users live in {{country}}. They write as {{country}} users of this platform would — local culture, slang, places, prices and currency, school and work systems, time zone and trends. If the story is set somewhere else, they see its events from {{country}}: as foreign news, an imported or translated work, travel, or rumors that reached them online. If the story world is fictional, treat {{country}} as the real-world culture this community is modeled on.`,
+    setting_custom: `COMMUNITY SETTING (given by the user): {{setting}}
+Follow it for who the users are and where and when they live, even where it differs from the story's own setting.`,
     reasoning_min: `Answer right away. Do not think out loud, do not write a reasoning, analysis or <think> section, and do not plan step by step before answering — output only what is asked for.`,
     translate_separate: `Translate the "text" of every item into natural {{translation}}. Keep the tone, slang, emoji, line breaks (\n) and formatting such as >>12 anchors, #hashtags#, [emoji] tags and @mentions. Keep personal names as they are, or transliterate them only when that is how {{translation}} speakers would write them. If a text is already in {{translation}}, return "" for it. Reply with JSON only, in this exact shape: {"items":[{"id":0,"text":"..."}]}`,
     translation: `ALSO fill "body_tr" for every post and comment with a natural {{translation}} translation that keeps the tone and slang. If the original is already in {{translation}}, leave "body_tr" empty. Likewise fill "title_tr" with the translated post title (empty when the post has no title or the title is already in {{translation}}).`,
@@ -255,6 +263,9 @@ const PROMPT_LABELS = {
     translation: '번역 지시 (글 만들 때 같이)',
     translate_separate: '번역: 따로 번역할 때',
     reasoning_min: '추론 최소화 지시',
+    community_space: '내가 만든 카페·갤러리',
+    setting_country: '배경: 나라를 골랐을 때',
+    setting_custom: '배경: 직접 입력했을 때',
     npc_on: '주변 인물(NPC): 직접 글 쓰기',
     npc_off: '주변 인물(NPC): 글 쓰지 않기',
     inject_authored: '본편 반영: 캐릭터/유저가 쓴 글',
@@ -326,6 +337,8 @@ function apiWhere(a) {
     return apiHost(a?.url);
 }
 
+const cleanSpaceLists = new WeakSet();
+
 function getSettings() {
     const { extensionSettings } = ctx();
     if (!extensionSettings[MODULE]) {
@@ -352,6 +365,14 @@ function getSettings() {
     }
     if (!s.modelOverrides || typeof s.modelOverrides !== 'object' || Array.isArray(s.modelOverrides)) s.modelOverrides = {};
     if (!s.extMemoryChoice || typeof s.extMemoryChoice !== 'object' || Array.isArray(s.extMemoryChoice)) s.extMemoryChoice = {};
+    if (!Array.isArray(s.customSpaces)) s.customSpaces = [];
+    if (!cleanSpaceLists.has(s.customSpaces)) {   // once per list, not on every getSettings()
+        s.customSpaces = s.customSpaces
+            .filter(x => x && typeof x.id === 'string' && x.id && typeof x.name === 'string' && x.name.trim() && typeof x.platform === 'string' && PLATFORMS[x.platform])
+            .map(x => ({ id: x.id.slice(0, 64), platform: x.platform, name: x.name.slice(0, 40), desc: typeof x.desc === 'string' ? x.desc.slice(0, 500) : '', locale: cleanLocale(x.locale, true) }));
+        cleanSpaceLists.add(s.customSpaces);
+    }
+    if (!s.spaceSelected || typeof s.spaceSelected !== 'object' || Array.isArray(s.spaceSelected)) s.spaceSelected = {};
     return s;
 }
 
@@ -601,6 +622,26 @@ function attachFeeds(st) {
     });
 }
 
+const COUNTRIES = [
+    ['KR', '한국', 'South Korea'], ['JP', '일본', 'Japan'], ['US', '미국', 'the United States'], ['CN', '중국', 'mainland China'],
+    ['TW', '대만', 'Taiwan'], ['HK', '홍콩', 'Hong Kong'], ['GB', '영국', 'the United Kingdom'], ['FR', '프랑스', 'France'],
+    ['DE', '독일', 'Germany'], ['IT', '이탈리아', 'Italy'], ['ES', '스페인', 'Spain'], ['RU', '러시아', 'Russia'],
+    ['CA', '캐나다', 'Canada'], ['AU', '호주', 'Australia'], ['BR', '브라질', 'Brazil'], ['MX', '멕시코', 'Mexico'],
+    ['IN', '인도', 'India'], ['VN', '베트남', 'Vietnam'], ['TH', '태국', 'Thailand'], ['PH', '필리핀', 'the Philippines'], ['ID', '인도네시아', 'Indonesia'],
+];
+
+/** Background object from storage → a safe shape. Spaces may 'inherit' the chat's. */
+function cleanLocale(loc, allowInherit) {
+    const modes = allowInherit ? ['inherit', 'story', 'country', 'custom'] : ['story', 'country', 'custom'];
+    const mode = modes.includes(loc?.mode) ? loc.mode : (allowInherit ? 'inherit' : 'story');
+    const country = mode === 'country' && typeof loc.country === 'string' && COUNTRIES.some(c => c[0] === loc.country) ? loc.country : '';
+    const custom = mode === 'custom' && typeof loc.custom === 'string' ? loc.custom.slice(0, 600) : '';
+    if (mode === 'country' && !country) return { mode: allowInherit ? 'inherit' : 'story', country: '', custom: '' };
+    if (mode === 'custom' && !custom.trim()) return { mode: allowInherit ? 'inherit' : 'story', country: '', custom: '' };
+    if (loc && loc.mode === mode && loc.country === country && loc.custom === custom) return loc;   // already clean
+    return { mode, country, custom };
+}
+
 function getChatStore() {
     const { chatMetadata } = ctx();
     if (!chatMetadata) return null;
@@ -615,6 +656,7 @@ function getChatStore() {
     st.wi ??= { mode: getSettings().includeWorldInfo === false ? 'off' : 'auto', picks: {} };
     st.wi.picks ??= {};
     st.lastMode ??= null;
+    st.locale = cleanLocale(st.locale, false);   // this chat's community background
     st.lastPlatform ??= null;
     return st;
 }
@@ -1020,14 +1062,15 @@ function npcRule(mode, vars) {
     return fillTpl(getPrompt(v === 'on' ? 'npc_on' : 'npc_off'), vars);
 }
 
-function commonBlocks(mode, platformId, lang = resolvedLanguage()) {
+function commonBlocks(mode, platformId, lang = resolvedLanguage(), spaceId = currentSpace(platformId)) {
     const vars = baseVars(platformId);
     const npc = npcRule(mode, vars);
+    const scene = sceneText(platformId, spaceId);
     return {
         system: fillTpl(getPrompt('system'), vars),
         task: fillTpl(getPrompt(mode === 'world' ? 'mode_world' : 'mode_meta'), vars) + (npc ? `\n${npc}` : ''),
         taskBase: fillTpl(getPrompt(mode === 'world' ? 'mode_world' : 'mode_meta'), vars),   // without the NPC rule (the player writes)
-        style: fillTpl(getPrompt(`guide_${platformId}`), vars),
+        style: fillTpl(getPrompt(`guide_${platformId}`), vars) + (scene ? `\n\n${scene}` : ''),
         language: languageInstruction(platformId, lang),
         extra: getSettings().extraInstruction?.trim() || '',
         vars,
@@ -1145,7 +1188,7 @@ function buildCrossRefBlock(platformId, mode, excludePost = null) {
 async function buildPostsPrompt({ mode, platformId, topic, avoidFeed, background = false }) {
     const s = getSettings();
     const topicBlock = buildTopicBlock(Number(s.postCount) || 4, background);
-    const b = commonBlocks(mode, platformId, avoidFeed ? feedLang(avoidFeed) : resolvedLanguage());
+    const b = commonBlocks(mode, platformId, avoidFeed ? feedLang(avoidFeed) : resolvedLanguage(), avoidFeed ? feedSpace(avoidFeed) : currentSpace(platformId));
     const storyText = await buildContextBlock();
 
     const store = getChatStore();
@@ -1241,7 +1284,7 @@ function threadHasPlayer(post) {
 
 /** Prompt for continuing comments on an existing post. */
 async function buildContinuePrompt({ feed, postIdx, count, playerJustPosted }) {
-    const b = commonBlocks(feed.mode, feed.platform, feedLang(feed));
+    const b = commonBlocks(feed.mode, feed.platform, feedLang(feed), feedSpace(feed));
     const storyText = await buildContextBlock();
     const post = feed.data.posts[postIdx];
     const pl = threadHasPlayer(post);
@@ -1708,6 +1751,7 @@ function newFeedObject({ platformId, mode, topic, data }) {
         topic: topic || '',
         lang: resolvedLanguage() || '',   // fixed output language at creation ('' = the community's own)
         boardKey: currentBoardKey() ?? '',   // topic board it belongs to ('' = 자유)
+        space: currentSpace(platformId),    // user-made cafe / gallery ('' = 기본)
         createdAt: Date.now(),
         atMessage: (ctx().chat?.length ?? 1) - 1,
         data: data ?? { board: '', posts: [] },
@@ -1739,12 +1783,15 @@ async function generateFeed({ mode, platformId, topic = '', background = false }
         const server = latestFeedFor(platformId, mode);
         if (server) return generateMorePosts(server.id, topic, { background });
     }
+    // where the feed goes is fixed now: picking another board / cafe while the model writes must not move it
+    const pick = { boardKey: currentBoardKey() ?? '', space: currentSpace(platformId), lang: resolvedLanguage() || '' };
     return runJob(`${PLATFORMS[platformId].label} 글을 불러오는 중…`, background, async ({ signal, stillSameChat }) => {
         const { system, user, topicNames } = await buildPostsPrompt({ mode, platformId, topic, background });
         const raw = await callModel(system, user, signal);
         if (!stillSameChat()) { toastr.info('채팅이 바뀌어서 결과를 버렸어요.'); return null; }
         const data = parseOrThrow(parseFeed, raw);
-        const feed = newFeedObject({ platformId, mode, topic, data });
+        const feed = { ...newFeedObject({ platformId, mode, topic, data }), ...pick };
+        if (spaceById(feed.space)) feed.data.board = spaceById(feed.space).name;
         feed.topics = topicNames;
         await addFeed(feed, { remember: !background });
 
@@ -1828,7 +1875,7 @@ async function generateNextThread(feedId, postIdx, { background = false } = {}) 
     const count = Math.max(1, Number(getSettings().continueCount) || 5);
     return runJob('후속 스레를 세우는 중…', background, async ({ signal, stillSameChat }) => {
         if (prev.nextIdx != null && feed.data.posts[prev.nextIdx]) return feed;   // made meanwhile
-        const b = commonBlocks(feed.mode, feed.platform, feedLang(feed));
+        const b = commonBlocks(feed.mode, feed.platform, feedLang(feed), feedSpace(feed));
         const storyText = await buildContextBlock();
         const user = [
             `<story_context>\n${storyText}\n</story_context>`,
@@ -2106,9 +2153,8 @@ async function submitPlayerPostNow({ title, body, identity, react, board, catego
 
     // Append to the currently viewed feed when it matches the selection, otherwise start a new feed
     let feed = getFeed(currentFeedId);
-    const bk = currentBoardKey();
-    if (!feed || feed.platform !== selPlatform || feed.mode !== selMode || (bk !== null && feedBoardKey(feed) !== bk)) {
-        feed = newFeedObject({ platformId: selPlatform, mode: selMode, data: { board: board?.trim() || '', posts: [] } });
+    if (!feedMatchesSelection(feed)) {
+        feed = newFeedObject({ platformId: selPlatform, mode: selMode, data: { board: spaceById(currentSpace(selPlatform))?.name || board?.trim() || '', posts: [] } });
         await addFeed(feed);
     }
     const pf = PLATFORMS[feed.platform];
@@ -2255,7 +2301,7 @@ function pickPlayerTopic() {
 
 async function aiWrite({ kind, mode, platformId, identity, instruction, draft, feed, postIdx, replyTo, anchorN, topic, dmTo }) {
     return runJob('글을 쓰는 중…', false, async ({ signal, stillSameChat }) => {
-        const b = commonBlocks(mode, platformId);
+        const b = commonBlocks(mode, platformId, resolvedLanguage(), feed?.id && feed.platform === platformId ? feedSpace(feed) : currentSpace(platformId));
         const storyText = await buildContextBlock();
         const dmPost = feed && postIdx != null && feed.data.posts[postIdx]?.kind === 'dm';
         const kindLabel = dmPost || kind === 'dm' ? 'direct message'
@@ -3490,6 +3536,10 @@ async function setBookPicks(book, uids) {
 async function onFeedChange(e) {
     if (onApiChange(e)) return;
     const t = e.target;
+    if (t.classList.contains('stcm-sp-locale')) {
+        t.closest('.stcm-space-form')?.querySelector('.stcm-sp-custom')?.classList.toggle('stcm-hide', t.value !== 'custom');
+        return;
+    }
     if (t.classList.contains('stcm-cp-as') || t.classList.contains('stcm-cp-char')) {
         const row = t.closest('.stcm-cp-row');
         const sel = row?.querySelector('.stcm-cp-as');
@@ -3579,7 +3629,7 @@ async function onWorldInfoClick(el) {
 // ---------------------------------------------------------------------------
 let currentFeedId = null;
 const feedScroll = new Map();   // feedId → scrollTop, restored when coming back
-let view = 'feed';   // feed | history | pins | compose | wi | topics | api | settings
+let view = 'feed';   // feed | history | pins | compose | wi | topics | api | settings | spaces
 let selMode = 'meta';
 let selPlatform = 'naver';
 
@@ -3615,6 +3665,65 @@ function isFolded() {
     return screenClass() === 'short';
 }
 
+/** 간략한 화면: community / space / board live in a bottom sheet, rarely used header buttons in ⋯.
+ *  The real controls are moved (not copied), so every listener keeps working. */
+const MENU_BTNS = ['stcm_btn_history', 'stcm_btn_pins', 'stcm_btn_wi', 'stcm_btn_theme', 'stcm_btn_fold'];
+function applyCompact() {
+    const ov = document.getElementById('stcm_overlay');
+    if (!ov) return;
+    const on = !!getSettings().compactUi;
+    const $ = (id) => document.getElementById(id);
+    if (ov.classList.contains('stcm-compact') === on && ov.dataset.compactDone) return;
+    ov.dataset.compactDone = '1';
+    ov.classList.toggle('stcm-compact', on);
+    closeSheet();
+    closeMoreMenu();
+    if (on) {
+        $('stcm_cpick').appendChild($('stcm_modes'));
+        $('stcm_sheet_pf').appendChild($('stcm_platforms'));
+        $('stcm_sheet_sp').appendChild($('stcm_spaces'));
+        $('stcm_sheet_bd').appendChild($('stcm_boards'));
+        for (const id of MENU_BTNS) $('stcm_more_menu').appendChild($(id));
+    } else {
+        $('stcm_cpick').after($('stcm_modes'));
+        $('stcm_modes').after($('stcm_platforms'));
+        $('stcm_platforms').after($('stcm_spaces'));
+        $('stcm_topics').after($('stcm_boards'));
+        $('stcm_btn_write').after($('stcm_btn_fold'));
+        $('stcm_btn_settings').after($('stcm_btn_theme'));
+        $('stcm_btn_theme').after($('stcm_btn_wi'));
+        $('stcm_btn_wi').after($('stcm_btn_history'));
+        $('stcm_btn_history').after($('stcm_btn_pins'));
+    }
+    updatePicker();
+}
+
+function closeSheet() {
+    const el = document.getElementById('stcm_sheet');
+    if (!el?.classList.contains('show')) return false;
+    el.classList.remove('show');
+    return true;
+}
+
+function closeMoreMenu() {
+    const el = document.getElementById('stcm_more_menu');
+    if (!el?.classList.contains('show')) return false;
+    el.classList.remove('show');
+    document.getElementById('stcm_btn_more')?.setAttribute('aria-expanded', 'false');
+    return true;
+}
+
+const PF_COLOR = { naver: '#03c75a', dcinside: '#3b4890', tdgall: '#7a5cff', blind: '#e0352b', everytime: '#c62917', reddit: '#ff4500', twitter: '', fivech: '#b5452f', weibo: '#e6162d', discord: '#5865f2', tieba: '#3388ff' };
+/** The one-line picker: "☕ 네이버 카페 › 별의 노래 게임 카페 ▾". */
+function updatePicker() {
+    const b = document.getElementById('stcm_btn_pick');
+    const p = PLATFORMS[selPlatform];
+    if (!b || !p) return;
+    const sp = spaceById(currentSpace(selPlatform));
+    const color = PF_COLOR[selPlatform] ? ` style="color:${PF_COLOR[selPlatform]}"` : '';
+    b.innerHTML = `<i class="${p.brand ? 'fa-brands' : 'fa-solid'} ${p.icon}"${color}></i><b>${esc(p.label)}</b>${sp ? `<span class="sep">›</span><span class="sp">${esc(sp.name)}</span>` : ''}<i class="fa-solid fa-caret-down cv"></i>`;
+}
+
 function applyFold() {
     const folded = isFolded();
     document.getElementById('stcm_overlay')?.classList.toggle('folded', folded);
@@ -3644,28 +3753,34 @@ function buildOverlay() {
           <div class="stcm-title"><i class="fa-solid fa-comments"></i><span class="stcm-title-text"> 커뮤니티</span></div>
           <div class="stcm-hbtns">
             <button id="stcm_btn_write" title="글쓰기"><i class="fa-solid fa-pen"></i></button>
-            <button id="stcm_btn_fold" title="위쪽 메뉴 접기/펴기"><i class="fa-solid fa-chevron-up"></i></button>
+            <button id="stcm_btn_fold" title="위쪽 메뉴 접기/펴기"><i class="fa-solid fa-chevron-up"></i><span class="stcm-mlbl">위쪽 메뉴 접기/펴기</span></button>
             <button id="stcm_btn_api" title="API 설정 (연결 프로필)"><i class="fa-solid fa-plug"></i></button>
             <button id="stcm_btn_settings" title="설정"><i class="fa-solid fa-gear"></i></button>
-            <button id="stcm_btn_theme" title="화면 테마"><i class="fa-solid fa-circle-half-stroke"></i></button>
-            <button id="stcm_btn_wi" title="참고할 월드 인포"><i class="fa-solid fa-book-atlas"></i></button>
-            <button id="stcm_btn_history" title="지난 피드"><i class="fa-solid fa-clock-rotate-left"></i></button>
-            <button id="stcm_btn_pins" title="반영 중인 글"><i class="fa-solid fa-thumbtack"></i><span id="stcm_pin_count"></span></button>
+            <button id="stcm_btn_theme" title="화면 테마"><i class="fa-solid fa-circle-half-stroke"></i><span class="stcm-mlbl">화면 테마</span></button>
+            <button id="stcm_btn_wi" title="참고할 월드 인포"><i class="fa-solid fa-book-atlas"></i><span class="stcm-mlbl">월드 인포</span></button>
+            <button id="stcm_btn_history" title="지난 피드"><i class="fa-solid fa-clock-rotate-left"></i><span class="stcm-mlbl">지난 피드</span></button>
+            <button id="stcm_btn_pins" title="반영 중인 글"><i class="fa-solid fa-thumbtack"></i><span class="stcm-mlbl">반영 중인 글</span><span id="stcm_pin_count"></span></button>
+            <button id="stcm_btn_more" title="더 보기 (지난 피드 · 반영 · 월드 인포 · 테마)" aria-haspopup="menu"><i class="fa-solid fa-ellipsis"></i><span id="stcm_more_dot"></span></button>
             <button id="stcm_btn_close" title="닫기"><i class="fa-solid fa-xmark"></i></button>
           </div>
+          <div class="stcm-more-menu" id="stcm_more_menu" role="menu"></div>
         </div>
         <div class="stcm-controls">
+          <div class="stcm-cpick" id="stcm_cpick"><button id="stcm_btn_pick" class="stcm-pick" title="커뮤니티 · 카페 · 판 고르기"></button></div>
           <div class="stcm-seg" id="stcm_modes">
-            ${Object.entries(MODES).map(([id, m]) => `<button data-mode="${id}"><i class="fa-solid ${m.icon}"></i> ${m.label}</button>`).join('')}
+            ${Object.entries(MODES).map(([id, m]) => `<button data-mode="${id}" title="${m.label}"><i class="fa-solid ${m.icon}"></i><span class="stcm-mode-lbl"> ${m.label}</span></button>`).join('')}
           </div>
           <div class="stcm-chips" id="stcm_platforms">
             ${Object.entries(PLATFORMS).map(([id, p]) => `<button data-platform="${id}" class="pf-${id}"><i class="${p.brand ? 'fa-brands' : 'fa-solid'} ${p.icon}"></i> ${p.label}</button>`).join('')}
           </div>
+          <div class="stcm-chips stcm-topics stcm-spaces" id="stcm_spaces"></div>
           <div class="stcm-chips stcm-topics" id="stcm_topics"></div>
           <div class="stcm-chips stcm-topics stcm-boards stcm-hide" id="stcm_boards"></div>
           <div class="stcm-genrow">
             <input id="stcm_topic" type="text" placeholder="주제/요청 (선택) — 예: 방금 고백 장면 반응, 축제 날 시장 풍경" />
+            <span class="stcm-gbreak"></span>
             <select id="stcm_lang" title="생성 언어">${languageOptions(true, false)}</select>
+            <select id="stcm_locale" title="커뮤니티 배경 (이 채팅)"></select>
             <span class="stcm-genbtns">
               <button id="stcm_btn_gen" class="stcm-gen"><i class="fa-solid fa-wand-magic-sparkles"></i> 생성</button>
               <button id="stcm_btn_stop" class="stcm-stop"><i class="fa-solid fa-stop"></i> 중지</button>
@@ -3677,6 +3792,15 @@ function buildOverlay() {
         <div class="stcm-errbox" id="stcm_errbox"></div>
         <input type="file" id="stcm_import_file" accept=".json,application/json" hidden>
         <div class="stcm-busy" id="stcm_busy"><i class="fa-solid fa-spinner fa-spin"></i> <span></span></div>
+        <div class="stcm-sheet-bg" id="stcm_sheet">
+          <div class="stcm-sheet" role="dialog" aria-label="커뮤니티 고르기">
+            <button class="stcm-sheet-grip" data-sheet-close title="닫기"></button>
+            <div class="stcm-sheet-h">커뮤니티</div>
+            <div id="stcm_sheet_pf"></div>
+            <div id="stcm_sheet_sp"></div>
+            <div id="stcm_sheet_bd"></div>
+          </div>
+        </div>
       </div>
     </dialog>`;
     document.body.insertAdjacentHTML('beforeend', html);
@@ -3703,6 +3827,26 @@ function buildOverlay() {
         toastr.info(`화면: ${THEMES[s.theme].label}`, '', { timeOut: 1200 });
     });
     document.getElementById('stcm_btn_wi').addEventListener('click', () => { wiFilter = ''; showWorldInfo(); });
+    document.getElementById('stcm_btn_more').addEventListener('click', (e) => {
+        e.stopPropagation();
+        closeSheet();
+        const open = document.getElementById('stcm_more_menu').classList.toggle('show');
+        e.currentTarget.setAttribute('aria-expanded', String(open));
+    });
+    // any item in the ⋯ menu does its job (its own listener) and closes the menu
+    document.getElementById('stcm_more_menu').addEventListener('click', () => closeMoreMenu());
+    ov.addEventListener('click', (e) => {
+        if (!e.target.closest?.('#stcm_more_menu, #stcm_btn_more')) closeMoreMenu();
+    });
+    document.getElementById('stcm_btn_pick').addEventListener('click', () => {
+        closeMoreMenu();
+        document.getElementById('stcm_sheet').classList.add('show');
+    });
+    document.getElementById('stcm_sheet').addEventListener('click', (e) => {
+        // tap outside the sheet, the grip, or pick a space / board → close (a community pick keeps it open)
+        if (e.target.id === 'stcm_sheet' || e.target.closest('[data-sheet-close]')
+            || e.target.closest('#stcm_spaces button, #stcm_boards button[data-board]')) setTimeout(closeSheet, 0);
+    }, true);   // capture: the chip rows re-render on click, so check before they do
     document.getElementById('stcm_btn_api').addEventListener('click', showApi);
     document.getElementById('stcm_btn_settings').addEventListener('click', showSettingsView);
     document.getElementById('stcm_btn_write').addEventListener('click', showCompose);
@@ -3762,6 +3906,16 @@ function buildOverlay() {
         if (e.target.closest('[data-act="err-close"], [data-act="err-api"]')) document.getElementById('stcm_errbox').classList.remove('show');
         if (e.target.closest('[data-act="err-api"]')) showApi();
     });
+    document.getElementById('stcm_locale').addEventListener('change', (e) => onLocaleChange(e.target));
+    document.getElementById('stcm_spaces').addEventListener('click', (e) => {
+        const b = e.target.closest('button');
+        if (!b) return;
+        if (b.dataset.spaceAct === 'edit') { spaceEdit = null; showSpaceEditor(); return; }
+        if (b.dataset.space == null) return;
+        setCurrentSpace(selPlatform, b.dataset.space);
+        renderSpaceChips();
+        if (view === 'compose') showCompose(); else showFeed(null);
+    });
     document.getElementById('stcm_boards').addEventListener('click', (e) => {
         const b = e.target.closest('button[data-board]');
         if (!b) return;
@@ -3797,6 +3951,7 @@ function buildOverlay() {
         // let SillyTavern popups (also <dialog>s) on top of ours close first
         const ours = document.getElementById('stcm_overlay');
         if ([...document.querySelectorAll('dialog[open], .popup[open]')].some(d => d !== ours)) return;
+        if (closeSheet() | closeMoreMenu()) return;
         if (e.target?.closest?.('#stcm_overlay input, #stcm_overlay textarea')) { e.target.blur(); return; }
         closePanel();
     });
@@ -3835,6 +3990,7 @@ async function onFeedClick(e) {
     if (act === 'import-cancel') { pendingImport = null; showHistory(); return; }
     if (act === 'import-merge' || act === 'import-replace') {
         const withPins = document.getElementById('stcm_import_pins')?.checked ?? false;
+        const withSpaces = document.getElementById('stcm_import_spaces')?.checked ?? false;
         if (act === 'import-replace') {
             const { Popup, POPUP_RESULT } = ctx();
             const ok = Popup?.show?.confirm
@@ -3842,13 +3998,14 @@ async function onFeedClick(e) {
                 : confirm('지금 피드를 파일 내용으로 바꿀까요?');
             if (!ok) return;
         }
-        await applyImport(act === 'import-replace' ? 'replace' : 'merge', withPins);
+        await applyImport(act === 'import-replace' ? 'replace' : 'merge', withPins, withSpaces);
         return;
     }
     if (act === 'goto-post') { scrollToPostSmooth(Number(el.dataset.idx)); return; }
     if (act === 'post-toggle') { togglePost(el.dataset.feed, Number(el.dataset.idx)); updateFoldAllButton(getFeed(el.dataset.feed)); return; }
     if (act === 'fold-all') { const f = getFeed(currentFeedId); if (f) setAllOpen(f, !document.getElementById('stcm_fold_all')?.dataset.open); return; }
     if (act?.startsWith('topic')) { await onTopicAction(el); return; }
+    if (act?.startsWith('space-')) { await onSpaceAction(el); return; }
     const feedId = el.dataset.feed;
     const idx = el.dataset.idx != null ? Number(el.dataset.idx) : null;
 
@@ -3996,7 +4153,7 @@ async function onFeedClick(e) {
         const identity = readIdentity(box);
         if (!checkIdentity(identity)) return;
         const feed = getFeed(currentFeedId);
-        const appending = feed && feed.platform === selPlatform && feed.mode === selMode;
+        const appending = feedMatchesSelection(feed);
         const bodyEl = box.querySelector('.stcm-cp-body');
         const out = await aiWrite({
             kind: 'post', mode: selMode, platformId: selPlatform, identity,
@@ -4192,7 +4349,11 @@ function syncSelectors() {
     const cnt = store?.pins.length ?? 0;
     const el = document.getElementById('stcm_pin_count');
     if (el) el.textContent = cnt ? String(cnt) : '';
+    const dot = document.getElementById('stcm_more_dot');
+    if (dot) dot.textContent = cnt ? String(cnt) : '';
     syncLanguageSelectors();
+    renderSpaceChips();
+    renderLocaleSelect();
     renderTopicChips();
     renderBoardChips();
 }
@@ -4214,13 +4375,212 @@ function renderTopicChips() {
     el.scrollLeft = keepLeft;
 }
 
+// ---------------------------------------------------------------------------
+// Community background (per chat) and spaces the user creates (a game cafe, a school gallery…)
+// ---------------------------------------------------------------------------
+const SPACE_UNIT = { naver: '카페', dcinside: '갤러리', tdgall: '갤', reddit: '서브레딧', twitter: '커뮤니티', fivech: '板', weibo: '超话', tieba: '吧', discord: '서버', blind: '라운지', everytime: '학교' };
+
+function spaceUnit(platformId) { return SPACE_UNIT[platformId] ?? '게시판'; }
+function customSpaces() { return getSettings().customSpaces; }
+function spaceById(id) { return id ? customSpaces().find(s => s.id === id) ?? null : null; }
+function feedSpace(f) { return typeof f?.space === 'string' ? f.space : ''; }
+
+/** Space picked above for this community ('' = 기본: the AI picks the board). */
+function currentSpace(platformId) {
+    const id = getSettings().spaceSelected?.[platformId] || '';
+    return spaceById(id)?.platform === platformId ? id : '';
+}
+
+function setCurrentSpace(platformId, id) {
+    const s = getSettings();
+    s.spaceSelected = { ...(s.spaceSelected ?? {}), [platformId]: id || '' };
+    saveSettings();
+}
+
+function chatLocale() {
+    const st = hasChat() ? getChatStore() : null;
+    return st?.locale ?? { mode: 'story', country: '', custom: '' };
+}
+
+/** A space's own background wins over the chat's; 'inherit' = use the chat's. */
+function effectiveLocale(spaceId) {
+    const sp = spaceById(spaceId);
+    if (sp?.locale && sp.locale.mode && sp.locale.mode !== 'inherit') return sp.locale;
+    return chatLocale();
+}
+
+function localeLabel(loc) {
+    if (loc?.mode === 'country') return COUNTRIES.find(c => c[0] === loc.country)?.[1] ?? '나라';
+    if (loc?.mode === 'custom') return truncate(loc.custom || '직접 입력', 14);
+    return '이야기대로';
+}
+
+/** Extra lines for <platform_style>: the user's space and where the community lives. */
+function sceneText(platformId, spaceId) {
+    const parts = [];
+    const sp = spaceById(spaceId);
+    if (sp) parts.push(fillTpl(getPrompt('community_space'), { ...baseVars(platformId), space: sp.name, about: sp.desc || '(no description)' }));
+    const loc = effectiveLocale(spaceId);
+    if (loc.mode === 'country') {
+        const c = COUNTRIES.find(x => x[0] === loc.country);
+        if (c) parts.push(fillTpl(getPrompt('setting_country'), { country: c[2] }));
+    } else if (loc.mode === 'custom' && String(loc.custom ?? '').trim()) {
+        parts.push(fillTpl(getPrompt('setting_custom'), { setting: String(loc.custom).trim().slice(0, 600) }));
+    }
+    return parts.join('\n');
+}
+
+/** "카페: 기본 · 게임 카페 · ＋" row under the community chips. */
+function renderSpaceChips() {
+    const el = document.getElementById('stcm_spaces');
+    if (!el) return;
+    const unit = spaceUnit(selPlatform);
+    const cur = currentSpace(selPlatform);
+    const list = customSpaces().filter(sp => sp.platform === selPlatform);
+    const keepLeft = el.scrollLeft;
+    el.innerHTML = `<span class="stcm-topic-label" title="내가 만든 ${unit}"><i class="fa-solid fa-house-flag"></i> ${unit}</span>
+        <button data-space="" class="${cur ? '' : 'active'}" title="AI가 어울리는 ${unit}를 정해요">기본</button>
+        ${list.map(sp => `<button data-space="${esc(sp.id)}" class="${cur === sp.id ? 'active' : ''}" title="${esc(sp.desc)}">${esc(sp.name)}</button>`).join('')}
+        <button data-space-act="edit" title="${unit} 만들기·관리"><i class="fa-solid fa-plus"></i> 만들기</button>`;
+    el.scrollLeft = keepLeft;
+    updatePicker();
+}
+
+/** "배경" select next to the language select (per chat). */
+function renderLocaleSelect() {
+    const sel = document.getElementById('stcm_locale');
+    if (!sel) return;
+    const loc = chatLocale();
+    const val = loc.mode === 'country' ? `c:${loc.country}` : loc.mode;
+    sel.innerHTML = `<option value="story">배경: 이야기대로</option>
+        ${COUNTRIES.map(([k, ko]) => `<option value="c:${k}">배경: ${esc(ko)}</option>`).join('')}
+        <option value="custom">${loc.mode === 'custom' ? `배경: ${esc(truncate(loc.custom, 12))}` : '배경: 직접 입력…'}</option>`;
+    sel.value = val;
+    sel.disabled = !hasChat();
+    sel.title = loc.mode === 'custom' ? `커뮤니티 배경 (이 채팅): ${loc.custom}` : '커뮤니티 배경 (이 채팅)';
+}
+
+async function onLocaleChange(sel) {
+    const st = hasChat() ? getChatStore() : null;
+    if (!st) return;
+    const chatAtStart = ctx().getCurrentChatId?.();
+    const v = sel.value;
+    if (v === 'custom') {
+        const { Popup } = ctx();
+        const cur = st.locale?.mode === 'custom' ? st.locale.custom : '';
+        const text = Popup?.show?.input
+            ? await Popup.show.input('커뮤니티 배경 직접 입력', '이 채팅의 커뮤니티 사람들이 사는 곳·때를 적어 주세요. (예: 1990년대 일본 오사카, 2050년 화성 이주민 도시)', cur, { rows: 3 })
+            : prompt('커뮤니티 배경', cur);
+        if (text == null || !String(text).trim() || ctx().getCurrentChatId?.() !== chatAtStart) { renderLocaleSelect(); return; }
+        st.locale = { mode: 'custom', country: '', custom: String(text).trim().slice(0, 600) };
+    } else if (v.startsWith('c:')) {
+        st.locale = { mode: 'country', country: v.slice(2), custom: '' };
+    } else {
+        st.locale = { mode: 'story', country: '', custom: '' };
+    }
+    await saveChatStore();
+    renderLocaleSelect();
+    toastr.info(`이 채팅의 커뮤니티 배경: ${esc(localeLabel(st.locale))}`, '', { timeOut: 1500 });
+}
+
+/** Space manager view (＋ on the space row). */
+let spaceEdit = null;   // null | { id } ('' = new)
+
+function showSpaceEditor() {
+    leaveFeed();
+    view = 'spaces';
+    const unit = spaceUnit(selPlatform);
+    const list = customSpaces().filter(sp => sp.platform === selPlatform);
+    const bar = document.getElementById('stcm_feedbar');
+    const el = document.getElementById('stcm_feed');
+    bar.innerHTML = `<button id="stcm_back"><i class="fa-solid fa-arrow-left"></i> 돌아가기</button><span class="stcm-fb-info">${esc(PLATFORMS[selPlatform]?.label)} ${unit} 만들기·관리 · ${list.length}개</span>`;
+    syncSelectors();
+    const sp = spaceEdit?.id ? spaceById(spaceEdit.id) : null;
+    const loc = sp?.locale ?? { mode: 'inherit' };
+    const locVal = loc.mode === 'country' ? `c:${loc.country}` : (loc.mode || 'inherit');
+    el.innerHTML = `<div class="stcm-compose-view stcm-space-view">
+        <p class="stcm-cp-hint">${esc(PLATFORMS[selPlatform]?.label)}에 나만의 ${unit}를 만들어요. 고르면 그 ${unit} 회원들이 글을 쓰고, 위의 글 주제(연애·자유…)는 그 ${unit} 안에서 글 내용을 정해요. ${unit}마다 글과 판이 따로 쌓여요.</p>
+        <div class="stcm-space-form" data-id="${esc(sp?.id ?? '')}">
+            <label class="stcm-cp-check">${sp ? `${unit} 고치기` : `새 ${unit}`}</label>
+            <input class="stcm-sp-name" type="text" maxlength="40" placeholder="${unit} 이름 (예: ${esc(spacePlaceholder(selPlatform))})" value="${esc(sp?.name ?? '')}">
+            <textarea class="stcm-sp-desc" rows="3" maxlength="500" placeholder="어떤 곳인지 (예: 모바일 RPG '별의 노래' 유저들이 모이는 곳. 공략·가챠 인증·잡담이 많고 분위기는 훈훈함)">${esc(sp?.desc ?? '')}</textarea>
+            <select class="stcm-sp-locale">
+                <option value="inherit" ${locVal === 'inherit' ? 'selected' : ''}>배경: 채팅 설정 따라가기</option>
+                <option value="story" ${locVal === 'story' ? 'selected' : ''}>배경: 이야기대로</option>
+                ${COUNTRIES.map(([k, ko]) => `<option value="c:${k}" ${locVal === `c:${k}` ? 'selected' : ''}>배경: ${esc(ko)}</option>`).join('')}
+                <option value="custom" ${locVal === 'custom' ? 'selected' : ''}>배경: 직접 입력</option>
+            </select>
+            <input class="stcm-sp-custom ${locVal === 'custom' ? '' : 'stcm-hide'}" type="text" maxlength="300" placeholder="배경 직접 입력 (예: 1990년대 일본 오사카)" value="${esc(loc.mode === 'custom' ? loc.custom ?? '' : '')}">
+            <div class="stcm-cp-foot">
+                ${sp ? '<button data-act="space-cancel">새로 만들기</button>' : ''}
+                <button class="primary" data-act="space-save"><i class="fa-solid fa-floppy-disk"></i> ${sp ? '저장' : '만들기'}</button>
+            </div>
+        </div>
+        ${list.length ? `<div class="stcm-list">${list.map(x => `
+            <div class="stcm-li">
+                <div class="stcm-li-main" data-act="space-pick" data-id="${esc(x.id)}"><b>${esc(x.name)}</b>${currentSpace(selPlatform) === x.id ? ' <span class="stcm-api-using">선택됨</span>' : ''}
+                    <small>${esc(truncate(x.desc || '설명 없음', 100))}${x.locale?.mode && x.locale.mode !== 'inherit' ? ` · 배경: ${esc(localeLabel(x.locale))}` : ''}</small></div>
+                <button data-act="space-edit" data-id="${esc(x.id)}" title="고치기"><i class="fa-solid fa-pen"></i></button>
+                <button data-act="space-del" data-id="${esc(x.id)}" title="지우기"><i class="fa-solid fa-trash-can"></i></button>
+            </div>`).join('')}</div>` : ''}
+    </div>`;
+    el.scrollTop = 0;
+}
+
+function spacePlaceholder(pid) {
+    return { naver: '별의 노래 공식 팬카페', dcinside: '별의 노래 갤러리', reddit: 'r/StarSongGame', fivech: 'ゲーム板', discord: '별의 노래 길드 서버', blind: '게임업계 라운지', everytime: '한빛대학교', weibo: '星之歌超话', tieba: '星之歌吧', twitter: '별의 노래 유저 모임', tdgall: '별의 노래 갤' }[pid] ?? '게임 카페';
+}
+
+async function onSpaceAction(el) {
+    const s = getSettings();
+    const act = el.dataset.act;
+    if (act === 'space-cancel') { spaceEdit = null; showSpaceEditor(); return; }
+    if (act === 'space-edit') { spaceEdit = { id: el.dataset.id }; showSpaceEditor(); return; }
+    if (act === 'space-pick') { setCurrentSpace(selPlatform, el.dataset.id); spaceEdit = null; showFeed(null); return; }
+    if (act === 'space-del') {
+        const sp = spaceById(el.dataset.id);
+        if (!sp) return;
+        const { Popup, POPUP_RESULT } = ctx();
+        const ok = Popup?.show?.confirm
+            ? (await Popup.show.confirm(`${spaceUnit(sp.platform)} 지우기`, `"${esc(sp.name)}"을(를) 목록에서 지울까요?<br><small>이미 만든 글은 🕘 지난 피드에 남아요.</small>`)) === POPUP_RESULT.AFFIRMATIVE
+            : confirm('지울까요?');
+        if (!ok) return;
+        s.customSpaces = s.customSpaces.filter(x => x.id !== sp.id);
+        if (s.spaceSelected?.[sp.platform] === sp.id) setCurrentSpace(sp.platform, '');
+        if (spaceEdit?.id === sp.id) spaceEdit = null;
+        saveSettings();
+        showSpaceEditor();
+        return;
+    }
+    if (act === 'space-save') {
+        const form = el.closest('.stcm-space-form');
+        const name = form.querySelector('.stcm-sp-name').value.replace(/[\n\r]/g, ' ').trim().slice(0, 40);
+        if (!name) { toastr.warning(`${spaceUnit(selPlatform)} 이름을 적어 주세요.`); return; }
+        const desc = form.querySelector('.stcm-sp-desc').value.trim().slice(0, 500);
+        const lv = form.querySelector('.stcm-sp-locale').value;
+        const custom = form.querySelector('.stcm-sp-custom').value.trim().slice(0, 300);
+        const locale = lv.startsWith('c:') ? { mode: 'country', country: lv.slice(2), custom: '' }
+            : lv === 'custom' ? (custom ? { mode: 'custom', country: '', custom } : { mode: 'inherit' })
+            : { mode: lv === 'story' ? 'story' : 'inherit' };
+        const id = form.dataset.id || (ctx().uuidv4 ? ctx().uuidv4() : `${Date.now().toString(36)}${randomId(6)}`);
+        const entry = { id, platform: selPlatform, name, desc, locale };
+        const i = s.customSpaces.findIndex(x => x.id === id);
+        if (i >= 0) s.customSpaces[i] = entry; else s.customSpaces.push(entry);
+        setCurrentSpace(selPlatform, id);   // a new / edited space is the one you want to see
+        spaceEdit = null;
+        saveSettings();
+        toastr.success(`"${esc(name)}" ${i >= 0 ? '저장했어요' : '만들었어요'}. 지금부터 여기서 생성해요.`);
+        showFeed(null);
+    }
+}
+
 /** Boards that already have posts on the selected community + mode, newest first. */
 function boardsFor(platform, mode) {
     const store = hasChat() ? getChatStore() : null;
     const known = new Set(parseTopics().map(t => t.name));
     const map = new Map();
     for (const f of store?.feeds ?? []) {
-        if (f.platform !== platform || f.mode !== mode) continue;
+        if (f.platform !== platform || f.mode !== mode || feedSpace(f) !== currentSpace(platform)) continue;
         const key = feedBoardKey(f);
         if (key && !key.split('|').every(n => known.has(n))) continue;   // a topic of it was deleted
         // the board shows its newest feed, so count that one's posts (older ones live in 🕘 history)
@@ -4243,7 +4603,8 @@ function renderBoardChips() {
     el.classList.toggle('stcm-hide', !show);
     if (!show) { el.innerHTML = ''; return; }
     const keepLeft = el.scrollLeft;
-    const unit = PLATFORMS[selPlatform]?.chat ? '서버' : '판';
+    // Discord: a topic is its own server, but inside a space you made the server is the space
+    const unit = PLATFORMS[selPlatform]?.chat ? (currentSpace(selPlatform) ? '주제' : '서버') : '판';
     el.innerHTML = `<span class="stcm-topic-label" title="지금 커뮤니티·모드에서 만든 ${unit}"><i class="fa-solid fa-table-list"></i> ${unit}</span>
         ${boards.map(b => `<button data-board="${esc(b.key)}" class="${b.key === cur ? 'active' : ''}" title="글 ${b.posts}개">${esc(boardLabel(b.key))} <small>${b.posts}</small></button>`).join('')}`;
     el.scrollLeft = keepLeft;
@@ -4405,11 +4766,18 @@ function showError(msg, raw) {
     eb.classList.add('show');
 }
 
-/** Newest feed of this chat for a community + mode (or null). */
-function latestFeedFor(platform, mode, board = currentBoardKey()) {
+/** Is this feed the board currently picked above (community + mode + space + topic board)? */
+function feedMatchesSelection(feed) {
+    if (!feed || feed.platform !== selPlatform || feed.mode !== selMode || feedSpace(feed) !== currentSpace(selPlatform)) return false;
+    const bk = currentBoardKey();
+    return bk === null || feedBoardKey(feed) === bk;
+}
+
+/** Newest feed of this chat for a community + mode + space + topic board (or null). */
+function latestFeedFor(platform, mode, board = currentBoardKey(), space = currentSpace(platform)) {
     const store = hasChat() ? getChatStore() : null;
     return [...(store?.feeds ?? [])].reverse()
-        .find(f => f.platform === platform && f.mode === mode && (board === null || feedBoardKey(f) === board)) ?? null;
+        .find(f => f.platform === platform && f.mode === mode && feedSpace(f) === space && (board === null || feedBoardKey(f) === board)) ?? null;
 }
 
 /** Community / mode chip picked: show that board right away (or the write form when writing). */
@@ -4422,6 +4790,7 @@ function onSelectorChange() {
         saveChatStore();
     }
     if (view === 'compose') { showCompose(); return; }
+    if (view === 'spaces') { spaceEdit = null; showSpaceEditor(); return; }   // manage that community's cafes
     if (view === 'dm-new') dmDraft = null;
     showFeed(null);
 }
@@ -4451,6 +4820,7 @@ function showFeed(feedId, opts = {}) {
     if (feed) {
         selPlatform = feed.platform;
         selMode = feed.mode;
+        if (feedSpace(feed) !== currentSpace(feed.platform) && (feedSpace(feed) === '' || spaceById(feedSpace(feed)))) setCurrentSpace(feed.platform, feedSpace(feed));
         const key = feedBoardKey(feed);
         if (currentBoardKey() !== null && key !== currentBoardKey()) {
             const known = new Set(parseTopics().map(t => t.name));
@@ -4464,13 +4834,17 @@ function showFeed(feedId, opts = {}) {
     if (!feed) {
         currentFeedId = null;
         const bk = currentBoardKey();
-        const where = `<b>${esc(PLATFORMS[selPlatform]?.label)}</b> · ${esc(MODES[selMode]?.label)}${bk !== null ? ` · ${esc(boardName(bk, selPlatform))}` : ''}`;
+        const spName = spaceById(currentSpace(selPlatform))?.name;
+        const where = `<b>${esc(PLATFORMS[selPlatform]?.label)}</b>${spName ? ` · ${esc(spName)}` : ''} · ${esc(MODES[selMode]?.label)}${bk !== null ? ` · ${esc(boardName(bk, selPlatform))}` : ''}`;
         bar.innerHTML = `<span class="stcm-fb-info">${where}</span>`;
         el.innerHTML = `<div class="stcm-empty"><i class="fa-solid fa-comments"></i><br>${store.feeds.length ? `아직 ${where} ${PLATFORMS[selPlatform]?.chat ? '채널이' : '글이'} 없어요.` : '아직 글이 없어요.'}<br><b>생성</b>을 누르거나 <i class="fa-solid fa-pen"></i> 버튼으로 직접 글을 써 보세요.${store.feeds.length ? '<br><small>다른 커뮤니티 글은 <i class="fa-solid fa-clock-rotate-left"></i> 지난 피드에서 볼 수 있어요.</small>' : ''}</div>`;
         el.scrollTop = 0;
         return;
     }
     currentFeedId = feed.id;
+    // a renamed cafe / gallery: its feeds show the new name (in every chat, as they are opened)
+    const spNow = spaceById(feedSpace(feed));
+    if (spNow && feed.data.board !== spNow.name) { feed.data.board = spNow.name; scheduleFeedWrite(); }
     const hasTr = feed.data.posts.some(p => p.body_tr || p.body_ko || p.title_tr || p.comments.some(c => c.body_tr || c.body_ko));
     const when = new Date(feed.createdAt).toLocaleString();
     bar.innerHTML = `<span class="stcm-fb-info"><b>${esc(PLATFORMS[feed.platform]?.label)}</b> · ${esc(MODES[feed.mode]?.label)} · #${feed.atMessage} 시점 · ${esc(when)}${currentBoardKey() !== null ? ` · ${esc(boardName(feedBoardKey(feed), feed.platform))}` : (feed.topics?.length ? ` · 주제: ${esc(feed.topics.join(', '))}` : '')}${feed.topic ? ` · “${esc(truncate(feed.topic, 30))}”` : ''}</span>
@@ -4649,6 +5023,8 @@ function updatePinCount() {
     const cnt = store?.pins.length ?? 0;
     const el = document.getElementById('stcm_pin_count');
     if (el) el.textContent = cnt ? String(cnt) : '';
+    const dot = document.getElementById('stcm_more_dot');
+    if (dot) dot.textContent = cnt ? String(cnt) : '';
 }
 
 function showCompose() {
@@ -4658,7 +5034,7 @@ function showCompose() {
     syncSelectors();
     const p = PLATFORMS[selPlatform];
     const feed = getFeed(currentFeedId);
-    const appending = feed && feed.platform === selPlatform && feed.mode === selMode;
+    const appending = feedMatchesSelection(feed);
     const bar = document.getElementById('stcm_feedbar');
     const el = document.getElementById('stcm_feed');
     bar.innerHTML = `<button id="stcm_back"><i class="fa-solid fa-arrow-left"></i> 돌아가기</button><span class="stcm-fb-info">글쓰기 · <b>${esc(p.label)}</b> · ${esc(MODES[selMode].label)}</span>`;
@@ -4667,7 +5043,7 @@ function showCompose() {
             ? `지금 보고 있는 <b>${esc(feed.data.board || p.label)}</b> 피드에 글이 올라가요.`
             : '선택한 커뮤니티에 새 피드를 만들고 글을 올려요. (위에서 모드·커뮤니티를 바꿀 수 있어요)'}</p>
         ${identityControls()}
-        ${appending ? '' : `<input class="stcm-cp-board" type="text" placeholder="게시판 / 갤러리 / 서브레딧 / 해시태그 이름 (선택)">`}
+        ${appending || currentSpace(selPlatform) ? '' : `<input class="stcm-cp-board" type="text" placeholder="게시판 / 갤러리 / 서브레딧 / 해시태그 이름 (선택)">`}
         ${p.hasTitle || p.chat ? `<input class="stcm-cp-title" type="text" placeholder="${p.chat ? '채널 이름 (예: 잡담) — 새 채널이 생기고 첫 메시지가 올라가요' : (p.thread ? '스레드 제목' : '제목')}">` : ''}
         ${selPlatform === 'tdgall' ? `<select class="stcm-cp-cat">${TD_CATS.filter(c => c !== '전체').map(c => `<option value="${esc(c)}" ${feed && tdState(feed.id).cat === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>` : ''}
         <textarea class="stcm-cp-body" rows="7" placeholder="${p.thread ? '>>1 본문' : '본문'}"></textarea>
@@ -4699,6 +5075,7 @@ function showHistory() {
     const importPanel = pi ? `<div class="stcm-import">
         <div><i class="fa-solid fa-file-import"></i> <b>${esc(pi.fileName)}</b> — 피드 ${pi.feeds.length}개${pi.pins.length ? `, 반영 ${pi.pins.length}개` : ''}${pi.chat ? ` <small>(원래 채팅: ${esc(pi.chat)})</small>` : ''}</div>
         ${pi.pins.length ? '<label class="stcm-cp-check"><input type="checkbox" id="stcm_import_pins" checked> 📌 반영 목록도 불러오기</label>' : ''}
+        ${pi.spaces?.length ? `<label class="stcm-cp-check"><input type="checkbox" id="stcm_import_spaces" checked> 카페·갤러리 ${pi.spaces.length}개도 불러오기 <small>(${esc(truncate(pi.spaces.map(sp => sp.name).join(', '), 60))} — 이미 있는 건 그대로 써요)</small></label>` : ''}
         <div class="stcm-cp-foot">
             <button data-act="import-cancel">취소</button>
             <button data-act="import-replace" title="지금 피드를 지우고 파일 내용으로 바꿔요">바꾸기</button>
@@ -4709,7 +5086,7 @@ function showHistory() {
     el.innerHTML = importPanel + `<div class="stcm-list">${feeds.map(f => `
         <div class="stcm-li">
             <div class="stcm-li-main" data-open-feed="${esc(f.id)}">
-                <b>${esc(PLATFORMS[f.platform]?.label)}</b> · ${esc(MODES[f.mode]?.label)} · #${f.atMessage} · 글 ${f.data.posts.length}개${f.topics?.length ? ` · ${esc(f.topics.join(', '))}` : ''}
+                <b>${esc(PLATFORMS[f.platform]?.label)}</b>${feedSpace(f) ? ` › ${esc(spaceById(feedSpace(f))?.name ?? `(지운 ${spaceUnit(f.platform)})`)}` : ''} · ${esc(MODES[f.mode]?.label)} · #${f.atMessage} · 글 ${f.data.posts.length}개${f.topics?.length ? ` · ${esc(f.topics.join(', '))}` : ''}
                 <small>${esc(new Date(f.createdAt).toLocaleString())} — ${esc(truncate(f.data.posts.map(p => p.title || p.body).join(' / '), 80))}</small>
             </div>
             <button data-del-feed="${esc(f.id)}" title="삭제"><i class="fa-solid fa-trash-can"></i></button>
@@ -4737,6 +5114,9 @@ function exportFeeds() {
         chat: ctx().getCurrentChatId?.() ?? '',
         feeds,
         pins: store.pins ?? [],
+        // the cafes / galleries these feeds were made in, so another install can rebuild them
+        spaces: customSpaces().filter(sp => feeds.some(f => feedSpace(f) === sp.id))
+            .map(sp => ({ id: sp.id, platform: sp.platform, name: sp.name, desc: sp.desc, locale: sp.locale })),
     };
     const blob = new Blob([JSON.stringify(payload, null, 1)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -4749,7 +5129,36 @@ function exportFeeds() {
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 5000);
-    toastr.success(`피드 ${feeds.length}개를 내보냈어요.`);
+    toastr.success(`피드 ${feeds.length}개를 내보냈어요.${payload.spaces.length ? ` (카페·갤러리 ${payload.spaces.length}개 포함)` : ''}`);
+}
+
+/** A cafe / gallery from an imported file → a safe entry, or null. */
+function importSpace(x) {
+    if (!x || typeof x !== 'object' || !PLATFORMS[x.platform]) return null;
+    const id = String(x.id ?? '').replace(/[^a-zA-Z0-9-]/g, '').slice(0, 64);
+    const name = String(x.name ?? '').replace(/[\n\r]/g, ' ').trim().slice(0, 40);
+    if (!id || !name) return null;
+    return { id, platform: x.platform, name, desc: typeof x.desc === 'string' ? x.desc.slice(0, 500) : '', locale: cleanLocale(x.locale, true) };
+}
+
+/** Add the file's cafes to this install. Same id = already here; same community + name = the same cafe.
+ *  Returns old id → id to use. */
+function mergeImportedSpaces(list) {
+    const s = getSettings();
+    const map = new Map();
+    let added = 0;
+    for (const sp of list) {
+        const same = s.customSpaces.find(x => x.id === sp.id && x.platform === sp.platform)
+            ?? s.customSpaces.find(x => x.platform === sp.platform && x.name === sp.name);
+        if (same) { map.set(sp.id, same.id); continue; }
+        // an id taken by a different community's cafe: give this one a fresh id
+        const id = s.customSpaces.some(x => x.id === sp.id) ? (ctx().uuidv4 ? ctx().uuidv4() : `${Date.now().toString(36)}${randomId(6)}`) : sp.id;
+        s.customSpaces = [...s.customSpaces, { ...sp, id }];
+        map.set(sp.id, id);
+        added++;
+    }
+    if (added) saveSettings();
+    return { map, added };
 }
 
 // Imported files may come from anyone: rebuild every field with known types.
@@ -4801,6 +5210,7 @@ function importFeed(f, chatLen) {
         topics: Array.isArray(f.topics) ? f.topics.slice(0, 20).map(t => String(t).slice(0, 60)) : [],
         ...(typeof f.lang === 'string' ? { lang: f.lang.replace(/[\n\r<>{}]/g, '').slice(0, 60) } : {}),
         ...(typeof f.boardKey === 'string' ? { boardKey: f.boardKey.slice(0, 600) } : {}),
+        ...(typeof f.space === 'string' ? { space: f.space.replace(/[^a-zA-Z0-9-]/g, '').slice(0, 64) } : {}),
         createdAt: intOr(f.createdAt, Date.now()),
         // keep it inside this chat so branches made later still carry it
         atMessage: Math.min(intOr(f.atMessage), Math.max(0, chatLen - 1)),
@@ -4840,13 +5250,18 @@ async function readImportFile(file) {
     const chatLen = ctx().chat?.length ?? 0;
     const feeds = feedsIn.slice(0, 200).map(f => importFeed(f, chatLen)).filter(Boolean);
     if (!feeds.length) { toastr.error('불러올 수 있는 피드가 없어요.'); return; }
-    pendingImport = { feeds, pins: Array.isArray(data.pins) ? data.pins : [], fileName: file.name, chat: String(data.chat ?? '') };
+    // only cafes some imported feed was made in
+    const used = new Set(feeds.map(feedSpace).filter(Boolean));
+    const spaces = (Array.isArray(data.spaces) ? data.spaces.slice(0, 100) : []).map(importSpace)
+        .filter(sp => sp && used.has(sp.id) && feeds.some(f => f.space === sp.id && f.platform === sp.platform));
+    pendingImport = { feeds, pins: Array.isArray(data.pins) ? data.pins : [], spaces, fileName: file.name, chat: String(data.chat ?? '') };
     showHistory();
 }
 
-async function applyImport(mode, withPins) {
+async function applyImport(mode, withPins, withSpaces = false) {
     if (!pendingImport || !(await ensureFeedsReady())) return;
     const store = getChatStore();
+    const sp = withSpaces && pendingImport.spaces?.length ? mergeImportedSpaces(pendingImport.spaces) : null;
     const idMap = new Map();
     const existing = new Set(mode === 'merge' ? store.feeds.map(f => f.id) : []);
     const incoming = pendingImport.feeds.map((f) => {
@@ -4855,7 +5270,7 @@ async function applyImport(mode, withPins) {
         while (existing.has(id)) id = newStoreId();
         existing.add(id);
         idMap.set(oldId, id);
-        return { ...f, id };
+        return sp && f.space && sp.map.has(f.space) ? { ...f, id, space: sp.map.get(f.space) } : { ...f, id };
     });
     const pins = withPins ? pendingImport.pins.map(p => importPin(p, idMap)).filter(Boolean) : [];
     if (mode === 'replace') {
@@ -4877,7 +5292,8 @@ async function applyImport(mode, withPins) {
     currentFeedId = null;
     await saveChatStore();
     refreshInjection();
-    toastr.success(`피드 ${n}개를 ${mode === 'replace' ? '바꿔서' : '합쳐서'} 불러왔어요.`);
+    toastr.success(`피드 ${n}개를 ${mode === 'replace' ? '바꿔서' : '합쳐서'} 불러왔어요.${sp?.added ? ` 카페·갤러리 ${sp.added}개를 추가했어요.` : ''}`);
+    syncSelectors();
     showHistory();
 }
 
@@ -5565,6 +5981,7 @@ function openPanel(feedId) {
     if (!MODES[selMode]) selMode = 'meta';
     applyTheme();
     applyFold();
+    applyCompact();
     showOverlay();
     if (store && store.unread) {
         store.unread = 0;
@@ -5609,6 +6026,8 @@ function hideOverlay() {
     const ov = document.getElementById('stcm_overlay');
     if (!ov) return;
     restoreSettingsHome();
+    closeSheet();
+    closeMoreMenu();
     if (view === 'settings') view = 'feed';
     ov.classList.remove('open');
     try { if (ov.open) ov.close(); } catch { ov.removeAttribute('open'); }
@@ -5669,6 +6088,7 @@ function addSettingsPanel() {
             <option value="light">라이트</option>
             <option value="dark">나이트</option>
           </select>
+          <label class="checkbox_label" for="stcm_set_compact"><input type="checkbox" id="stcm_set_compact"> <span>간략한 화면 <small>(커뮤니티·카페·판을 한 칸으로 모아 누르면 고르는 창이 열리고, 지난 피드·반영·월드 인포·테마는 ⋯ 메뉴로, 언어·배경은 작게)</small></span></label>
 
           <label>생성에 쓸 연결 <small>(메인 API · 실리태번 연결 프로필 · 직접 추가한 API — 모델 지정과 API 추가는 커뮤니티 창의 🔌 API 설정에서)</small></label>
           <select id="stcm_set_profile" class="text_pole"></select>
@@ -5868,6 +6288,8 @@ function addSettingsPanel() {
     bind('stcm_set_depth', 'pinDepth');
     bind('stcm_set_cap', 'threadCap');
     bind('stcm_set_theme', 'theme');
+    bind('stcm_set_compact', 'compactUi', 'checked');
+    document.getElementById('stcm_set_compact')?.addEventListener('change', applyCompact);
     document.getElementById('stcm_set_theme')?.addEventListener('change', applyTheme);
     bind('stcm_set_mode', 'defaultMode');
     bind('stcm_set_npc', 'npcPosts');
@@ -6043,7 +6465,7 @@ function onChatDeleted(name) {
     const chatName = String(name ?? '').replace(/\.jsonl$/, '');
     const idx = storeIndex();
     let changed = false;
-    for (const [id, info] of Object.entries(idx)) {
+    for (const info of Object.values(idx)) {
         if (info.chat === chatName && !info.deletedAt) { info.deletedAt = Date.now(); changed = true; }
     }
     if (changed) { saveSettings(); updateCleanupLabel(); }
