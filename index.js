@@ -1340,13 +1340,29 @@ async function callModel(system, user, signal, connValue, modelOverride = '') {
         if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
         const model = forced || String(s.modelOverrides[conn.profile.id] ?? '').trim();
         const prompt = svc.constructPrompt(messages, conn.profile.id);
-        const res = await svc.sendRequest(conn.profile.id, prompt, Number(s.maxTokens) || 4000, {
+        const vertex = vertexProfileFields(conn.profile);
+        let res;
+        try {
+            res = await svc.sendRequest(conn.profile.id, prompt, Number(s.maxTokens) || 4000, {
             stream: false,
             signal,
             extractData: true,
-            includePreset: true,
+            // Merging the preset rebuilds the request from the preset's (or the MAIN API's) settings.
+            // Vertex loses its sign-in fields that way (→ 400), and a preset made for another API mixes in
+            // that API's fields — so in those cases send a clean request instead.
+            includePreset: !vertex && presetFitsProfile(conn.profile),
             includeInstruct: true,
-        }, { ...(model ? { model } : {}), ...lowEffort });
+        }, { ...(vertex ?? {}), ...(model ? { model } : {}), ...lowEffort });
+        } catch (e) {
+            if (e?.name === 'AbortError' || e?.cause?.name === 'AbortError' || signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+            // ST wraps the real reason in .cause ("API request failed")
+            const msg = String(e?.cause?.message || e?.message || e);
+            const viaProxy = !!conn.profile.proxy && conn.profile.proxy !== 'None';
+            const hint = vertex && !viaProxy
+                ? ` — Vertex AI: 실리태번 API 연결 화면(Chat Completion → Google Vertex AI)에서 인증 방식(${vertex.vertexai_auth_mode === 'full' ? '전체(서비스 계정)' : 'Express(API 키)'})과 키/서비스 계정 JSON, 지역(${vertex.vertexai_region}), 모델 이름이 맞는지 확인해 주세요.`
+                : '';
+            throw new Error(`${conn.profile.name ?? '연결 프로필'}: ${msg}${hint}`, { cause: e });
+        }
         if (typeof res === 'string') return res;
         return res?.content ?? '';
     }
@@ -1571,7 +1587,7 @@ function scheduleTranslate(feedId) {
     if (!translateSeparately() || getSettings().translateWhen === 'manual') return;
     trChain = trChain.then(() => translateFeed(feedId)).catch((e) => {
         console.warn(`[${MODULE}] translation failed`, e);
-        toastr.error(`번역 실패: ${esc(truncate(String(e?.message ?? e), 120))}`, '커뮤니티');
+        toastr.error(`번역 실패: ${esc(truncate(String(e?.message ?? e), 300))}`, '커뮤니티');
     });
 }
 
@@ -1709,7 +1725,7 @@ async function translatePost(feedId, idx, { force = false } = {}) {
         else toastr.info('번역할 내용이 없거나, 이미 그 언어예요.');
         trView.set(post, true);
     } catch (e) {
-        toastr.error(`번역 실패: ${esc(truncate(String(e?.message ?? e), 140))}`, '커뮤니티');
+        toastr.error(`번역 실패: ${esc(truncate(String(e?.message ?? e), 300))}`, '커뮤니티');
     } finally {
         trBusy.delete(post);
         const at = getFeed(feedId)?.data.posts.indexOf(post);
@@ -3887,6 +3903,11 @@ function buildOverlay() {
         onSelectorChange();
     });
     document.getElementById('stcm_feed').addEventListener('click', onFeedClick);
+    // visible feed height, for sticky side panels (Discord channel list) that must fit on screen
+    if (window.ResizeObserver) {
+        const feedEl = document.getElementById('stcm_feed');
+        new ResizeObserver(() => feedEl.style.setProperty('--stcm-feed-h', `${feedEl.clientHeight}px`)).observe(feedEl);
+    }
     document.getElementById('stcm_feed').addEventListener('keydown', (e) => {
         if ((e.key === 'Enter' || e.key === ' ') && e.target.classList?.contains('stcm-psum')) { e.preventDefault(); e.target.click(); }
     });
@@ -4961,12 +4982,26 @@ function focusComposer() {
     ta.setSelectionRange(ta.value.length, ta.value.length);
     // Reveal the form only if it is (partly) outside the visible area
     const fr = feedEl.getBoundingClientRect();
+    const top = fr.top + stickyInset(feedEl);   // the part under a pinned bar (Discord) is not visible
     const tr = ta.getBoundingClientRect();
     const foot = box.querySelector('.stcm-cp-foot')?.getBoundingClientRect() ?? tr;
     // smallest scroll that shows the text box (and its send button when there is room)
-    const need = Math.min(foot.bottom, tr.top + fr.height - 16);
+    const need = Math.min(foot.bottom, tr.top + (fr.bottom - top) - 16);
     if (need > fr.bottom) feedEl.scrollBy({ top: need - fr.bottom + 8, behavior: 'smooth' });
-    else if (tr.top < fr.top) feedEl.scrollBy({ top: tr.top - fr.top - 8, behavior: 'smooth' });
+    else if (tr.top < top) feedEl.scrollBy({ top: tr.top - top - 8, behavior: 'smooth' });
+}
+
+/** Height covered at the top of the feed by pinned bars (Discord channel name / phone channel row). */
+function stickyInset(feedEl) {
+    let h = 0;
+    for (const el of feedEl.querySelectorAll('.stcm-ds-side, .stcm-ds-pane:not(.stcm-hide) .stcm-ds-head')) {
+        const cs = getComputedStyle(el);
+        if (cs.position !== 'sticky') continue;
+        const r = el.getBoundingClientRect();
+        if (r.width < feedEl.clientWidth / 2) continue;   // the PC channel list sits beside, not above
+        h = Math.max(h, r.height + (parseFloat(cs.top) || 0));
+    }
+    return Math.max(0, h);
 }
 
 /** Keep what the player typed when a post is re-rendered. */
@@ -5505,6 +5540,32 @@ async function listApiModels({ kind, url, key }) {
     return modelIds(json);
 }
 
+/** Is the profile's Chat Completion preset made for the same API as the profile? (no preset → nothing to merge) */
+function presetFitsProfile(profile) {
+    try {
+        const source = ctx().CONNECT_API_MAP?.[profile?.api]?.source;
+        if (!profile?.preset || !source) return true;
+        const preset = ctx().getPresetManager?.('openai')?.getCompletionPresetByName?.(profile.preset);
+        if (!preset) return true;   // ST skips a missing preset by itself
+        const presetSource = preset.chat_completion_source ?? ctx().chatCompletionSettings?.chat_completion_source;
+        return !presetSource || presetSource === source;
+    } catch {
+        return true;
+    }
+}
+
+/** Vertex AI profile → the sign-in fields SillyTavern's server needs (it defaults to express mode without them).
+ *  They come from SillyTavern's own Vertex settings (API connection screen); the region from the profile first. */
+function vertexProfileFields(profile) {
+    if (ctx().CONNECT_API_MAP?.[profile?.api]?.source !== 'vertexai') return null;
+    const cc = ctx().chatCompletionSettings ?? {};
+    return {
+        vertexai_auth_mode: ['express', 'full'].includes(cc.vertexai_auth_mode) ? cc.vertexai_auth_mode : 'express',
+        vertexai_region: String(profile['api-url'] || cc.vertexai_region || 'us-central1').trim(),
+        vertexai_express_project_id: String(cc.vertexai_express_project_id ?? '').trim(),
+    };
+}
+
 /** Model list for an ST connection profile (Chat Completion profiles without a proxy preset only). */
 async function listProfileModels(profile) {
     const map = ctx().CONNECT_API_MAP?.[profile.api];
@@ -5772,12 +5833,14 @@ async function onApiClick(act, el) {
         if (act === 'af-test') {
             el.disabled = true;
             setNote(note, '확인 중…');
+            const ctl = new AbortController();
+            const timer = setTimeout(() => ctl.abort(), 60000);
             try {
-                const reply = await callCustomApi(f, 'This is a connection test.', 'Reply with exactly: OK');
+                const reply = await callCustomApi(f, 'This is a connection test.', 'Reply with exactly: OK', ctl.signal);
                 setNote(note, reply.trim() ? `응답 받음: ${truncate(reply.trim(), 40)}` : '빈 응답이 왔어요.', !!reply.trim());
             } catch (e) {
-                setNote(note, `실패: ${truncate(String(e?.message ?? e), 160)}`, false);
-            } finally { el.disabled = false; }
+                setNote(note, e?.name === 'AbortError' ? '응답이 너무 늦어요 (60초 넘음).' : `실패: ${truncate(String(e?.message ?? e), 400)}`, false);
+            } finally { clearTimeout(timer); el.disabled = false; }
             return true;
         }
         // save
@@ -5804,15 +5867,17 @@ async function onApiClick(act, el) {
         const note = el.closest('.stcm-api-view')?.querySelector('.stcm-api-trresult');
         el.disabled = true;
         setNote(note, '확인 중…');
+        const ctl = new AbortController();
+        const timer = setTimeout(() => ctl.abort(), 60000);
         try {
             const system = fillTpl(getPrompt('translate_separate'), { translation: trTarget() });
-            const raw = await callModel(system, JSON.stringify({ items: [{ id: 0, text: 'Good morning! The festival starts tonight.' }] }), null, s.translateConn, s.translateModel);
+            const raw = await callModel(system, JSON.stringify({ items: [{ id: 0, text: 'Good morning! The festival starts tonight.' }] }), ctl.signal, s.translateConn, s.translateModel);
             let text = '';
             try { const d = extractJson(raw); text = (Array.isArray(d) ? d : d?.items ?? [])[0]?.text ?? ''; } catch { /* not JSON */ }
             setNote(note, text ? `번역 확인: ${truncate(text, 60)}` : `응답은 왔는데 형식이 달라요: ${truncate(String(raw ?? '').trim(), 60)}`, !!text);
         } catch (e) {
-            setNote(note, `실패: ${truncate(String(e?.message ?? e), 160)}`, false);
-        } finally { el.disabled = false; }
+            setNote(note, e?.name === 'AbortError' ? '응답이 너무 늦어요 (60초 넘음).' : `실패: ${truncate(String(e?.message ?? e), 400)}`, false);
+        } finally { clearTimeout(timer); el.disabled = false; }
         return true;
     }
     if (act === 'api-trmodels') {
@@ -5940,7 +6005,7 @@ async function testApi(btn) {
         ok = !!String(reply ?? '').trim();
         msg = ok ? `응답 받음: ${truncate(String(reply).trim(), 40)}` : '빈 응답이 왔어요. 모델이나 토큰 설정을 확인해 주세요.';
     } catch (e) {
-        msg = e?.name === 'AbortError' ? '응답이 너무 늦어요 (60초 넘음).' : `실패: ${truncate(String(e?.message ?? e), 160)}`;
+        msg = e?.name === 'AbortError' ? '응답이 너무 늦어요 (60초 넘음).' : `실패: ${truncate(String(e?.message ?? e), 400)}`;
     } finally {
         clearTimeout(timer);
         apiTesting = false;

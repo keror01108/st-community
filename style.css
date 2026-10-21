@@ -719,7 +719,7 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
 }
 .stcm-t-dark .stcm-discord { --k-bg: #313338; --k-card: #313338; --k-side: #2b2d31; --k-side2: #1e1f22; --k-text: #dbdee1; --k-sub: #949ba4; --k-line: #3f4147; --k-soft: #2b2d31; --k-soft2: #383a40; --k-name: #f2f3f5; --k-hover: #35373c; }
 .stcm-t-theme .stcm-discord { --k-side: var(--black30a, rgba(0, 0, 0, 0.25)); --k-side2: var(--black50a, rgba(0, 0, 0, 0.35)); --k-hover: rgba(127, 127, 127, 0.15); --k-accent: #5865f2; }
-.stcm-discord { border-radius: 10px; overflow: hidden; }
+.stcm-discord { border-radius: 10px; overflow: hidden; overflow: clip; }   /* clip: keeps the rounded corners without breaking sticky */
 .stcm-ds-wrap { display: flex; min-height: 420px; }
 .stcm-ds-side { flex: 0 0 210px; background: var(--k-side); padding: 8px; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
 .stcm-ds-server { font-weight: 800; padding: 8px 8px 12px; border-bottom: 1px solid var(--k-line); margin-bottom: 6px; color: var(--k-name); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1153,3 +1153,36 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
 .stcm-set select, .stcm-set input.text_pole, .stcm-set textarea { max-width: 100%; box-sizing: border-box; }
 .stcm-set label > select { display: block; width: 100%; }
 .stcm-sheet { overscroll-behavior: contain; }
+
+/* Discord on wide screens: the channel list and the channel name stay put while messages scroll */
+@media (min-width: 601px) {
+    .stcm-ds-wrap { background: linear-gradient(to right, var(--k-side) 210px, transparent 210px); }
+    .stcm-ds-side {
+        background: transparent;
+        position: sticky; top: -10px; align-self: flex-start;
+        max-height: var(--stcm-feed-h, 70vh); box-sizing: border-box;
+    }
+    .stcm-ds-head { position: sticky; top: -10px; z-index: 2; background: var(--k-bg); }
+}
+/* phones: the channel row stays on top while messages scroll */
+@media (max-width: 600px) {
+    .stcm-ds-side {
+        position: sticky; top: -6px; z-index: 3;
+        background: linear-gradient(var(--k-side), var(--k-side)), var(--k-bg);
+    }
+}
+/* theme mode: the skin is see-through, so sticky Discord parts get the theme tint + blur to stay readable */
+.stcm-t-theme .stcm-discord .stcm-ds-head {
+    background: linear-gradient(var(--k-soft), var(--k-soft)), var(--SmartThemeBlurTintColor, #222);
+    backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+}
+@media (max-width: 600px) {
+    .stcm-t-theme .stcm-discord .stcm-ds-side {
+        background: linear-gradient(var(--k-side), var(--k-side)), var(--SmartThemeBlurTintColor, #222);
+        backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    }
+}
+@media (min-width: 601px) {
+    /* the side column itself does not cover messages, so it can stay see-through */
+    .stcm-t-theme .stcm-discord .stcm-ds-side { background: transparent; }
+}
