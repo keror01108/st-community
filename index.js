@@ -25,7 +25,9 @@ const defaultSettings = Object.freeze({
     commentCount: 5,
     continueCount: 5,
     contextMessages: 20,
-    npcPosts: 'auto',            // story side characters posting themselves: auto | on | off
+    npcPosts: 'auto',
+    nickMode: 'random',          // empty nickname box: 'random' (instant, community style) · 'ai' (fits the person and the post)
+    minReasoning: false,         // ask reasoning models to think as little as possible            // story side characters posting themselves: auto | on | off
     translateConn: '',           // '' = translate in the same call · 'main' · ST profile id · 'api:<id>'
     translateModel: '',          // model for that translation connection ('' = the connection's own model)
     translateWhen: 'auto',       // 'auto' = with every generation · 'manual' = only from a post's 번역 button
@@ -175,6 +177,7 @@ Output ONLY a JSON object, no code fences: {"title": "post title, or empty when 
 
     npc_on: `Named side characters (NPCs) from the story — friends, family, classmates, coworkers, rivals and other people who appear in the story or the world information, but not {{char}} or {{user}} — DO use this community. Let one or two of them post or comment as themselves under fitting handles, in their own voice, knowing only what they would know. They may talk about {{char}}/{{user}} from their own point of view.`,
     npc_off: `Named side characters (NPCs) from the story — anyone who appears in the story or the world information besides {{char}} and {{user}} — do NOT post or comment themselves. Every poster is an ordinary member with no name in the story; story characters may only be mentioned, rumored about or described by others.`,
+    reasoning_min: `Answer right away. Do not think out loud, do not write a reasoning, analysis or <think> section, and do not plan step by step before answering — output only what is asked for.`,
     translate_separate: `Translate the "text" of every item into natural {{translation}}. Keep the tone, slang, emoji, line breaks (\n) and formatting such as >>12 anchors, #hashtags#, [emoji] tags and @mentions. Keep personal names as they are, or transliterate them only when that is how {{translation}} speakers would write them. If a text is already in {{translation}}, return "" for it. Reply with JSON only, in this exact shape: {"items":[{"id":0,"text":"..."}]}`,
     translation: `ALSO fill "body_tr" for every post and comment with a natural {{translation}} translation that keeps the tone and slang. If the original is already in {{translation}}, leave "body_tr" empty. Likewise fill "title_tr" with the translated post title (empty when the post has no title or the title is already in {{translation}}).`,
 
@@ -251,6 +254,7 @@ const PROMPT_LABELS = {
     language_foreign: '언어: 외국 커뮤니티를 다른 언어로 쓸 때',
     translation: '번역 지시 (글 만들 때 같이)',
     translate_separate: '번역: 따로 번역할 때',
+    reasoning_min: '추론 최소화 지시',
     npc_on: '주변 인물(NPC): 직접 글 쓰기',
     npc_off: '주변 인물(NPC): 글 쓰지 않기',
     inject_authored: '본편 반영: 캐릭터/유저가 쓴 글',
@@ -1274,10 +1278,13 @@ async function callModel(system, user, signal, connValue, modelOverride = '') {
     const s = getSettings();
     const conn = resolveConnection(connValue);
     const forced = String(modelOverride ?? '').trim();
+    // 추론 최소화: an instruction for every model, plus SillyTavern's lowest reasoning effort where a request can carry it
+    if (s.minReasoning) system = `${system}\n\n${getPrompt('reasoning_min')}`;
+    const lowEffort = s.minReasoning ? { reasoning_effort: 'min', include_reasoning: false } : {};
 
     if (conn.type === 'api') {
         if (!conn.api) throw new Error('골라 둔 API가 지워졌어요. 커뮤니티 창의 API 설정에서 다시 골라 주세요.');
-        return callCustomApi(forced ? { ...conn.api, model: forced } : conn.api, system, user, signal);
+        return callCustomApi(forced ? { ...conn.api, model: forced } : conn.api, system, user, signal, lowEffort);
     }
     if (conn.type === 'profile') {
         if (!connectionManagerOn()) throw new Error('Connection Manager 확장이 꺼져 있어요. 커뮤니티 창의 API 설정에서 다른 연결을 고르거나, 확장을 다시 켜 주세요.');
@@ -1296,7 +1303,7 @@ async function callModel(system, user, signal, connValue, modelOverride = '') {
             extractData: true,
             includePreset: true,
             includeInstruct: true,
-        }, model ? { model } : {});
+        }, { ...(model ? { model } : {}), ...lowEffort });
         if (typeof res === 'string') return res;
         return res?.content ?? '';
     }
@@ -1919,6 +1926,157 @@ function playerItem(platformId, { as, nick, charName, body, title }, langName = 
     return item;
 }
 
+// ---------------------------------------------------------------------------
+// Nicknames: an empty box gets a community-style name; the same identity keeps its name inside one post
+// ---------------------------------------------------------------------------
+// Communities where everyone is anonymous by design: the platform default (ㅇㅇ, 名無しさん, 익명…) is the right name
+const ANON_PLATFORMS = new Set(['dcinside', 'tdgall', 'fivech', 'everytime']);
+const NICK_WORDS = {
+    ko: {
+        a: ['달달한', '졸린', '행복한', '반짝이는', '수줍은', '바삭한', '포근한', '말랑한', '심심한', '용감한', '느긋한', '새벽의', '작은', '푸른', '노란', '배고픈', '조용한', '까칠한', '엉뚱한', '따뜻한'],
+        n: ['우유', '고양이', '곰돌이', '토끼', '구름', '별빛', '감자', '호떡', '펭귄', '다람쥐', '복숭아', '붕어빵', '민트', '도토리', '햄스터', '여우', '라떼', '고등어', '두부', '해파리'],
+    },
+    en: {
+        a: ['quiet', 'lazy', 'salty', 'curious', 'sleepy', 'random', 'lost', 'brave', 'cosmic', 'grumpy', 'tiny', 'midnight', 'spicy', 'gentle', 'rusty'],
+        n: ['otter', 'potato', 'pancake', 'falcon', 'badger', 'noodle', 'walrus', 'pickle', 'mango', 'raccoon', 'comet', 'teapot', 'gecko', 'biscuit', 'lantern'],
+    },
+    ja: {
+        a: ['ねむい', 'ゆるい', 'しずかな', 'まったり', 'ひとりぼっちの', 'はらぺこ', 'ちいさな'],
+        n: ['ねこ', 'たぬき', 'おにぎり', 'ペンギン', 'うさぎ', 'みかん', 'くらげ'],
+    },
+    zh: {
+        a: ['熬夜的', '快乐的', '吃瓜的', '咸鱼', '佛系', '暴躁', '安静的', '爱笑的'],
+        n: ['小熊', '奶茶', '柠檬', '橘猫', '汤圆', '饺子', '星星', '兔子'],
+    },
+};
+const BLIND_ORGS = ['IT 스타트업', '중견기업', '대기업', '공기업', '외국계', '금융권', '공무원', '대학병원', '게임회사', '제조업', '유통업', '컨설팅', '연구소', '스타트업'];
+
+function pick(list) { return list[Math.floor(Math.random() * list.length)]; }
+
+/** Language the community is being written in, as ko / en / ja / zh. */
+function nickLang(platformId, langName) {
+    const code = langCode(langName);
+    if (code && code !== 'other') return code;
+    return NATIVE_LANG[platformId] ?? 'ko';
+}
+
+/** Instant random name in the community's style: { author, handle }. */
+function randomNick(platformId, langName) {
+    const lang = nickLang(platformId, langName);
+    const w = NICK_WORDS[lang] ?? NICK_WORDS.ko;
+    const digits = () => String(Math.floor(10 + Math.random() * 9990));
+    const en = NICK_WORDS.en;
+    const handleEn = () => `${pick(en.a)}_${pick(en.n)}${digits()}`;
+    switch (platformId) {
+        case 'blind': return { author: pick(BLIND_ORGS), handle: randomId(5) };
+        case 'reddit': {
+            const h = `${cap(pick(en.a))}_${cap(pick(en.n))}_${digits()}`;
+            return { author: h, handle: h };
+        }
+        case 'twitter': return { author: lang === 'en' ? `${cap(pick(en.a))} ${cap(pick(en.n))}` : `${pick(w.a)}${pick(w.n)}`, handle: handleEn() };
+        case 'discord': return { author: lang === 'en' ? `${pick(en.a)}${pick(en.n)}` : `${pick(w.n)}${Math.random() < 0.5 ? digits() : ''}`, handle: '' };
+        default: {
+            const sep = lang === 'en' ? '_' : '';
+            return { author: `${pick(w.a)}${sep}${pick(w.n)}${Math.random() < 0.35 ? digits() : ''}`, handle: '' };
+        }
+    }
+}
+
+function cap(s) { return s ? s[0].toUpperCase() + s.slice(1) : s; }
+
+/** Handle that goes with an anonymous / typed name (IP fragment, ID, code…). */
+function anonHandle(platformId) {
+    if (platformId === 'dcinside') return `${Math.floor(1 + Math.random() * 222)}.${Math.floor(Math.random() * 256)}`;
+    if (platformId === 'fivech') return randomId(8);
+    if (platformId === 'tdgall') return randomId(4);
+    if (platformId === 'blind') return randomId(5);
+    return '';
+}
+
+/** Latest name this identity used in one post (post itself, comments, replies). */
+function nickInPost(post, { as, charName }) {
+    let found = null;
+    const check = (o) => {
+        if (!o?.isMe || o.as !== as) return;
+        if (as === 'char' && (o.charName || '') !== (charName || '')) return;
+        found = { author: o.author, handle: o.handle ?? '' };
+    };
+    check(post);
+    for (const cm of post?.comments ?? []) { check(cm); for (const r of cm.replies ?? []) check(r); }
+    return found;
+}
+
+/**
+ * The name this identity already uses here: inside the post — or, on Discord, anywhere in the server
+ * (one person keeps one name across channels; DMs don't count).
+ */
+function rememberedNick(post, identity, feed = null) {
+    const chat = !!(feed && PLATFORMS[feed.platform]?.chat);
+    if (!post && !chat) return null;
+    const own = post ? nickInPost(post, identity) : null;
+    if (own || !chat) return own;
+    let hit = null;
+    for (const p of feed.data.posts) if (p.kind !== 'dm') hit = nickInPost(p, identity) ?? hit;
+    return hit;
+}
+
+/** Ask the model for one fitting name (AI mode); null when it fails. */
+async function aiNick({ platformId, identity, text, langName }) {
+    const lang = LANG_LABEL[nickLang(platformId, langName)] ?? 'Korean';
+    const system = 'You invent usernames for online communities. Reply with JSON only.';
+    const user = [
+        `Community: ${PLATFORMS[platformId]?.name}`,
+        `Poster: ${describeAuthor({ ...identity, nick: '' }, platformId)}`,
+        text ? `What they are posting: ${truncate(text, 500)}` : '',
+        `Make ONE display name / username that this person would plausibly use on this community, matching their personality and the community's naming culture, written the way ${lang}-speaking users of it would. Do not use their real name. ${platformId === 'blind' ? 'On Blind the display name is the workplace (company / organization type) and the handle is a short random code.' : ''}`,
+        'JSON: {"nickname": "...", "handle": "username/@id if the community shows one, else empty"}',
+    ].filter(Boolean).join('\n');
+    try {
+        const raw = await callModel(system, user, null, getSettings().profileId, '');
+        const d = extractJson(raw);
+        const author = String(d?.nickname ?? '').replace(/[\n\r]/g, ' ').trim().slice(0, 40);
+        if (!author) return null;
+        const handle = String(d?.handle ?? '').replace(/[\s@]/g, '').slice(0, 40);
+        return { author, handle };
+    } catch (e) {
+        console.warn(`[${MODULE}] AI nickname failed`, e);
+        return null;
+    }
+}
+
+/**
+ * Name + handle for something the player writes. Typed nickname → used as is. Otherwise the name this identity
+ * already has in the post, else the community default (anonymous boards) or a new random / AI name.
+ */
+async function resolveNick({ feed, post = null, identity, text = '', item }) {
+    const pid = feed.platform;
+    const typed = identity.nick?.trim();
+    const prev = rememberedNick(post, identity, feed);
+    if (typed) {   // playerItem already used the typed name; same name as before in this post → same handle / ID too
+        if (prev && prev.author === typed) item.handle = prev.handle;
+        else if (ANON_PLATFORMS.has(pid) || pid === 'blind') item.handle = item.handle || anonHandle(pid);
+        return;
+    }
+    if (prev?.author) { item.author = prev.author; item.handle = prev.handle; return; }
+    if (pid === 'everytime') { if (!post) item.author = '익명'; return; }   // a new post is 익명; comments are numbered by the caller
+    if (ANON_PLATFORMS.has(pid)) {
+        // anonymous boards: nobody shows a real name — ㅇㅇ / 名無しさん / 익명 with a fresh ID
+        item.author = uiWords(pid, feedLang(feed))?.anon?.[pid] ?? PLATFORMS[pid].anon;
+        item.handle = anonHandle(pid);
+        return;
+    }
+    const lang = feedLang(feed);
+    let got = null;
+    if (getSettings().nickMode === 'ai') {
+        const showPill = !busy;   // don't touch the pill of a generation that is running
+        if (showPill) setBusyUI(true, '닉네임 짓는 중…');
+        try { got = await aiNick({ platformId: pid, identity, text, langName: lang }); } finally { if (showPill) setBusyUI(false); }
+    }
+    got ??= randomNick(pid, lang);
+    item.author = got.author;
+    item.handle = got.handle || (pid === 'reddit' || pid === 'twitter' ? got.author.replace(/\s+/g, '_') : item.handle);
+}
+
 async function rememberIdentity({ as, nick, charName }) {
     const store = getChatStore();
     store.identity = { as, nick: nick ?? '', charName: charName ?? store.identity?.charName ?? '' };
@@ -1934,7 +2092,13 @@ function checkIdentity(id) {
     return true;
 }
 
-async function submitPlayerPost({ title, body, identity, react, board, category }) {
+async function submitPlayerPost(args) {
+    if (submitting) return;
+    submitting = true;
+    try { await submitPlayerPostNow(args); } finally { submitting = false; }
+}
+
+async function submitPlayerPostNow({ title, body, identity, react, board, category }) {
     if (!body.trim()) { toastr.warning('내용을 입력해 주세요.'); return; }
     if (!(await ensureFeedsReady())) return;
     if (!checkIdentity(identity)) return;
@@ -1949,6 +2113,7 @@ async function submitPlayerPost({ title, body, identity, react, board, category 
     }
     const pf = PLATFORMS[feed.platform];
     const post = playerItem(feed.platform, { ...identity, body: body.trim(), title: pf.hasTitle || pf.chat ? (title.trim() || (pf.chat ? '잡담' : '')) : '' }, feedLang(feed));
+    await resolveNick({ feed, identity, text: `${title}\n${body}`, item: post });
     if (category) post.tags = [category];
     feed.data.posts.push(post);
     const postIdx = feed.data.posts.length - 1;
@@ -1969,7 +2134,15 @@ function everytimeName(post) {
     return `익명${max + 1}`;
 }
 
-async function submitPlayerComment({ feedId, postIdx, replyTo, body, identity, react }) {
+let submitting = false;   // one player post / comment at a time (an AI nickname can take a moment)
+
+async function submitPlayerComment(args) {
+    if (submitting) return;
+    submitting = true;
+    try { await submitPlayerCommentNow(args); } finally { submitting = false; }
+}
+
+async function submitPlayerCommentNow({ feedId, postIdx, replyTo, body, identity, react }) {
     const feed = getFeed(feedId);
     const post = feed?.data.posts[postIdx];
     if (!post) return;
@@ -1979,7 +2152,9 @@ async function submitPlayerComment({ feedId, postIdx, replyTo, body, identity, r
     await rememberIdentity(identity);
 
     const item = playerItem(feed.platform, { ...identity, body: body.trim() }, feedLang(feed));
-    if (feed.platform === 'everytime' && identity.as === 'mob' && !identity.nick?.trim()) item.author = everytimeName(post);
+    if (post.kind === 'dm') { /* a DM's sender name is fixed by the DM itself */ }
+    else if (feed.platform === 'everytime' && !identity.nick?.trim() && !rememberedNick(post, identity, feed)) item.author = everytimeName(post);
+    else await resolveNick({ feed, post, identity, text: body, item });
     const flat = !!PLATFORMS[feed.platform]?.flat;
     if (replyTo != null && replyTo >= 0 && post.comments[replyTo] && !flat) {
         post.comments[replyTo].replies.push(item);
@@ -2108,20 +2283,26 @@ async function aiWrite({ kind, mode, platformId, identity, instruction, draft, f
         parts.push(`<language>\n${playerLanguage(platformId, feed && feed.platform === platformId ? feedLang(feed) : resolvedLanguage())}\n</language>`);
         if (b.extra) parts.push(`<extra_instructions>\n${b.extra}\n</extra_instructions>`);
         parts.push(fillTpl(getPrompt('player_write'), { ...b.vars, kind: kindLabel, author: describeAuthor(identity, platformId) }));
+        // an empty nickname box (and no name in this post yet) gets a fitting suggestion in the same answer
+        const post = feed && postIdx != null ? feed.data?.posts?.[postIdx] : null;
+        const wantNick = kind !== 'dm' && post?.kind !== 'dm' && !identity.nick?.trim() && !ANON_PLATFORMS.has(platformId) && !rememberedNick(post, identity, feed);
+        if (wantNick) parts.push(`Also add "nickname" to the JSON: the display name this author would plausibly use on this community (fitting their personality and the community's naming culture${platformId === 'blind' ? '; on Blind this is their workplace, e.g. a company or organization type' : ''}), not their real name.`);
 
         const raw = await callModel(b.system, parts.join('\n\n'), signal);
         if (!stillSameChat()) return null;
         let title = '';
         let body = '';
+        let nickname = '';
         try {
             const data = extractJson(raw);
             title = String(data.title ?? '').slice(0, 500);
             body = String(data.body ?? '');
+            nickname = String(data.nickname ?? '').replace(/[\n\r]/g, ' ').trim().slice(0, 40);
         } catch {
             body = String(raw ?? '').replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '').replace(/```(?:json)?/gi, '').trim();
         }
         if (!body.trim()) throw Object.assign(new Error('빈 글이 왔어요'), { isParse: true, raw });
-        return { title, body };
+        return { title, body, nickname };
     });
 }
 
@@ -2371,15 +2552,27 @@ function characterNames() {
 
 /** What the nickname box means on this community. */
 function nickHint(platformId) {
-    if (platformId === 'blind') return '회사 이름 (비우면 "회사 비공개")';
+    if (platformId === 'blind') return '회사 이름 (비우면 랜덤 직장)';
     if (platformId === 'everytime') return '닉네임 (비우면 익명 · 댓글은 익명N)';
     if (platformId === 'dcinside' || platformId === 'tdgall') return '닉네임 (비우면 ㅇㅇ)';
-    return '닉네임 (비우면 기본 이름)';
+    if (platformId === 'fivech') return '닉네임 (비우면 名無しさん)';
+    return getSettings().nickMode === 'ai' ? '닉네임 (비우면 AI가 어울리는 이름)' : '닉네임 (비우면 랜덤 닉네임)';
 }
 
-function identityControls(draft) {
+/** Feed a post object belongs to (composer only knows the post). */
+function feedOfPost(post) {
+    const store = hasChat() ? getChatStore() : null;
+    return store?.feeds.find(f => f.data.posts.includes(post)) ?? null;
+}
+
+function identityControls(draft, post = null) {
     const store = getChatStore();
-    const id = draft?.as ? draft : (store?.identity ?? { as: 'mob', nick: '', charName: '' });
+    let id = draft?.as ? draft : (store?.identity ?? { as: 'mob', nick: '', charName: '' });
+    // inside a post: the name this identity already used there comes back
+    if (post && !draft?.as) {
+        const prev = rememberedNick(post, id, feedOfPost(post));
+        id = { ...id, nick: prev?.author ?? '' };
+    }
     const userName = esc(ctx().name1 || '유저');
     const names = characterNames();
     const charName = id.charName || (names.length === 1 ? names[0] : '');
@@ -2411,7 +2604,7 @@ function composerSlot(feed, i) {
     const isDm = post.kind === 'dm';
     const ph = isDm ? `@${dmPartnerLabel(post)}에게 메시지 보내기` : chat ? `#${String(post.title || '일반').replace(/^#\s*/, '')}에 메시지 보내기` : (thread ? '레스 내용 (>>번호 로 앵커)' : '댓글 내용');
     // In a DM the sender is fixed: the side that started it
-    const ident = isDm ? `<div class="stcm-cp-target">보내는 사람: <b>${esc(dmSideName(post.dm?.me))}</b> → <b>${esc(dmPartnerLabel(post))}</b></div>` : identityControls(composer.draft);
+    const ident = isDm ? `<div class="stcm-cp-target">보내는 사람: <b>${esc(dmSideName(post.dm?.me))}</b> → <b>${esc(dmPartnerLabel(post))}</b></div>` : identityControls(composer.draft, post);
     return `<div class="stcm-composer" data-feed="${esc(feed.id)}" data-idx="${i}">
         ${ident}
         ${target ? `<div class="stcm-cp-target">↳ <b>${esc(target.author)}</b>님에게 ${chat ? '답장' : '답글'} <a class="stcm-link" data-act="reply-cancel">취소</a></div>` : ''}
@@ -3297,11 +3490,19 @@ async function setBookPicks(book, uids) {
 async function onFeedChange(e) {
     if (onApiChange(e)) return;
     const t = e.target;
-    if (t.classList.contains('stcm-cp-as')) {
+    if (t.classList.contains('stcm-cp-as') || t.classList.contains('stcm-cp-char')) {
         const row = t.closest('.stcm-cp-row');
+        const sel = row?.querySelector('.stcm-cp-as');
         const charInput = row?.querySelector('.stcm-cp-char');
-        if (charInput) charInput.style.display = t.value === 'char' ? '' : 'none';
-        if (t.value === 'char') charInput?.focus();
+        if (t.classList.contains('stcm-cp-as')) {
+            if (charInput) charInput.style.display = t.value === 'char' ? '' : 'none';
+            if (t.value === 'char') charInput?.focus();
+        }
+        // in a post's comment box: show the name this identity already uses there (or empty → new name)
+        const box = t.closest('.stcm-composer');
+        const post = box ? getFeed(box.dataset.feed)?.data.posts[Number(box.dataset.idx)] : null;
+        const nickInput = row?.querySelector('.stcm-cp-nick');
+        if (post && nickInput) nickInput.value = rememberedNick(post, { as: sel?.value, charName: (charInput?.value ?? '').trim() }, getFeed(box.dataset.feed))?.author ?? '';
         return;
     }
     if (t.id === 'stcm_wi_mode') {
@@ -3808,6 +4009,8 @@ async function onFeedClick(e) {
             const titleEl = box.querySelector('.stcm-cp-title');
             if (titleEl && out.title && !titleEl.value.trim()) titleEl.value = out.title;
             bodyEl.value = out.body;
+            const nickEl = box.querySelector('.stcm-cp-nick');
+            if (nickEl && out.nickname && !nickEl.value.trim()) nickEl.value = out.nickname;
             toastr.success('AI가 쓴 글을 채웠어요. 고친 뒤 올리기를 누르세요.', '', { timeOut: 2000 });
         }
         return;
@@ -3832,6 +4035,8 @@ async function onFeedClick(e) {
         const live = document.querySelector(`#stcm_feed .stcm-composer[data-feed="${CSS.escape(fid)}"][data-idx="${pi}"] .stcm-cp-body`);
         if (out && live) {
             live.value = out.body;
+            const nickEl = live.closest('.stcm-composer')?.querySelector('.stcm-cp-nick');
+            if (nickEl && out.nickname && !nickEl.value.trim()) nickEl.value = out.nickname;
             if (composer) composer.draft = { ...(composer.draft ?? {}), body: out.body };
             try { live.focus({ preventScroll: true }); } catch { /* ignore */ }
         }
@@ -4828,7 +5033,7 @@ async function postBackend(path, body, signal) {
     return json;
 }
 
-async function callCustomApi(api, system, user, signal) {
+async function callCustomApi(api, system, user, signal, extra = {}) {
     const kind = API_KINDS[api.kind] ?? API_KINDS.openai;
     if (!String(api.model ?? '').trim()) throw new Error(`"${api.name}"에 모델이 정해지지 않았어요. 커뮤니티 창의 API 설정에서 모델을 적어 주세요.`);
     const body = {
@@ -4839,6 +5044,7 @@ async function callCustomApi(api, system, user, signal) {
         messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
         max_tokens: Number(getSettings().maxTokens) || 4000,
         stream: false,
+        ...extra,
     };
     if (api.kind === 'claude') body.use_sysprompt = true;
     if (api.kind === 'google' || api.kind === 'vertex') body.use_makersuite_sysprompt = true;
@@ -5505,6 +5711,14 @@ function addSettingsPanel() {
             <option value="on">쓰게 하기 (조연 한두 명이 직접 등장)</option>
             <option value="off">쓰지 않게 하기 (이름 없는 일반 이용자만)</option>
           </select>
+          <label>내가 쓸 때 닉네임 칸을 비우면
+            <select id="stcm_set_nickmode" class="text_pole">
+              <option value="random">커뮤니티에 어울리는 랜덤 닉네임 (바로)</option>
+              <option value="ai">AI가 사람·글에 맞는 닉네임을 지어 줌 (짧은 요청 1번)</option>
+            </select>
+          </label>
+          <small class="stcm-help">디시·투디갤은 ㅇㅇ, 2ch는 名無しさん, 에브리타임은 익명N처럼 익명 커뮤니티는 원래 방식대로 나와요. 한 글 안에서 같은 신분(모브/유저/같은 캐릭터)은 처음 쓴 닉네임을 계속 써요.</small>
+          <label class="checkbox_label"><input id="stcm_set_minreason" type="checkbox"><span>추론 최소화 <small>(생각하는 모델이 추론을 최소로 — 연결 프로필·직접 추가한 API는 추론 강도를 최소로 보내고, 메인 API는 지시문만 붙어요. 빨라지고 토큰이 줄지만 글 품질이 조금 떨어질 수 있어요)</small></span></label>
           <label class="checkbox_label"><input id="stcm_set_card" type="checkbox"><span>캐릭터·페르소나 설명 포함</span></label>
           <label>본 채팅에서 읽지 않을 태그 <small>(쉼표로 구분, 태그와 안의 내용을 통째로 빼요. 숨긴 메시지는 항상 빼요)</small></label>
           <textarea id="stcm_set_excludetags" class="text_pole" rows="3"></textarea>
@@ -5657,6 +5871,8 @@ function addSettingsPanel() {
     document.getElementById('stcm_set_theme')?.addEventListener('change', applyTheme);
     bind('stcm_set_mode', 'defaultMode');
     bind('stcm_set_npc', 'npcPosts');
+    bind('stcm_set_nickmode', 'nickMode');
+    bind('stcm_set_minreason', 'minReasoning', 'checked');
     bind('stcm_set_trwhen', 'translateWhen');
     bind('stcm_set_trdisplay', 'trDisplay');
     document.getElementById('stcm_set_trdisplay')?.addEventListener('change', () => { if (isOpen() && view === 'feed' && currentFeedId) showFeed(currentFeedId, { keepScroll: true }); });
