@@ -26,6 +26,7 @@ const defaultSettings = Object.freeze({
     continueCount: 5,
     contextMessages: 20,
     npcPosts: 'auto',
+    noMention: false,            // 인물 언급 금지: generated posts never mention any story character, {{user}} or side character
     customSpaces: [],            // [{ id, platform, name, desc, locale: { mode: inherit|story|country|custom, country, custom } }]
     spaceSelected: {},           // platform → space id ('' = 기본)
     nickMode: 'random',          // empty nickname box: 'random' (instant, community style) · 'ai' (fits the person and the post)
@@ -104,6 +105,7 @@ const PLATFORMS = {
     weibo: { name: 'Sina Weibo', brand: true, label: '웨이보', icon: 'fa-weibo', lang: 'Simplified Chinese', anon: '微博用户', now: '刚刚', thread: false, hasTitle: false },
     discord: { name: 'Discord', brand: true, label: '디스코드', icon: 'fa-discord', lang: 'the language most natural for the story setting and its fandom (if unclear, Korean)', anon: 'user', now: '오늘', thread: false, hasTitle: false, flat: true, chat: true },
     tdgall: { name: '투디갤 (tdgall.com)', brand: false, label: '투디갤', icon: 'fa-snowflake', lang: 'Korean', anon: 'ㅇㅇ', now: '방금', thread: false, hasTitle: true },
+    kkangtong: { name: '깡통 (Korean AI-chat community)', brand: false, label: '깡통', icon: 'fa-robot', lang: 'Korean', anon: '깡', now: '방금', thread: false, hasTitle: true },
     blind: { name: 'Blind (Korean anonymous workplace community)', brand: false, label: '블라인드', icon: 'fa-user-secret', lang: 'Korean', anon: '회사 비공개', now: '방금', thread: false, hasTitle: true },
     everytime: { name: 'Everytime (Korean university community)', brand: false, label: '에브리타임', icon: 'fa-graduation-cap', lang: 'Korean', anon: '익명', now: '방금', thread: false, hasTitle: true },
     tieba: { name: 'Baidu Tieba', brand: false, label: '바이두 티에바', icon: 'fa-paw', lang: 'Simplified Chinese', anon: '匿名用户', now: '刚刚', thread: true, hasTitle: true },
@@ -179,6 +181,7 @@ Output ONLY a JSON object, no code fences: {"title": "post title, or empty when 
     language_foreign: `This is a {{language}}-localized version of {{platform}}, whose users normally write in {{native}}. The platform guide's example words, slang and emoji tags are written in {{native}} — never copy them; express the same nuance with natural {{language}} (emoji tags too, e.g. [눈물] or [tears] instead of [泪]). Do not borrow slang that belongs to {{language}}-speaking sites either (for Korean: 원덬, 덬, 글쓴덬, 갤러, 념글, 개추, ㅇㅇ and similar terms from Korean communities). Write the way a skilled translator would localize these posts, so it still reads as {{platform}} culture.`,
 
     npc_on: `Named side characters (NPCs) from the story — friends, family, classmates, coworkers, rivals and other people who appear in the story or the world information, but not {{char}} or {{user}} — DO use this community. Let one or two of them post or comment as themselves under fitting handles, in their own voice, knowing only what they would know. They may talk about {{char}}/{{user}} from their own point of view.`,
+    no_mention: `STRICT — NO STORY PEOPLE: do not mention, name, describe, quote, impersonate or allude to {{char}}, {{user}}, or any other character or person from the story or the world information — not by name, nickname, title, appearance, role or pronoun — and none of them posts or comments. No post or comment is about them or about what they did. This overrides every rule above that asks for them. Instead write ordinary community content for this platform, mode and topic: in the reader mode, talk about the work only in general terms without its characters (updates, pacing, art or writing style, the fandom, unrelated chatter); in the in-world mode, everyday life, the setting, places, trends and happenings that involve no story characters.`,
     npc_off: `Named side characters (NPCs) from the story — anyone who appears in the story or the world information besides {{char}} and {{user}} — do NOT post or comment themselves. Every poster is an ordinary member with no name in the story; story characters may only be mentioned, rumored about or described by others.`,
     community_space: `COMMUNITY SPACE (made by the user): this happens in "{{space}}" on {{platform}}. About it: {{about}}
 Set "board" to "{{space}}". Its members are the kind of people who would join it, and its culture, in-jokes and usual topics color every post and comment. Any chosen topics still decide each post's subject — seen through this community (e.g. a dating-advice post written by members of a game community).`,
@@ -236,6 +239,7 @@ Numbers must be plain integers. Escape double quotes inside strings. Every poste
     guide_weibo: `Sina Weibo. Set "board" to a super-topic or trending topic (超话 / 热搜). Posts by bloggers with display names (e.g. 吃瓜群众小王), no title, using #话题# hashtags (with # on both sides), emoji like [doge] [允悲] [泪], words like 绝了, 磕到了, 破防了, 吃瓜, yyds. Metrics: likes, comments, reposts (shares). Comments may have replies.`,
     guide_discord: `Discord server. Set "board" to the server name (a fan server in reader mode, a local / guild / school / work server in the in-world mode). Each post object is one CHANNEL: "title" is the channel name without "#" (e.g. 잡담, 정보, 스포일러, 짤방, 공지, 오프라인), "body" is the first message of the shown chat log and "author" its sender. "comments" are the following chat messages in order — short, casual, fast, several messages in a row from the same person are normal; "replies" stays empty. Use "reply_to" to point at an earlier message only when someone uses Discord's reply. Usernames look like Discord display names; emoji, :custom_emoji:, @mentions, lowercase, typos, "ㅋㅋ", stickers described in brackets. "time" like "오늘 오후 3:12".`,
     guide_tdgall: `투디갤 (tdgall.com), a Korean anonymous community for 2D works — anime, manga, light novels, subculture/mobile games, webtoons — that split off from DCInside. Everyone posts anonymously: set "author" to "ㅇㅇ" and "handle" to a random 4-character code of letters/digits (e.g. "k7Qa"); a person keeps the same code inside one post. Put the board in tags[0]: one of 투디, 웹툰, 소설, 게임, AI, 괴담, 남극. Tone: casual banmal, fast fandom slang and chosung abbreviations (ㅋㅋ, ㅠㅠ, ㄹㅇ, ㄱㅊ), title prefixes such as ㅃ (off-topic chatter), ㅂㅎ (dislike post — replies agree rather than argue), ㅅㅍ (spoiler), ㅂㅇ (translation). Community words: 펭도리 (asking for a source or character name), 소주 (claiming a character as one's spouse), 자표, 갤메이저/갤마이너, 유입 (newcomer, treated warily). Typical posts: short reactions, questions, rants about creators or pacing, shipping, fan theories, recommendation requests. No real-person photos, doxxing or slurs.`,
+    guide_kkangtong: `깡통, a Korean anonymous community about AI chatting and roleplay (mainly SillyTavern). Users share and discuss character bots (봇·캐릭터 카드), prompts and presets, Quick Replies (QR), extensions and scripts they built, NovelAI (NAI) image prompts and artist tags (작가 태그) for art styles, AI model and API news and tips, chat logs (로그), and chat about their favorite bots and characters (덕질). Everyone posts anonymously: a post's "author" is "깡". In comments, anonymous commenters are numbered in order of first appearance in that post — "깡1", "깡2", "깡3", … — and the same person keeps the same number in that post; the post's own writer appears as "글쓴 깡" (never a number). Leave "handle" empty. Only an official notice from the admins may use the author "운영깡". Put the board in tags[0]: one of 일반, 뉴스, 정보/팁, 로그, AI봇, 프롬프트, QR, 그림체, 음악, 자료, 확장, 질문, 추천/지식, 덕질, 제작/협업. Users call each other "깡" and add it to a role: 운영깡 (the admins), 제작깡 / 공유깡 (people who make and share bots, prompts or extensions), 너깡, 나깡, 질문깡, 로그깡 and so on (e.g. "제작깡 고마워", "나깡도 이거 씀"). Tone: casual banmal and 음슴체, ㅋㅋ, ㅠㅠ, ㄹㅇ, gratitude to 제작깡, bug reports and fixes, model comparisons (Claude, Gemini, GPT, DeepSeek…), token and cost talk, sharing tips. In the reader-reaction mode, decide what the story is to these users from how it reads: it may be an AI chat log someone shared, or a novel, webtoon/manga, anime or game they are into — do not assume it is always a chat log. Users react to it as fans do, and may also connect it to their own AI chatting (making a bot of a character, prompts for that mood, NAI art of a scene, sharing their own logs). In the in-world mode, people living in the story world use 깡통 for their own AI chatting and talk about what is happening around them. Never mention, recommend or discuss RisuAI (리스 / 리수) in any way — this site does not cover it. Rules like 투디갤: no real-person photos, no doxxing, no slurs, credit the 제작깡 when sharing their work.`,
     guide_blind: `Blind (블라인드), a Korean anonymous community for verified office workers. Everyone is anonymous, but each post and comment shows the writer's workplace: set "author" to the company or organization name only (e.g. "삼성전자", "네이버", "공무원", "스타트업", "대학병원" — use workplaces that fit the setting and the person; if the setting has no real companies, invent fitting in-world employers) and "handle" to a short random nickname code of 4–6 letters/digits (e.g. "kD8a2"). Put the topic channel in tags[0]: one of 블라블라, 회사생활, 이직·커리어, 연애, 결혼생활, 주식·투자, 부동산, 썸·연애, 육아, 여행, 고민 (or a company lounge like "○○ 라운지"). Tone: blunt, cynical office-worker Korean, often 음슴체/반말 (~함, ~임, ~인듯), salary and workload complaints, 연봉, 성과급, 야근, 팀장, 이직, workplace politics, relationship and marriage advice, comment fights ("ㄹㅇ", "부럽다", "어디 회사임?"). Comments by the post's writer show up as the same company. No real-person defamation, no slurs.`,
     guide_everytime: `Everytime (에브리타임), the Korean university students' anonymous community and timetable app. Set "board" to the school name (an in-world university if the setting needs one, e.g. "한빛대학교"). Put the board in tags[0]: one of 자유게시판, 비밀게시판, 새내기게시판, 졸업생게시판, 정보게시판, 연애게시판, 시사·이슈, 동아리·학회, 장터게시판. Post "author" is "익명". In comments, anonymous commenters are numbered in order of first appearance — "익명1", "익명2", … (the same person keeps the same number in that post) — and the post's own writer appears as "익명(글쓴이)". Tone: university students' casual Korean, 음슴체 (~함, ~임, ~ㅠ), ㅋㅋ, ㅠㅠ; topics: 과제, 시험, 학점, 교수님, 학식, 수강신청, 동기, 선배, CC, 썸, 알바, 취준, 기숙사, campus gossip. Short punchy titles. "likes" is 공감 count, "shares" is 스크랩 count. No real-person defamation.`,
     guide_tieba: `Baidu Tieba. Set "board" to the bar name WITHOUT the trailing 吧. Each post object is a THREAD with a title and the 楼主 (OP) body as floor 1. Comments are the following floors (2楼, 3楼...) and their "replies" are 楼中楼 replies. Culture: 沙发, 板凳, 前排, 顶, 楼主好人, 233, 水贴, 吧务, heated debates, long analysis posts.`,
@@ -268,6 +272,7 @@ const PROMPT_LABELS = {
     setting_custom: '배경: 직접 입력했을 때',
     npc_on: '주변 인물(NPC): 직접 글 쓰기',
     npc_off: '주변 인물(NPC): 글 쓰지 않기',
+    no_mention: '인물 언급 금지',
     inject_authored: '본편 반영: 캐릭터/유저가 쓴 글',
     inject_world: '본편 반영: 세계관 속 글',
     inject_meta: '본편 반영: 독자 반응',
@@ -284,6 +289,7 @@ const PROMPT_LABELS = {
     guide_tieba: '스타일: 바이두 티에바',
     guide_discord: '스타일: 디스코드',
     guide_tdgall: '스타일: 투디갤',
+    guide_kkangtong: '스타일: 깡통',
     dm_continue: '디스코드 DM 이어가기 지시',
     inject_dm: '본편 반영: 디스코드 DM',
 };
@@ -830,7 +836,7 @@ function resolvedTranslation() {
 }
 
 // The language each community is written in by default (Discord / X follow the story)
-const NATIVE_LANG = { naver: 'ko', dcinside: 'ko', tdgall: 'ko', blind: 'ko', everytime: 'ko', reddit: 'en', fivech: 'ja', weibo: 'zh', tieba: 'zh' };
+const NATIVE_LANG = { naver: 'ko', dcinside: 'ko', tdgall: 'ko', kkangtong: 'ko', blind: 'ko', everytime: 'ko', reddit: 'en', fivech: 'ja', weibo: 'zh', tieba: 'zh' };
 const LANG_LABEL = { ko: 'Korean', en: 'English', ja: 'Japanese', zh: 'Chinese' };
 
 function langCode(name) {
@@ -1057,6 +1063,7 @@ async function buildContextBlock() {
 
 /** Whether named side characters of the story post themselves (world mode only: readers are outside the story). */
 function npcRule(mode, vars) {
+    if (getSettings().noMention) return fillTpl(getPrompt('no_mention'), vars);   // nobody from the story appears at all
     const v = getSettings().npcPosts;
     if (mode !== 'world' || (v !== 'on' && v !== 'off')) return '';
     return fillTpl(getPrompt(v === 'on' ? 'npc_on' : 'npc_off'), vars);
@@ -1980,7 +1987,7 @@ function playerItem(platformId, { as, nick, charName, body, title }, langName = 
     let handle = '';
     const digits = String(Math.floor(1000 + Math.random() * 9000));
     if (platformId === 'fivech') handle = randomId(8);
-    else if (platformId === 'tdgall') handle = randomId(4);
+    else if (TD_SKINS[platformId]?.codes) handle = randomId(4);
     else if (platformId === 'twitter') handle = nick?.trim() || as !== 'mob' ? author.replace(/\s+/g, '_') : `user${digits}${randomId(3).toLowerCase()}`;
     else if (platformId === 'reddit') handle = nick?.trim() || as !== 'mob' ? author.replace(/\s+/g, '_') : `throwaway_${digits}`;
     const item = { isMe: true, as, author, handle, body, body_tr: '', time: nowLabel(platformId, langName), likes: 0 };
@@ -1993,7 +2000,7 @@ function playerItem(platformId, { as, nick, charName, body, title }, langName = 
 // Nicknames: an empty box gets a community-style name; the same identity keeps its name inside one post
 // ---------------------------------------------------------------------------
 // Communities where everyone is anonymous by design: the platform default (ㅇㅇ, 名無しさん, 익명…) is the right name
-const ANON_PLATFORMS = new Set(['dcinside', 'tdgall', 'fivech', 'everytime']);
+const ANON_PLATFORMS = new Set(['dcinside', 'tdgall', 'kkangtong', 'fivech', 'everytime']);
 const NICK_WORDS = {
     ko: {
         a: ['달달한', '졸린', '행복한', '반짝이는', '수줍은', '바삭한', '포근한', '말랑한', '심심한', '용감한', '느긋한', '새벽의', '작은', '푸른', '노란', '배고픈', '조용한', '까칠한', '엉뚱한', '따뜻한'],
@@ -2051,7 +2058,7 @@ function cap(s) { return s ? s[0].toUpperCase() + s.slice(1) : s; }
 function anonHandle(platformId) {
     if (platformId === 'dcinside') return `${Math.floor(1 + Math.random() * 222)}.${Math.floor(Math.random() * 256)}`;
     if (platformId === 'fivech') return randomId(8);
-    if (platformId === 'tdgall') return randomId(4);
+    if (TD_SKINS[platformId]?.codes) return randomId(4);
     if (platformId === 'blind') return randomId(5);
     return '';
 }
@@ -2121,7 +2128,7 @@ async function resolveNick({ feed, post = null, identity, text = '', item }) {
         return;
     }
     if (prev?.author) { item.author = prev.author; item.handle = prev.handle; return; }
-    if (pid === 'everytime') { if (!post) item.author = '익명'; return; }   // a new post is 익명; comments are numbered by the caller
+    if (NUMBERED_ANON[pid]) { if (!post) item.author = NUMBERED_ANON[pid].base; return; }   // a new post is 익명 / 깡; comments are numbered by the caller
     if (ANON_PLATFORMS.has(pid)) {
         // anonymous boards: nobody shows a real name — ㅇㅇ / 名無しさん / 익명 with a fresh ID
         item.author = uiWords(pid, feedLang(feed))?.anon?.[pid] ?? PLATFORMS[pid].anon;
@@ -2142,7 +2149,9 @@ async function resolveNick({ feed, post = null, identity, text = '', item }) {
 
 async function rememberIdentity({ as, nick, charName }) {
     const store = getChatStore();
-    store.identity = { as, nick: nick ?? '', charName: charName ?? store.identity?.charName ?? '' };
+    // board-given labels (익명3, 깡2, 글쓴 깡…) belong to one post; don't carry them as your nickname
+    const keep = Object.keys(NUMBERED_ANON).some(pf => isAnonLabel(pf, nick)) ? '' : (nick ?? '');
+    store.identity = { as, nick: keep, charName: charName ?? store.identity?.charName ?? '' };
     await saveChatStore();
 }
 
@@ -2174,6 +2183,8 @@ async function submitPlayerPostNow({ title, body, identity, react, board, catego
         await addFeed(feed);
     }
     const pf = PLATFORMS[feed.platform];
+    // 익명 / 깡 / 깡3… in the box is a board-given label, not a chosen name: a new post gets the board's own
+    if (isAnonLabel(feed.platform, identity.nick)) identity = { ...identity, nick: '' };
     const post = playerItem(feed.platform, { ...identity, body: body.trim(), title: pf.hasTitle || pf.chat ? (title.trim() || (pf.chat ? '잡담' : '')) : '' }, feedLang(feed));
     await resolveNick({ feed, identity, text: `${title}\n${body}`, item: post });
     if (category) post.tags = [category];
@@ -2186,14 +2197,41 @@ async function submitPlayerPostNow({ title, body, identity, react, board, catego
     if (react) await generateMoreComments(feed.id, postIdx, { playerJustPosted: true });
 }
 
-/** Everytime numbers anonymous commenters per post: your own post → 익명(글쓴이); else keep / take the next 익명N. */
-function everytimeName(post) {
-    if (post.isMe) return '익명(글쓴이)';
+/** Boards that number anonymous commenters per post (익명1, 익명2… / 깡1, 깡2…). op: what the post's own writer shows as. */
+const NUMBERED_ANON = { everytime: { base: '익명', op: '익명(글쓴이)' }, kkangtong: { base: '깡', op: '글쓴 깡' } };
+
+/** 익명 / 깡 / 익명N / 깡N / writer label: names the board gives out, not ones you chose. */
+function isAnonLabel(platform, name) {
+    const cfg = NUMBERED_ANON[platform];
+    const n = String(name ?? '').trim();
+    return !!cfg && (n === cfg.base || n === cfg.op || new RegExp(`^${cfg.base}\\d+$`).test(n));
+}
+
+/** A name you typed yourself earlier in this post (not a board-given label) — it is kept. */
+function customNickInPost(post, identity, feed) {
+    const prev = rememberedNick(post, identity, feed)?.author;
+    return !!prev && !isAnonLabel(feed.platform, prev);
+}
+
+/** What the nickname box shows for this identity in a post: your own earlier name, but not a board-given label
+ *  (that one is worked out again when you post, e.g. 글쓴 깡 on your own post). */
+function prefillNick(post, identity, feed) {
+    const prev = rememberedNick(post, identity, feed)?.author ?? '';
+    return feed && isAnonLabel(feed.platform, prev) ? '' : prev;
+}
+
+/** Your comment's name there: the post's own writer (same identity) → its writer label; else the number this
+ *  identity already has in the post, or the next one. */
+function numberedName(post, platform = 'everytime', identity = null) {
+    const cfg = NUMBERED_ANON[platform] ?? NUMBERED_ANON.everytime;
+    const same = (o) => !identity || (o?.as === identity.as && (identity.as !== 'char' || (o.charName || '') === (identity.charName || '')));
+    if (post.isMe && cfg.op && same(post)) return cfg.op;
+    const re = new RegExp(`^${cfg.base}(\\d+)$`);
     const all = post.comments.flatMap(cm => [cm, ...cm.replies]);
-    const mine = all.find(o => o.isMe && /^익명\d+$/.test(o.author ?? ''));
+    const mine = all.find(o => o.isMe && same(o) && re.test(o.author ?? ''));
     if (mine) return mine.author;
-    const max = all.reduce((m, o) => Math.max(m, Number(/^익명(\d+)$/.exec(o.author ?? '')?.[1] ?? 0)), 0);
-    return `익명${max + 1}`;
+    const max = all.reduce((m, o) => Math.max(m, Number(re.exec(o.author ?? '')?.[1] ?? 0)), 0);
+    return `${cfg.base}${max + 1}`;
 }
 
 let submitting = false;   // one player post / comment at a time (an AI nickname can take a moment)
@@ -2215,7 +2253,7 @@ async function submitPlayerCommentNow({ feedId, postIdx, replyTo, body, identity
 
     const item = playerItem(feed.platform, { ...identity, body: body.trim() }, feedLang(feed));
     if (post.kind === 'dm') { /* a DM's sender name is fixed by the DM itself */ }
-    else if (feed.platform === 'everytime' && !identity.nick?.trim() && !rememberedNick(post, identity, feed)) item.author = everytimeName(post);
+    else if (NUMBERED_ANON[feed.platform] && (!identity.nick?.trim() || isAnonLabel(feed.platform, identity.nick)) && !customNickInPost(post, identity, feed)) item.author = numberedName(post, feed.platform, identity);
     else await resolveNick({ feed, post, identity, text: body, item });
     const flat = !!PLATFORMS[feed.platform]?.flat;
     if (replyTo != null && replyTo >= 0 && post.comments[replyTo] && !flat) {
@@ -2616,7 +2654,8 @@ function characterNames() {
 function nickHint(platformId) {
     if (platformId === 'blind') return '회사 이름 (비우면 랜덤 직장)';
     if (platformId === 'everytime') return '닉네임 (비우면 익명 · 댓글은 익명N)';
-    if (platformId === 'dcinside' || platformId === 'tdgall') return '닉네임 (비우면 ㅇㅇ)';
+    if (platformId === 'kkangtong') return '닉네임 (비우면 깡 · 댓글은 깡N)';
+    if (platformId === 'dcinside' || TD_SKINS[platformId]) return '닉네임 (비우면 ㅇㅇ)';
     if (platformId === 'fivech') return '닉네임 (비우면 名無しさん)';
     return getSettings().nickMode === 'ai' ? '닉네임 (비우면 AI가 어울리는 이름)' : '닉네임 (비우면 랜덤 닉네임)';
 }
@@ -2632,8 +2671,7 @@ function identityControls(draft, post = null) {
     let id = draft?.as ? draft : (store?.identity ?? { as: 'mob', nick: '', charName: '' });
     // inside a post: the name this identity already used there comes back
     if (post && !draft?.as) {
-        const prev = rememberedNick(post, id, feedOfPost(post));
-        id = { ...id, nick: prev?.author ?? '' };
+        id = { ...id, nick: prefillNick(post, id, feedOfPost(post)) };
     }
     const userName = esc(ctx().name1 || '유저');
     const names = characterNames();
@@ -2690,7 +2728,7 @@ function postFooter(feed, i) {
 // ---------------------------------------------------------------------------
 // Title list: posts start folded; the title row opens the body and reactions
 // ---------------------------------------------------------------------------
-const FOLD_SKIP = new Set(['tdgall', 'discord']);   // 투디갤 has its own board list, Discord shows one channel at a time
+const FOLD_SKIP = new Set(['tdgall', 'kkangtong', 'discord']);   // 투디갤·깡통 have their own board list, Discord shows one channel at a time
 
 function foldable(feed) {
     return !!feed && !FOLD_SKIP.has(feed.platform);
@@ -2777,6 +2815,99 @@ function updateFoldAllButton(feed) {
 // ---------------------------------------------------------------------------
 // Renderers per platform
 // ---------------------------------------------------------------------------
+/** 투디갤-style board (투디갤, 깡통): category sidebar, list rows that open in place. */
+function tdBoard(feed) {
+    const skinCfg = TD_SKINS[feed.platform] ?? TD_SKINS.tdgall;
+    const cats = skinCfg.cats;
+    const d = feed.data;
+    const st = tdState(feed.id);
+    const items = d.posts.map((p, i) => ({ p, i }));
+    const base = tdBaseNo(feed.id);
+    const order = st.sort === 'best'
+        ? [...items].sort((a, b) => (b.p.likes || 0) - (a.p.likes || 0))
+        : [...items].reverse();   // newest first, like a real board
+    const best = tdBestList(feed);
+    const bi = Math.max(0, Math.min(st.best, best.length - 1));
+    const counts = {};
+    for (const { p } of items) counts[tdCatOf(p, feed.platform)] = (counts[tdCatOf(p, feed.platform)] ?? 0) + 1;
+    const fid = esc(feed.id);
+    const anon = PLATFORMS[feed.platform]?.anon || 'ㅇㅇ';
+    const opLabel = NUMBERED_ANON[feed.platform]?.op;
+    const who = (o) => `<b${opLabel && o.author === opLabel ? ' class="op"' : ''}>${esc(o.author || anon)}</b>${o.handle && skinCfg.codes ? `<small class="stcm-td-code">${esc(o.handle)}</small>` : ''}${meBadge(o)}`;
+    const catList = cats.map(c => `<button class="stcm-td-catitem ${c === st.cat ? 'active' : ''}" data-act="td-cat" data-feed="${fid}" data-cat="${esc(c)}"><span class="ico">${skinCfg.icons[c] ?? '•'}</span><span>${c === '전체' ? '전체 글' : esc(c)}</span>${c !== '전체' && counts[c] ? `<small>${counts[c]}</small>` : ''}${c === '전체' ? '<i class="fa-solid fa-chevron-right"></i>' : ''}</button>`).join('');
+    const chips = cats.map(c => `<button class="stcm-td-chip ${c === st.cat ? 'active' : ''}" data-act="td-cat" data-feed="${fid}" data-cat="${esc(c)}"><span class="ico">${skinCfg.icons[c] ?? '•'}</span>${esc(c)}</button>`).join('');
+    const anyVisible = items.some(({ p }) => tdVisible(feed, p));
+    const rows = order.map(({ p, i }) => {
+        const cat = tdCatOf(p, feed.platform);
+        const n = tdCount(p);
+        const open = openPosts.has(`${feed.id}:${i}`) || (composer && composer.feedId === feed.id && composer.postIdx === i);
+        return `<article class="stcm-td-post ${open ? 'open' : ''} ${tdVisible(feed, p) ? '' : 'stcm-hide'}" data-post="${i}">
+            <div class="stcm-td-row" data-act="td-toggle" data-feed="${fid}" data-idx="${i}">
+                <span class="no">${base + i + 1}</span>
+                <span class="cat">${esc(cat)}</span>
+                <span class="tt">${p.isMe ? '<i class="fa-solid fa-pen-nib stcm-td-mine"></i>' : ''}${esc(ttl(p) || truncate(p.body, 40))}${n ? ` <em>[${n}]</em>` : ''}</span>
+                <span class="au">${esc(p.author || anon)}</span>
+                <span class="tm">${esc(p.time)}</span>
+                <span class="vw">${num(p.views, 'ko')}</span>
+                <span class="rc">${num(p.likes)}</span>
+            </div>
+            <div class="stcm-td-detail">
+                <div class="stcm-td-dhead">
+                    <span class="stcm-td-badge">${esc(cat)}</span>
+                    <h3>${esc(ttl(p))}</h3>
+                    <div class="stcm-td-meta">${who(p)}<span>${esc(p.time)}</span><span>조회 ${num(p.views, 'ko')}</span><span>추천 ${num(p.likes)}</span><span>댓글 ${n}</span></div>
+                </div>
+                <div class="stcm-body">${txt(p, feed.platform)}</div>
+                <div class="stcm-td-rec"><span class="up"><i class="fa-solid fa-thumbs-up"></i> 추천 ${num(p.likes)}</span><span><i class="fa-regular fa-thumbs-down"></i> 비추 ${Math.floor((Number(p.likes) || 0) / 9)}</span></div>
+                <div class="stcm-td-comments">
+                ${p.comments.length ? `<div class="stcm-td-ctitle">댓글 <b>${n}</b></div>` : ''}
+                ${p.comments.map((c, ci) => `
+                    <div class="stcm-td-c" data-k="${i}.${ci}"><div class="h">${who(c)}<span>${esc(c.time)}</span></div><div class="stcm-body">${txt(c, feed.platform)}</div>${itemLinks(feed, i, ci, null, c)}</div>
+                    ${c.replies.map((r, ri) => `<div class="stcm-td-c reply" data-k="${i}.${ci}.${ri}"><div class="h"><i class="fa-solid fa-reply fa-rotate-180"></i> ${who(r)}<span>${esc(r.time)}</span></div><div class="stcm-body">${txt(r, feed.platform)}</div>${itemLinks(feed, i, ci, ri, r)}</div>`).join('')}
+                    ${slotAt(feed, i, `c${ci}`)}
+                `).join('')}
+                </div>
+                ${postFooter(feed, i)}
+            </div>
+        </article>`;
+    }).join('');
+    const bestPost = best[bi];
+    const banner = best.length ? `<div class="stcm-td-best">
+            <span class="lbl"><i class="fa-solid fa-star"></i> 개념글</span>
+            <a class="tt" data-act="td-open" data-feed="${fid}" data-idx="${bestPost.i}">${esc(ttl(bestPost.p) || truncate(bestPost.p.body, 40))}${tdCount(bestPost.p) ? ` <em>[${tdCount(bestPost.p)}]</em>` : ''}</a>
+            <span class="pager"><button data-act="td-best" data-feed="${fid}" data-dir="-1" aria-label="이전"><i class="fa-solid fa-chevron-left"></i></button>${bi + 1}/${best.length}<button data-act="td-best" data-feed="${fid}" data-dir="1" aria-label="다음"><i class="fa-solid fa-chevron-right"></i></button></span>
+        </div>` : '';
+    return `<div class="stcm-skin stcm-tdgall stcm-td-${feed.platform}">
+        <div class="stcm-td-brand"><span class="logo"><span class="mark">${skinCfg.mark}</span>${esc(skinCfg.name)}</span>${d.board && String(d.board).trim() !== skinCfg.name ? `<span class="board">${esc(d.board)}</span>` : ''}</div>
+        <div class="stcm-td-layout">
+            <aside class="stcm-td-side">
+                <div class="stcm-td-sidehead"><i class="fa-solid fa-folder-open"></i> 카테고리</div>
+                <div class="stcm-td-catlist">${catList}</div>
+            </aside>
+            <div class="stcm-td-mainc">
+                <div class="stcm-td-card stcm-td-toolbar">
+                    <div class="stcm-td-sorts">
+                        <button class="${st.sort !== 'best' ? 'active' : ''}" data-act="td-sort" data-feed="${fid}" data-sort="latest"><i class="fa-regular fa-clock"></i> 최신</button>
+                        <button class="${st.sort === 'best' ? 'active' : ''}" data-act="td-sort" data-feed="${fid}" data-sort="best"><i class="fa-regular fa-star"></i> 개념글</button>
+                    </div>
+                    <label class="stcm-td-search"><input type="search" class="stcm-td-q" data-feed="${fid}" value="${esc(st.q)}" placeholder="검색어"><i class="fa-solid fa-magnifying-glass"></i></label>
+                </div>
+                <div class="stcm-td-chips">${chips}</div>
+                ${banner}
+                <div class="stcm-td-card stcm-td-table">
+                    <div class="stcm-td-filter">필터
+                        <span class="seg">${[['all', '전체'], ['best', '개념'], ['me', '내 글']].map(([k, l]) => `<button class="${st.filter === k ? 'active' : ''}" data-act="td-filter" data-feed="${fid}" data-filter="${k}">${l}</button>`).join('')}</span>
+                    </div>
+                    <div class="stcm-td-head"><span class="no">번호</span><span class="cat">카테고리</span><span class="tt">제목</span><span class="au">글쓴이</span><span class="tm">날짜</span><span class="vw">조회</span><span class="rc">추천</span></div>
+                    ${rows || '<div class="stcm-empty">글이 없어요.</div>'}
+                    <div class="stcm-td-none ${anyVisible || !items.length ? 'stcm-hide' : ''}">조건에 맞는 글이 없어요.</div>
+                </div>
+            </div>
+        </div>
+        <button class="stcm-td-write" data-act="td-write" data-feed="${fid}"><i class="fa-solid fa-pen-to-square"></i> 글쓰기</button>
+    </div>`;
+}
+
 const renderers = {
     naver(feed) {
         const d = feed.data;
@@ -2972,93 +3103,8 @@ const renderers = {
         return `<div class="stcm-skin stcm-discord"><div class="stcm-ds-wrap">${side}<div class="stcm-ds-main">${panes || '<div class="stcm-ds-empty">채널이 없어요.</div>'}</div></div></div>`;
     },
 
-    tdgall(feed) {
-        const d = feed.data;
-        const st = tdState(feed.id);
-        const items = d.posts.map((p, i) => ({ p, i }));
-        const base = tdBaseNo(feed.id);
-        const order = st.sort === 'best'
-            ? [...items].sort((a, b) => (b.p.likes || 0) - (a.p.likes || 0))
-            : [...items].reverse();   // newest first, like a real board
-        const best = tdBestList(feed);
-        const bi = Math.max(0, Math.min(st.best, best.length - 1));
-        const counts = {};
-        for (const { p } of items) counts[tdCatOf(p)] = (counts[tdCatOf(p)] ?? 0) + 1;
-        const fid = esc(feed.id);
-        const who = (o) => `<b>${esc(o.author || 'ㅇㅇ')}</b>${o.handle ? `<small class="stcm-td-code">${esc(o.handle)}</small>` : ''}${meBadge(o)}`;
-        const catList = TD_CATS.map(c => `<button class="stcm-td-catitem ${c === st.cat ? 'active' : ''}" data-act="td-cat" data-feed="${fid}" data-cat="${esc(c)}"><span class="ico">${TD_ICONS[c] ?? '•'}</span><span>${c === '전체' ? '전체 글' : esc(c)}</span>${c !== '전체' && counts[c] ? `<small>${counts[c]}</small>` : ''}${c === '전체' ? '<i class="fa-solid fa-chevron-right"></i>' : ''}</button>`).join('');
-        const chips = TD_CATS.map(c => `<button class="stcm-td-chip ${c === st.cat ? 'active' : ''}" data-act="td-cat" data-feed="${fid}" data-cat="${esc(c)}"><span class="ico">${TD_ICONS[c] ?? '•'}</span>${esc(c)}</button>`).join('');
-        const anyVisible = items.some(({ p }) => tdVisible(feed, p));
-        const rows = order.map(({ p, i }) => {
-            const cat = tdCatOf(p);
-            const n = tdCount(p);
-            const open = openPosts.has(`${feed.id}:${i}`) || (composer && composer.feedId === feed.id && composer.postIdx === i);
-            return `<article class="stcm-td-post ${open ? 'open' : ''} ${tdVisible(feed, p) ? '' : 'stcm-hide'}" data-post="${i}">
-                <div class="stcm-td-row" data-act="td-toggle" data-feed="${fid}" data-idx="${i}">
-                    <span class="no">${base + i + 1}</span>
-                    <span class="cat">${esc(cat)}</span>
-                    <span class="tt">${p.isMe ? '<i class="fa-solid fa-pen-nib stcm-td-mine"></i>' : ''}${esc(ttl(p) || truncate(p.body, 40))}${n ? ` <em>[${n}]</em>` : ''}</span>
-                    <span class="au">${esc(p.author || 'ㅇㅇ')}</span>
-                    <span class="tm">${esc(p.time)}</span>
-                    <span class="vw">${num(p.views, 'ko')}</span>
-                    <span class="rc">${num(p.likes)}</span>
-                </div>
-                <div class="stcm-td-detail">
-                    <div class="stcm-td-dhead">
-                        <span class="stcm-td-badge">${esc(cat)}</span>
-                        <h3>${esc(ttl(p))}</h3>
-                        <div class="stcm-td-meta">${who(p)}<span>${esc(p.time)}</span><span>조회 ${num(p.views, 'ko')}</span><span>추천 ${num(p.likes)}</span><span>댓글 ${n}</span></div>
-                    </div>
-                    <div class="stcm-body">${txt(p, 'tdgall')}</div>
-                    <div class="stcm-td-rec"><span class="up"><i class="fa-solid fa-thumbs-up"></i> 추천 ${num(p.likes)}</span><span><i class="fa-regular fa-thumbs-down"></i> 비추 ${Math.floor((Number(p.likes) || 0) / 9)}</span></div>
-                    <div class="stcm-td-comments">
-                    ${p.comments.length ? `<div class="stcm-td-ctitle">댓글 <b>${n}</b></div>` : ''}
-                    ${p.comments.map((c, ci) => `
-                        <div class="stcm-td-c" data-k="${i}.${ci}"><div class="h">${who(c)}<span>${esc(c.time)}</span></div><div class="stcm-body">${txt(c, 'tdgall')}</div>${itemLinks(feed, i, ci, null, c)}</div>
-                        ${c.replies.map((r, ri) => `<div class="stcm-td-c reply" data-k="${i}.${ci}.${ri}"><div class="h"><i class="fa-solid fa-reply fa-rotate-180"></i> ${who(r)}<span>${esc(r.time)}</span></div><div class="stcm-body">${txt(r, 'tdgall')}</div>${itemLinks(feed, i, ci, ri, r)}</div>`).join('')}
-                        ${slotAt(feed, i, `c${ci}`)}
-                    `).join('')}
-                    </div>
-                    ${postFooter(feed, i)}
-                </div>
-            </article>`;
-        }).join('');
-        const bestPost = best[bi];
-        const banner = best.length ? `<div class="stcm-td-best">
-                <span class="lbl"><i class="fa-solid fa-star"></i> 개념글</span>
-                <a class="tt" data-act="td-open" data-feed="${fid}" data-idx="${bestPost.i}">${esc(ttl(bestPost.p) || truncate(bestPost.p.body, 40))}${tdCount(bestPost.p) ? ` <em>[${tdCount(bestPost.p)}]</em>` : ''}</a>
-                <span class="pager"><button data-act="td-best" data-feed="${fid}" data-dir="-1" aria-label="이전"><i class="fa-solid fa-chevron-left"></i></button>${bi + 1}/${best.length}<button data-act="td-best" data-feed="${fid}" data-dir="1" aria-label="다음"><i class="fa-solid fa-chevron-right"></i></button></span>
-            </div>` : '';
-        return `<div class="stcm-skin stcm-tdgall">
-            <div class="stcm-td-brand"><span class="logo"><span class="mark">🐧</span>투디갤</span>${d.board ? `<span class="board">${esc(d.board)}</span>` : ''}</div>
-            <div class="stcm-td-layout">
-                <aside class="stcm-td-side">
-                    <div class="stcm-td-sidehead"><i class="fa-solid fa-folder-open"></i> 카테고리</div>
-                    <div class="stcm-td-catlist">${catList}</div>
-                </aside>
-                <div class="stcm-td-mainc">
-                    <div class="stcm-td-card stcm-td-toolbar">
-                        <div class="stcm-td-sorts">
-                            <button class="${st.sort !== 'best' ? 'active' : ''}" data-act="td-sort" data-feed="${fid}" data-sort="latest"><i class="fa-regular fa-clock"></i> 최신</button>
-                            <button class="${st.sort === 'best' ? 'active' : ''}" data-act="td-sort" data-feed="${fid}" data-sort="best"><i class="fa-regular fa-star"></i> 개념글</button>
-                        </div>
-                        <label class="stcm-td-search"><input type="search" class="stcm-td-q" data-feed="${fid}" value="${esc(st.q)}" placeholder="검색어"><i class="fa-solid fa-magnifying-glass"></i></label>
-                    </div>
-                    <div class="stcm-td-chips">${chips}</div>
-                    ${banner}
-                    <div class="stcm-td-card stcm-td-table">
-                        <div class="stcm-td-filter">필터
-                            <span class="seg">${[['all', '전체'], ['best', '개념'], ['me', '내 글']].map(([k, l]) => `<button class="${st.filter === k ? 'active' : ''}" data-act="td-filter" data-feed="${fid}" data-filter="${k}">${l}</button>`).join('')}</span>
-                        </div>
-                        <div class="stcm-td-head"><span class="no">번호</span><span class="cat">카테고리</span><span class="tt">제목</span><span class="au">글쓴이</span><span class="tm">날짜</span><span class="vw">조회</span><span class="rc">추천</span></div>
-                        ${rows || '<div class="stcm-empty">글이 없어요.</div>'}
-                        <div class="stcm-td-none ${anyVisible || !items.length ? 'stcm-hide' : ''}">조건에 맞는 글이 없어요.</div>
-                    </div>
-                </div>
-            </div>
-            <button class="stcm-td-write" data-act="td-write" data-feed="${fid}"><i class="fa-solid fa-pen-to-square"></i> 글쓰기</button>
-        </div>`;
-    },
+    tdgall(feed) { return tdBoard(feed); },
+    kkangtong(feed) { return tdBoard(feed); },
 
     blind(feed) {
         const d = feed.data;
@@ -3149,9 +3195,22 @@ const renderers = {
 // ---------------------------------------------------------------------------
 const dsSel = new Map();       // feedId → index of the channel / DM shown
 const openPosts = new Set();   // `${feedId}:${idx}` posts expanded in the title list
-const TD_CATS = ['전체', '투디', '웹툰', '소설', '게임', 'AI', '괴담', '남극'];
-
-const TD_ICONS = { '전체': '📌', '투디': '💬', '웹툰': '📺', '소설': '📖', '게임': '🎮', 'AI': '🤖', '괴담': '👻', '남극': '🐧' };
+/** Boards drawn with the 투디갤 look. cats[1] is where a post without a known category goes. */
+const TD_SKINS = {
+    tdgall: {
+        name: '투디갤', mark: '🐧', codes: true,
+        cats: ['전체', '투디', '웹툰', '소설', '게임', 'AI', '괴담', '남극'],
+        icons: { '전체': '📌', '투디': '💬', '웹툰': '📺', '소설': '📖', '게임': '🎮', 'AI': '🤖', '괴담': '👻', '남극': '🐧' },
+        alias: {},
+    },
+    kkangtong: {
+        name: '깡통', mark: '🥫', codes: false,
+        cats: ['전체', '일반', '뉴스', '정보/팁', '로그', 'AI봇', '프롬프트', 'QR', '그림체', '음악', '자료', '확장', '질문', '추천/지식', '덕질', '제작/협업'],
+        icons: { '전체': '📌', '일반': '💬', '뉴스': '📰', '정보/팁': '💡', '로그': '📜', 'AI봇': '🤖', '프롬프트': '📝', 'QR': '⚡', '그림체': '🎨', '음악': '🎵', '자료': '📦', '확장': '🧩', '질문': '❓', '추천/지식': '📚', '덕질': '💖', '제작/협업': '🛠️' },
+        alias: { '정보': '정보/팁', '팁': '정보/팁', '봇': 'AI봇', 'ai봇': 'AI봇', '캐릭터': 'AI봇', '프롬': '프롬프트', '프리셋': '프롬프트', '퀵리플': 'QR', '퀵리플라이': 'QR', '그림': '그림체', '작가태그': '그림체', '추천': '추천/지식', '지식': '추천/지식', '제작': '제작/협업', '협업': '제작/협업', '잡담': '일반', '자유': '일반' },
+    },
+};
+function tdCats(platform) { return (TD_SKINS[platform] ?? TD_SKINS.tdgall).cats; }
 const tdStates = new Map();   // feedId → { cat, sort, q, filter, best }
 
 function tdState(feedId) {
@@ -3175,7 +3234,7 @@ function tdBestList(feed) {
 
 function tdVisible(feed, p) {
     const st = tdState(feed.id);
-    if (st.cat !== '전체' && tdCatOf(p) !== st.cat) return false;
+    if (st.cat !== '전체' && tdCatOf(p, feed.platform) !== st.cat) return false;
     if (st.filter === 'me' && !(p.isMe || p.comments.some(c => c.isMe || c.replies.some(r => r.isMe)))) return false;
     if (st.filter === 'best') {
         const cut = tdBestList(feed).at(-1)?.p.likes ?? Infinity;
@@ -3208,10 +3267,11 @@ function tdCount(p) {
     return p.comments.reduce((a, c) => a + 1 + c.replies.length, 0);
 }
 
-function tdCatOf(p) {
-    const t = String(p?.tags?.[0] ?? '').replace(/(갤러리|갤|게시판)$/, '').trim();
-    const hit = TD_CATS.find(c => c !== '전체' && c.toLowerCase() === t.toLowerCase());
-    return hit ?? '투디';
+function tdCatOf(p, platform = 'tdgall') {
+    const skin = TD_SKINS[platform] ?? TD_SKINS.tdgall;
+    const t = String(p?.tags?.[0] ?? '').replace(/(갤러리|갤|게시판|탭)$/, '').trim().toLowerCase();
+    const hit = skin.cats.find(c => c !== '전체' && (c.toLowerCase() === t || c.toLowerCase().replace(/\s/g, '') === t.replace(/\s/g, '')));
+    return hit ?? skin.alias[t.replace(/\s/g, '')] ?? skin.cats[1];
 }
 
 function dsSelected(feed) {
@@ -3568,7 +3628,7 @@ async function onFeedChange(e) {
         const box = t.closest('.stcm-composer');
         const post = box ? getFeed(box.dataset.feed)?.data.posts[Number(box.dataset.idx)] : null;
         const nickInput = row?.querySelector('.stcm-cp-nick');
-        if (post && nickInput) nickInput.value = rememberedNick(post, { as: sel?.value, charName: (charInput?.value ?? '').trim() }, getFeed(box.dataset.feed))?.author ?? '';
+        if (post && nickInput) nickInput.value = prefillNick(post, { as: sel?.value, charName: (charInput?.value ?? '').trim() }, getFeed(box.dataset.feed));
         return;
     }
     if (t.id === 'stcm_wi_mode') {
@@ -3729,7 +3789,7 @@ function closeMoreMenu() {
     return true;
 }
 
-const PF_COLOR = { naver: '#03c75a', dcinside: '#3b4890', tdgall: '#7a5cff', blind: '#e0352b', everytime: '#c62917', reddit: '#ff4500', twitter: '', fivech: '#b5452f', weibo: '#e6162d', discord: '#5865f2', tieba: '#3388ff' };
+const PF_COLOR = { naver: '#03c75a', dcinside: '#3b4890', tdgall: '#3d6ea8', kkangtong: '#d98a1c', blind: '#e0352b', everytime: '#c62917', reddit: '#ff4500', twitter: '', fivech: '#b5452f', weibo: '#e6162d', discord: '#5865f2', tieba: '#3388ff' };
 /** The one-line picker: "☕ 네이버 카페 › 별의 노래 게임 카페 ▾". */
 function updatePicker() {
     const b = document.getElementById('stcm_btn_pick');
@@ -4399,7 +4459,7 @@ function renderTopicChips() {
 // ---------------------------------------------------------------------------
 // Community background (per chat) and spaces the user creates (a game cafe, a school gallery…)
 // ---------------------------------------------------------------------------
-const SPACE_UNIT = { naver: '카페', dcinside: '갤러리', tdgall: '갤', reddit: '서브레딧', twitter: '커뮤니티', fivech: '板', weibo: '超话', tieba: '吧', discord: '서버', blind: '라운지', everytime: '학교' };
+const SPACE_UNIT = { naver: '카페', dcinside: '갤러리', tdgall: '갤', kkangtong: '게시판', reddit: '서브레딧', twitter: '커뮤니티', fivech: '板', weibo: '超话', tieba: '吧', discord: '서버', blind: '라운지', everytime: '학교' };
 
 function spaceUnit(platformId) { return SPACE_UNIT[platformId] ?? '게시판'; }
 function customSpaces() { return getSettings().customSpaces; }
@@ -4549,7 +4609,7 @@ function showSpaceEditor() {
 }
 
 function spacePlaceholder(pid) {
-    return { naver: '별의 노래 공식 팬카페', dcinside: '별의 노래 갤러리', reddit: 'r/StarSongGame', fivech: 'ゲーム板', discord: '별의 노래 길드 서버', blind: '게임업계 라운지', everytime: '한빛대학교', weibo: '星之歌超话', tieba: '星之歌吧', twitter: '별의 노래 유저 모임', tdgall: '별의 노래 갤' }[pid] ?? '게임 카페';
+    return { naver: '별의 노래 공식 팬카페', dcinside: '별의 노래 갤러리', reddit: 'r/StarSongGame', fivech: 'ゲーム板', discord: '별의 노래 길드 서버', blind: '게임업계 라운지', everytime: '한빛대학교', weibo: '星之歌超话', tieba: '星之歌吧', twitter: '별의 노래 유저 모임', tdgall: '별의 노래 갤', kkangtong: '별의 노래 봇 연구소' }[pid] ?? '게임 카페';
 }
 
 async function onSpaceAction(el) {
@@ -5080,7 +5140,7 @@ function showCompose() {
         ${identityControls()}
         ${appending || currentSpace(selPlatform) ? '' : `<input class="stcm-cp-board" type="text" placeholder="게시판 / 갤러리 / 서브레딧 / 해시태그 이름 (선택)">`}
         ${p.hasTitle || p.chat ? `<input class="stcm-cp-title" type="text" placeholder="${p.chat ? '채널 이름 (예: 잡담) — 새 채널이 생기고 첫 메시지가 올라가요' : (p.thread ? '스레드 제목' : '제목')}">` : ''}
-        ${selPlatform === 'tdgall' ? `<select class="stcm-cp-cat">${TD_CATS.filter(c => c !== '전체').map(c => `<option value="${esc(c)}" ${feed && tdState(feed.id).cat === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>` : ''}
+        ${TD_SKINS[selPlatform] ? `<select class="stcm-cp-cat">${tdCats(selPlatform).filter(c => c !== '전체').map(c => `<option value="${esc(c)}" ${feed && tdState(feed.id).cat === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>` : ''}
         <textarea class="stcm-cp-body" rows="7" placeholder="${p.thread ? '>>1 본문' : '본문'}"></textarea>
         <div class="stcm-cp-ai">
             <input class="stcm-cp-inst" type="text" maxlength="500" placeholder="AI에게 지시 (선택) — 비우면 고른 글 주제에 맞게">
@@ -6196,6 +6256,7 @@ function addSettingsPanel() {
             <option value="on">쓰게 하기 (조연 한두 명이 직접 등장)</option>
             <option value="off">쓰지 않게 하기 (이름 없는 일반 이용자만)</option>
           </select>
+          <label class="checkbox_label"><input id="stcm_set_nomention" type="checkbox"><span>인물 언급 금지 <small>(캐릭터·유저·주변 인물을 글과 댓글에서 아예 언급하지 않아요. 이름·생김새·별명으로 돌려 말하는 것도 금지. 작품 반응 모드에선 작품 전반·팬덤 이야기, 세계관 속 모드에선 그 세계의 일상만 올라와요. 켜면 위의 NPC 설정은 쓰지 않아요)</small></span></label>
           <label>내가 쓸 때 닉네임 칸을 비우면
             <select id="stcm_set_nickmode" class="text_pole">
               <option value="random">커뮤니티에 어울리는 랜덤 닉네임 (바로)</option>
@@ -6358,6 +6419,7 @@ function addSettingsPanel() {
     document.getElementById('stcm_set_theme')?.addEventListener('change', applyTheme);
     bind('stcm_set_mode', 'defaultMode');
     bind('stcm_set_npc', 'npcPosts');
+    bind('stcm_set_nomention', 'noMention', 'checked');
     bind('stcm_set_nickmode', 'nickMode');
     bind('stcm_set_minreason', 'minReasoning', 'checked');
     bind('stcm_set_trwhen', 'translateWhen');

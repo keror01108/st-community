@@ -705,6 +705,7 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
 .stcm-hide { display: none !important; }
 .stcm-chips .pf-discord.active { background: #5865f2; }
 .stcm-chips .pf-tdgall.active { background: #3d6ea8; }
+.stcm-chips .pf-kkangtong.active { background: #d98a1c; }
 .stcm-chips .pf-blind.active { background: #e8344e; }
 .stcm-chips .pf-everytime.active { background: #c62917; }
 
@@ -1186,3 +1187,4 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
     /* the side column itself does not cover messages, so it can stay see-through */
     .stcm-t-theme .stcm-discord .stcm-ds-side { background: transparent; }
 }
+.stcm-tdgall .stcm-td-c .h b.op { color: var(--td-accent); }
