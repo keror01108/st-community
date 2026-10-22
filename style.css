@@ -877,8 +877,19 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
 .stcm-td-meta b, .stcm-td-c b { color: var(--td-text); }
 .stcm-td-code { margin-left: 4px; padding: 0 5px; border-radius: 5px; background: var(--td-line2); color: var(--td-sub); font-size: 10px; font-family: ui-monospace, monospace; }
 .stcm-td-rec { display: flex; justify-content: center; gap: 10px; margin: 18px 0 14px; }
-.stcm-td-rec span { border: 1px solid var(--td-line); border-radius: 999px; padding: 6px 16px; font-size: 13px; color: var(--td-sub); }
-.stcm-td-rec .up { border-color: var(--td-rec); color: var(--td-rec); font-weight: 700; }
+/* 투디갤: one ★ 추천 box (no 비추) · 깡통: one ♡ pill */
+.stcm-td-rec .star {
+    display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; font-size: 14px;
+    border: 1px solid var(--td-line); border-radius: 4px; background: var(--td-card); color: var(--td-text);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+.stcm-td-rec .star i { color: #f5a524; font-size: 18px; }
+.stcm-td-rec .star b { color: #e8202a; font-weight: 800; }
+.stcm-td-rec .heart {
+    display: inline-flex; align-items: center; gap: 10px; padding: 8px 22px; font-size: 15px;
+    border: 1.5px solid var(--td-line); border-radius: 999px; color: var(--td-text);
+}
+.stcm-td-rec .heart i { font-size: 18px; }
 .stcm-td-ctitle { font-size: 13px; padding: 10px 2px 6px; color: var(--td-sub); }
 .stcm-td-ctitle b { color: var(--td-blue); }
 .stcm-td-comments { border-top: 1px solid var(--td-line); }
@@ -913,6 +924,7 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
     .stcm-td-row .vw { display: inline; }
     .stcm-td-row .vw::before { content: '조회 '; }
     .stcm-td-row .rc::before { content: '추천 '; color: var(--td-sub); font-weight: 400; }
+    .stcm-td-kkangtong .stcm-td-row .rc::before { content: '♡ '; }
     .stcm-td-detail { padding: 14px 12px; }
     .stcm-td-toolbar { padding: 8px; }
     .stcm-td-search { max-width: none; }
