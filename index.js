@@ -66,7 +66,9 @@ const defaultSettings = Object.freeze({
     topicScope: 'all',           // all: manual + auto generation | auto: auto generation only
     threadCap: 1000,             // max posts per thread on capped platforms (2ch, Reddit)
     theme: 'theme',              // light | dark | theme (follow SillyTavern theme)
-    compactUi: false,            // 간략한 화면: community/space/board in one picker, some header buttons in ⋯
+    compactUi: false,
+    secOpen: { conn: true },     // settings sections left open (key → true)
+    fullscreen: false,           // panel fills the whole window (PC; phones are always full)            // 간략한 화면: community/space/board in one picker, some header buttons in ⋯
     foldPrefs: {},               // { short?: bool, tall?: bool } — unset: folded on short screens only
 });
 
@@ -371,6 +373,7 @@ function getSettings() {
     }
     if (!s.modelOverrides || typeof s.modelOverrides !== 'object' || Array.isArray(s.modelOverrides)) s.modelOverrides = {};
     if (!s.extMemoryChoice || typeof s.extMemoryChoice !== 'object' || Array.isArray(s.extMemoryChoice)) s.extMemoryChoice = {};
+    if (!s.secOpen || typeof s.secOpen !== 'object' || Array.isArray(s.secOpen)) s.secOpen = {};
     if (!Array.isArray(s.customSpaces)) s.customSpaces = [];
     if (!cleanSpaceLists.has(s.customSpaces)) {   // once per list, not on every getSettings()
         s.customSpaces = s.customSpaces
@@ -3802,6 +3805,20 @@ function updatePicker() {
     b.innerHTML = `<i class="${p.brand ? 'fa-brands' : 'fa-solid'} ${p.icon}"${color}></i><b>${esc(p.label)}</b>${sp ? `<span class="sep">›</span><span class="sp">${esc(sp.name)}</span>` : ''}<i class="fa-solid fa-caret-down cv"></i>`;
 }
 
+/** 전체화면: the panel fills the whole window (on phones it always does). */
+function applyFullscreen() {
+    const on = !!getSettings().fullscreen;
+    document.getElementById('stcm_overlay')?.classList.toggle('stcm-full', on);
+    const b = document.getElementById('stcm_btn_full');
+    if (b) {
+        b.querySelector('i').className = `fa-solid ${on ? 'fa-compress' : 'fa-expand'}`;
+        b.title = on ? '전체화면 끄기' : '전체화면 (창 가득 채우기)';
+        b.classList.toggle('on', on);
+        b.setAttribute('aria-pressed', String(on));
+    }
+    // the visible feed got taller / shorter: Discord's pinned channel list follows (ResizeObserver does it too)
+}
+
 function applyFold() {
     const folded = isFolded();
     document.getElementById('stcm_overlay')?.classList.toggle('folded', folded);
@@ -3838,6 +3855,7 @@ function buildOverlay() {
             <button id="stcm_btn_wi" title="참고할 월드 인포"><i class="fa-solid fa-book-atlas"></i><span class="stcm-mlbl">월드 인포</span></button>
             <button id="stcm_btn_history" title="지난 피드"><i class="fa-solid fa-clock-rotate-left"></i><span class="stcm-mlbl">지난 피드</span></button>
             <button id="stcm_btn_pins" title="반영 중인 글"><i class="fa-solid fa-thumbtack"></i><span class="stcm-mlbl">반영 중인 글</span><span id="stcm_pin_count"></span></button>
+            <button id="stcm_btn_full" title="전체화면 (창 가득 채우기)"><i class="fa-solid fa-expand"></i></button>
             <button id="stcm_btn_more" title="더 보기 (지난 피드 · 반영 · 월드 인포 · 테마)" aria-haspopup="menu"><i class="fa-solid fa-ellipsis"></i><span id="stcm_more_dot"></span></button>
             <button id="stcm_btn_close" title="닫기"><i class="fa-solid fa-xmark"></i></button>
           </div>
@@ -3926,6 +3944,12 @@ function buildOverlay() {
             || e.target.closest('#stcm_spaces button, #stcm_boards button[data-board]')) setTimeout(closeSheet, 0);
     }, true);   // capture: the chip rows re-render on click, so check before they do
     document.getElementById('stcm_btn_api').addEventListener('click', showApi);
+    document.getElementById('stcm_btn_full').addEventListener('click', () => {
+        const st = getSettings();
+        st.fullscreen = !st.fullscreen;
+        saveSettings();
+        applyFullscreen();
+    });
     document.getElementById('stcm_btn_settings').addEventListener('click', showSettingsView);
     document.getElementById('stcm_btn_write').addEventListener('click', showCompose);
     document.getElementById('stcm_btn_stop').addEventListener('click', () => abortCtl?.abort());
@@ -6109,6 +6133,7 @@ function openPanel(feedId) {
     applyTheme();
     applyFold();
     applyCompact();
+    applyFullscreen();
     showOverlay();
     if (store && store.unread) {
         store.unread = 0;
@@ -6205,10 +6230,10 @@ function addSettingsPanel() {
         <div class="inline-drawer-content">
         <div class="stcm-set">
           <div class="menu_button" id="stcm_set_open"><i class="fa-solid fa-comments"></i> 커뮤니티 열기</div>
-
-          <small class="stcm-help"><i class="fa-solid fa-server"></i> 피드는 채팅 파일이 아니라 서버의 사용자 파일 폴더(<code>data/사용자/user/files/stcm-feed-*.json</code>)에 저장돼요.</small>
-          <div class="menu_button" id="stcm_set_cleanup">삭제된 채팅의 피드 파일 정리</div>
-
+          <div class="stcm-sec-tools"><span class="stcm-sec-all" data-sec-all="open">모두 펴기</span> · <span class="stcm-sec-all" data-sec-all="close">모두 접기</span></div>
+          <details class="stcm-sec" data-sec="screen">
+            <summary><i class="fa-solid fa-display"></i> 화면</summary>
+            <div class="stcm-sec-body">
           <label>화면 테마</label>
           <select id="stcm_set_theme" class="text_pole">
             <option value="theme">테마 따라가기 (실리태번 테마 색)</option>
@@ -6216,7 +6241,11 @@ function addSettingsPanel() {
             <option value="dark">나이트</option>
           </select>
           <label class="checkbox_label" for="stcm_set_compact"><input type="checkbox" id="stcm_set_compact"> <span>간략한 화면 <small>(커뮤니티·카페·판을 한 칸으로 모아 누르면 고르는 창이 열리고, 지난 피드·반영·월드 인포·테마는 ⋯ 메뉴로, 언어·배경은 작게)</small></span></label>
-
+            </div>
+          </details>
+          <details class="stcm-sec" data-sec="conn">
+            <summary><i class="fa-solid fa-plug"></i> 연결 · 언어 · 번역</summary>
+            <div class="stcm-sec-body">
           <label>생성에 쓸 연결 <small>(메인 API · 실리태번 연결 프로필 · 직접 추가한 API — 모델 지정과 API 추가는 커뮤니티 창의 🔌 API 설정에서)</small></label>
           <select id="stcm_set_profile" class="text_pole"></select>
 
@@ -6242,6 +6271,12 @@ function addSettingsPanel() {
             </label>
           </div>
 
+          <label class="checkbox_label"><input id="stcm_set_minreason" type="checkbox"><span>추론 최소화 <small>(생각하는 모델이 추론을 최소로 — 연결 프로필·직접 추가한 API는 추론 강도를 최소로 보내고, 메인 API는 지시문만 붙어요. 빨라지고 토큰이 줄지만 글 품질이 조금 떨어질 수 있어요)</small></span></label>
+            </div>
+          </details>
+          <details class="stcm-sec" data-sec="amount">
+            <summary><i class="fa-solid fa-sliders"></i> 생성 분량 <small>글·댓글 수, 토큰</small></summary>
+            <div class="stcm-sec-body">
           <div class="stcm-set-grid">
             <label>새로 생성할 글 개수 <input id="stcm_set_posts" type="number" min="1" max="10" class="text_pole"></label>
             <label>글당 댓글 수 <input id="stcm_set_comments" type="number" min="0" max="20" class="text_pole"></label>
@@ -6251,7 +6286,11 @@ function addSettingsPanel() {
             <label>2ch·레딧 스레드 최대 레스 <input id="stcm_set_cap" type="number" min="10" max="10000" step="10" class="text_pole"></label>
             <label>반영 글 삽입 깊이 <input id="stcm_set_depth" type="number" min="0" max="50" class="text_pole"></label>
           </div>
-
+            </div>
+          </details>
+          <details class="stcm-sec" data-sec="people">
+            <summary><i class="fa-solid fa-user-group"></i> 등장인물 · 닉네임</summary>
+            <div class="stcm-sec-body">
           <label>주변 인물(NPC)이 직접 글 쓰기 <small>(세계관 속 모드 — 이야기에 나오는 조연이 커뮤니티에 직접 글·댓글을 다는지)</small></label>
           <select id="stcm_set_npc" class="text_pole">
             <option value="auto">AI가 알아서</option>
@@ -6266,7 +6305,11 @@ function addSettingsPanel() {
             </select>
           </label>
           <small class="stcm-help">디시·투디갤은 ㅇㅇ, 2ch는 名無しさん, 에브리타임은 익명N처럼 익명 커뮤니티는 원래 방식대로 나와요. 한 글 안에서 같은 신분(모브/유저/같은 캐릭터)은 처음 쓴 닉네임을 계속 써요.</small>
-          <label class="checkbox_label"><input id="stcm_set_minreason" type="checkbox"><span>추론 최소화 <small>(생각하는 모델이 추론을 최소로 — 연결 프로필·직접 추가한 API는 추론 강도를 최소로 보내고, 메인 API는 지시문만 붙어요. 빨라지고 토큰이 줄지만 글 품질이 조금 떨어질 수 있어요)</small></span></label>
+            </div>
+          </details>
+          <details class="stcm-sec" data-sec="reading">
+            <summary><i class="fa-solid fa-book-open"></i> 본 채팅에서 읽는 것 <small>캐릭터 설명, 태그, 월드 인포, 장기기억</small></summary>
+            <div class="stcm-sec-body">
           <label class="checkbox_label"><input id="stcm_set_card" type="checkbox"><span>캐릭터·페르소나 설명 포함</span></label>
           <label>본 채팅에서 읽지 않을 태그 <small>(쉼표로 구분, 태그와 안의 내용을 통째로 빼요. 숨긴 메시지는 항상 빼요)</small></label>
           <textarea id="stcm_set_excludetags" class="text_pole" rows="3"></textarea>
@@ -6279,9 +6322,12 @@ function addSettingsPanel() {
             <div class="stcm-prompt-row"><small>읽을 항목 <span class="stcm-help">(기억·요약으로 보이는 건 자동으로 켜져요)</span></small><div class="menu_button" id="stcm_set_extmem_refresh"><i class="fa-solid fa-rotate"></i> 새로고침</div></div>
             <div id="stcm_set_extmem_list"></div>
           </div>
-
-          <hr>
-          <label><b>본 채팅 진행에 맞춰 자동 생성</b> <small>(AI 답변이 올 때마다 셉니다)</small></label>
+            </div>
+          </details>
+          <details class="stcm-sec" data-sec="auto">
+            <summary><i class="fa-solid fa-rotate"></i> 자동 생성</summary>
+            <div class="stcm-sec-body">
+          <small class="stcm-help">본 채팅 AI 답변이 올 때마다 셉니다.</small>
           <label class="checkbox_label"><input id="stcm_set_auto" type="checkbox"><span>새 글·새 스레 자동 생성</span></label>
           <div class="stcm-set-grid">
             <label>AI 답변 몇 번마다 <input id="stcm_set_every" type="number" min="1" max="100" class="text_pole"></label>
@@ -6311,9 +6357,12 @@ function addSettingsPanel() {
               <select id="stcm_set_pf" class="text_pole">${platformOpts}</select>
             </label>
           </div>
-
-          <hr>
-          <label>글 주제 <small>(추가·삭제·선택은 커뮤니티 창의 주제 줄 <i class="fa-solid fa-plus"></i> 버튼에서)</small></label>
+            </div>
+          </details>
+          <details class="stcm-sec" data-sec="topics">
+            <summary><i class="fa-solid fa-tags"></i> 글 주제 · 참고 · 추가 지시</summary>
+            <div class="stcm-sec-body">
+          <small class="stcm-help">글 주제의 추가·삭제·선택은 커뮤니티 창의 주제 줄 <i class="fa-solid fa-plus"></i> 버튼에서 해요.</small>
           <div class="stcm-set-grid">
             <label>주제 적용
               <select id="stcm_set_topicscope" class="text_pole">
@@ -6329,15 +6378,17 @@ function addSettingsPanel() {
             </label>
           </div>
 
-          <hr>
           <label class="checkbox_label"><input id="stcm_set_crossref" type="checkbox"><span>모든 생성에서 다른 게시글 참고 <small>(꺼 두면 글 아래 <i class="fa-solid fa-link"></i>로 그 글만 켤 수 있어요)</small></span></label>
           <label>참고할 다른 글 수 <input id="stcm_set_crossrefcount" type="number" min="1" max="20" class="text_pole"></label>
 
           <label>추가 지시 <small>(모든 생성에 붙어요. 아무 언어나 OK)</small></label>
           <textarea id="stcm_set_extra" class="text_pole" rows="3"></textarea>
-
-          <hr>
-          <label><b>프롬프트 편집</b> <small>(AI가 읽는 지시문. 영어 권장)</small></label>
+            </div>
+          </details>
+          <details class="stcm-sec" data-sec="prompt">
+            <summary><i class="fa-solid fa-pen-to-square"></i> 프롬프트 편집</summary>
+            <div class="stcm-sec-body">
+          <small class="stcm-help">AI가 읽는 지시문이에요. 영어 권장.</small>
           <select id="stcm_set_prompt_key" class="text_pole">${promptOpts}</select>
           <textarea id="stcm_set_prompt" class="text_pole stcm-prompt-box" rows="10"></textarea>
           <div class="stcm-prompt-row">
@@ -6346,6 +6397,15 @@ function addSettingsPanel() {
             <div class="menu_button" id="stcm_set_prompt_reset_all">전체 기본값으로</div>
           </div>
           <small class="stcm-help">쓸 수 있는 변수: <code>{{char}}</code> <code>{{user}}</code> <code>{{platform}}</code> (커뮤니티 영어 이름), <code>{{language}}</code> (언어 항목), <code>{{translation}}</code> (번역 항목), <code>{{count}}</code> (개수), <code>{{comments}}</code> (글당 댓글 수). 실리태번 매크로도 쓸 수 있어요. 비워 두면 기본값을 써요.</small>
+            </div>
+          </details>
+          <details class="stcm-sec" data-sec="storage">
+            <summary><i class="fa-solid fa-server"></i> 피드 저장 · 정리</summary>
+            <div class="stcm-sec-body">
+          <small class="stcm-help"><i class="fa-solid fa-server"></i> 피드는 채팅 파일이 아니라 서버의 사용자 파일 폴더(<code>data/사용자/user/files/stcm-feed-*.json</code>)에 저장돼요.</small>
+          <div class="menu_button" id="stcm_set_cleanup">삭제된 채팅의 피드 파일 정리</div>
+            </div>
+          </details>
         </div>
         </div>
       </div>
@@ -6354,6 +6414,22 @@ function addSettingsPanel() {
     host?.insertAdjacentHTML('beforeend', html);
 
     document.getElementById('stcm_set_open').addEventListener('click', () => openPanel());
+    // folding sections: remember which ones are open
+    const secs = [...document.querySelectorAll('#stcm_settings details.stcm-sec')];
+    const open = (s.secOpen && typeof s.secOpen === 'object') ? s.secOpen : {};
+    for (const d of secs) {
+        d.open = !!open[d.dataset.sec];
+        d.addEventListener('toggle', () => {
+            const cur = getSettings();
+            cur.secOpen = { ...(cur.secOpen ?? {}), [d.dataset.sec]: d.open };
+            saveSettings();
+            if (d.open && d.dataset.sec === 'reading') renderExtMemoryList();
+        });
+    }
+    document.querySelector('#stcm_settings .stcm-sec-tools')?.addEventListener('click', (e) => {
+        const all = e.target.closest('[data-sec-all]')?.dataset.secAll;
+        if (all) for (const d of secs) d.open = all === 'open';
+    });
     document.getElementById('stcm_set_cleanup').addEventListener('click', cleanupDeletedStores);
     updateCleanupLabel();
 
