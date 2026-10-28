@@ -363,7 +363,10 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
 #stcm_topic_scope { padding: 4px; font-size: 12px; }
 
 .stcm-more-posts { text-align: center; padding: 6px 0 40px; }
-.stcm-more-posts button {
+.stcm-older { text-align: center; padding: 10px 0 2px; }
+.stcm-older button { width: min(100%, 420px); font-weight: 700; }
+.stcm-older button small { font-weight: 400; opacity: 0.7; }
+.stcm-more-posts button, .stcm-older button {
     background: transparent;
     color: var(--s-text);
     border: 1px dashed var(--s-border);
@@ -376,7 +379,7 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
 /* ---------- AI write row, import panel ---------- */
 .stcm-cp-ai { display: flex; gap: 6px; }
 .stcm-cp-ai input { flex: 1 1 auto; min-width: 0; }
-.stcm-cp-ai button {
+.stcm-cp-ai button, .stcm-cp-imgbox button {
     flex: 0 0 auto;
     border: 1px solid var(--s-accent);
     background: transparent;
@@ -389,7 +392,7 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
     white-space: nowrap;
 }
 .stcm-skin .stcm-cp-ai button { border-color: var(--k-accent); color: var(--k-accent); }
-#stcm_overlay.busy [data-act^="ai-write"] { opacity: 0.4; pointer-events: none; }
+#stcm_overlay.busy [data-act^="ai-write"], #stcm_overlay.busy [data-act="ai-photo"] { opacity: 0.4; pointer-events: none; }
 .stcm-import {
     margin-bottom: 10px;
     padding: 10px 12px;
@@ -1225,3 +1228,33 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
 .stcm-sec-body { display: flex; flex-direction: column; gap: 6px; padding: 2px 10px 12px; }
 .stcm-sec-tools { text-align: right; font-size: 12px; opacity: 0.75; }
 .stcm-sec-all { cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+
+/* ---------- attached photo (as a description) ---------- */
+.stcm-img {
+    display: flex; gap: 8px; align-items: flex-start; margin: 8px 0 4px; padding: 9px 12px;
+    border: 1px dashed var(--k-line, var(--s-border)); border-radius: 8px;
+    background: var(--k-soft, rgba(127, 127, 127, 0.08)); color: var(--k-sub, var(--s-sub));
+    font-size: 13px; line-height: 1.55; overflow-wrap: anywhere;
+}
+.stcm-img > i { margin-top: 3px; opacity: 0.8; }
+.stcm-img .stcm-tr-below { display: block; }
+.stcm-cp-imgbox { display: flex; flex-direction: column; gap: 6px; }
+.stcm-cp-imgbox:not(.stcm-hide) { display: flex; }
+.stcm-cp-imgbox button { align-self: flex-end; }
+.stcm-cp-foot .stcm-cp-photo { margin-right: auto; }
+.stcm-cp-foot .stcm-cp-photo.on { background: var(--s-hover); }
+
+/* ---------- save status (header) ---------- */
+.stcm-save {
+    flex: 0 1 auto; min-width: 0; margin-right: auto; margin-left: 4px;
+    background: transparent; border: 0; padding: 2px 6px; border-radius: 6px;
+    font-size: 12px; color: var(--s-sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: default;
+}
+.stcm-save:empty { display: none; }
+.stcm-save[data-state="saved"] { color: #3aa76d; }
+.stcm-save[data-state="error"] { color: #e5534b; cursor: pointer; border: 1px solid currentColor; }
+.stcm-save[data-state="error"]:hover { background: var(--s-hover); }
+@media (max-width: 480px) {
+    .stcm-save span { display: none; }   /* phones: just the icon (a failed save: red, tap to retry) */
+    .stcm-save { flex: 0 0 auto; }
+}
