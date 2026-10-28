@@ -2163,6 +2163,7 @@ async function generateFeed({ mode, platformId, topic = '', background = false }
         const data = parseOrThrow(parseFeed, raw);
         const feed = { ...newFeedObject({ platformId, mode, topic, data }), ...pick };
         stampGenerated(feed.data.posts, feed.atMessage, false);   // the posts go by the feed's own time
+        stampBatch(feed, feed.data.posts, true);
         if (spaceById(feed.space)) feed.data.board = spaceById(feed.space).name;
         feed.topics = topicNames;
         await addFeed(feed, { remember: !background });
@@ -2201,6 +2202,7 @@ async function generateMorePosts(feedId, topic = '', { background = false } = {}
         if (!getFeed(feed.id)) return null;
         const first = feed.data.posts.length;
         stampGenerated(data.posts, msgNow());   // which chat message they were made at (branches trim by it)
+        stampBatch(feed, data.posts, true);     // a new round: the board's older posts get older
         feed.data.posts.push(...data.posts);
         feed.updatedAt = Date.now();
         lastAdded.set(feed, data.posts);
@@ -2281,6 +2283,7 @@ async function generateNextThread(feedId, postIdx, { background = false } = {}) 
         if (prev.watch) { next.watch = true; delete prev.watch; }
         if (prev.crossRef) next.crossRef = true;
         stampGenerated([next], msgNow());
+        stampBatch(feed, [next], true);
         feed.data.posts.push(next);
         prev.nextIdx = feed.data.posts.length - 1;
         await saveChatStore();
@@ -2562,6 +2565,7 @@ async function submitPlayerPostNow({ title, body, identity, react, board, catego
     }
     // from here on no waiting until everything is in this chat's list
     post.at = msgNow();
+    stampBatch(feed, [post], false);   // your post joins the newest round ("방금"); it ages with the next one
     if (isNew) addFeedNow(feed);
     setIdentity(identity);
     feed.data.posts.push(post);
@@ -2987,6 +2991,166 @@ function imgBox(o) {
     return `<div class="stcm-img"><i class="fa-regular fa-image"></i><span>[${esc(on && !both ? tr : img)}]${both ? `<span class="stcm-tr-below">[${esc(tr)}]</span>` : ''}</span></div>`;
 }
 
+// ---------------------------------------------------------------------------
+// Board time: every new round of posts on a board makes the earlier rounds older
+// (1시간 전 → 6시간 전 → 13시간 전 → past a day only the date). Boards list the most recent post on top.
+// ---------------------------------------------------------------------------
+/** Round number of every post (old saves without one: a new round starts where the chat message changes). */
+function postBatches(posts) {
+    const out = [];
+    let legacy = -1;
+    let lastAt;
+    for (const p of posts) {
+        if (Number.isInteger(p.batch) && p.batch >= 0) { out.push(p.batch); continue; }
+        if (legacy < 0 || p.at !== lastAt) legacy++;
+        lastAt = p.at;
+        out.push(legacy);
+    }
+    return out;
+}
+
+/** Give posts their round: a new round after the newest one (generated), or the newest round itself (your own post). */
+function stampBatch(feed, posts, newRound) {
+    if (PLATFORMS[feed.platform]?.chat) return;   // Discord: channels keep their own order and times
+    const fresh = new Set(posts);
+    const top = postBatches(feed.data.posts.filter(p => !fresh.has(p))).reduce((a, b) => Math.max(a, b), -1);
+    const b = newRound ? top + 1 : Math.max(0, top);
+    for (const p of posts) p.batch = b;
+    if (newRound) feed.batchAt = Date.now();
+}
+
+/** How much time passes on the board per later round: 5–7 hours, fixed per board and round. */
+function batchStep(feedId, b) {
+    let h = 7;
+    for (const ch of `${feedId}:${b}`) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+    return 300 + (h % 121);
+}
+
+const AGO_UNIT = { 초: 's', 秒: 's', 분: 'm', 分: 'm', 分钟: 'm', 分鐘: 'm', 시간: 'h', 時間: 'h', 小时: 'h', 小時: 'h', 일: 'd', 日: 'd', 天: 'd' };
+const AGO_MIN = { s: 0, m: 1, h: 60, d: 1440 };
+const enUnit = (u) => ({ s: 's', m: 'm', h: 'h', d: 'd' })[u.toLowerCase().replace(/^(sec|second)s?$/, 's').replace(/^(min|minute)s?$/, 'm').replace(/^(hr|hour)s?$/, 'h').replace(/^days?$/, 'd')];
+
+/** "3시간 전", "2h", "5 hr. ago", "3時間前", "14:32"… → minutes ago and how it was written; null when not a relative time. */
+function parseAgo(raw) {
+    const s = String(raw ?? '').trim();
+    if (!s) return null;
+    if (/^(방금(\s*전)?|지금)$/.test(s)) return { min: 0, style: 'ko' };
+    if (/^(just now|now)$/i.test(s)) return { min: 0, style: 'en' };
+    if (/^(たった今|今)$/.test(s)) return { min: 0, style: 'ja' };
+    if (/^(刚刚|剛剛|刚才|剛才)$/.test(s)) return { min: 0, style: 'zh' };
+    if (s === '어제') return { min: 1440, style: 'ko' };
+    if (/^yesterday$/i.test(s)) return { min: 1440, style: 'en' };
+    if (s === '昨日') return { min: 1440, style: 'ja' };
+    if (s === '昨天') return { min: 1440, style: 'zh' };
+    let m;
+    if ((m = /^an?\s+(minute|hour|day)\s+ago$/i.exec(s))) return { min: AGO_MIN[enUnit(m[1])], style: 'en' };
+    const mk = (n, u, style) => ({ min: Math.min(Number(n), 9999) * AGO_MIN[u], style });
+    if ((m = /^(\d{1,4})\s*(초|분|시간|일)\s*전$/.exec(s))) return mk(m[1], AGO_UNIT[m[2]], 'ko');
+    if ((m = /^(\d{1,4})\s*(秒|分|時間|日)前$/.exec(s))) return mk(m[1], AGO_UNIT[m[2]], 'ja');
+    if ((m = /^(\d{1,4})\s*(秒|分钟|分鐘|小时|小時|天)前$/.exec(s))) return mk(m[1], AGO_UNIT[m[2]], 'zh');
+    if ((m = /^(\d{1,4})\s*(sec|min|hr)\.?\s*ago$/i.exec(s)) && /\./.test(s)) return mk(m[1], enUnit(m[2]), 'reddit');
+    if ((m = /^(\d{1,4})\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?|days?)\s*ago$/i.exec(s))) return mk(m[1], enUnit(m[2]), 'en');
+    if ((m = /^(\d{1,4})\s*([smhd])$/i.exec(s))) return mk(m[1], m[2].toLowerCase(), 'short');
+    if ((m = /^(\d{1,2}):(\d{2})$/.exec(s)) && Number(m[1]) < 24 && Number(m[2]) < 60) {
+        const clock = Number(m[1]) * 60 + Number(m[2]);   // today's clock time (디시 style): later = newer
+        return { min: 1440 - clock, style: 'clock', clock };
+    }
+    return null;
+}
+
+/** A relative time written again in the same style. */
+function agoLabel(min, style) {
+    const n = min < 60 ? Math.max(1, Math.floor(min)) : Math.floor(min / 60);
+    const hr = min >= 60;
+    if (min < 1) return { ko: '방금', ja: 'たった今', zh: '刚刚', short: 'now' }[style] ?? 'just now';
+    switch (style) {
+        case 'ko': return `${n}${hr ? '시간' : '분'} 전`;
+        case 'ja': return `${n}${hr ? '時間' : '分'}前`;
+        case 'zh': return `${n}${hr ? '小时' : '分钟'}前`;
+        case 'reddit': return `${n} ${hr ? 'hr.' : 'min.'} ago`;
+        case 'short': return `${n}${hr ? 'h' : 'm'}`;
+        default: return `${n} ${hr ? 'hour' : 'minute'}${n === 1 ? '' : 's'} ago`;
+    }
+}
+
+/** Only the date (past a day), counted back from when the board's newest round came. */
+function agoDate(feed, daysBack, style) {
+    const anchor = new Date(Number(feed.batchAt) || Number(feed.updatedAt) || Number(feed.createdAt) || Date.now());
+    const d = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate() - daysBack);
+    const y = d.getFullYear() !== anchor.getFullYear() ? d.getFullYear() : null;
+    const mo = d.getMonth() + 1;
+    const dd = d.getDate();
+    const z = (x) => String(x).padStart(2, '0');
+    if (style === 'ja') return `${y ? `${y}/` : ''}${mo}/${dd}`;
+    if (style === 'zh') return `${y ? `${y}年` : ''}${mo}月${dd}日`;
+    if (style === 'en' || style === 'reddit' || style === 'short') return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', ...(y ? { year: 'numeric' } : {}) });
+    return `${y ? `${y}.` : ''}${z(mo)}.${z(dd)}`;
+}
+
+/** Each post's time on the board now: { order: indexes most recent first, time: i → text shown }. */
+function boardTimes(feed) {
+    // one drawing asks for every post's time: work it out once, and forget it as soon as the drawing is done
+    const posts = feed?.data?.posts;
+    const hit = timesCache.get(feed);
+    if (hit && hit.posts === posts && hit.len === posts?.length) return hit.val;
+    const val = computeBoardTimes(feed);
+    if (feed && typeof feed === 'object') {
+        if (!timesCache.size) queueMicrotask(() => timesCache.clear());
+        timesCache.set(feed, { posts, len: posts?.length, val });
+    }
+    return val;
+}
+const timesCache = new Map();
+
+function computeBoardTimes(feed) {
+    const posts = feed?.data?.posts ?? [];
+    const batches = postBatches(posts);
+    const parsed = posts.map(p => parseAgo(p.time));
+    // per round: its oldest and most recent written time (capped at a day)
+    const span = new Map();
+    batches.forEach((b, i) => {
+        const min = Math.min(parsed[i]?.min ?? 0, 1440);
+        const r = span.get(b) ?? { lo: Infinity, hi: 0 };
+        span.set(b, { lo: Math.min(r.lo, min), hi: Math.max(r.hi, min) });
+    });
+    const rounds = [...span.keys()].sort((a, b) => b - a);   // newest round first
+    // each older round goes back 5–7 hours, and always behind the oldest post of the round after it
+    const off = new Map();
+    let acc = 0;
+    rounds.forEach((b, k) => {
+        if (k) {
+            const newer = span.get(rounds[k - 1]);
+            acc += Math.max(batchStep(feed.id, rounds[k - 1]), newer.hi - span.get(b).lo + 10);
+        }
+        off.set(b, acc);
+    });
+    const info = posts.map((p, i) => {
+        const a = parsed[i];
+        const shift = off.get(batches[i]) ?? 0;
+        return { i, a, shift, age: (a?.min ?? 0) + shift };
+    });
+    const order = info.slice().sort((x, y) => x.age - y.age || y.i - x.i).map(x => x.i);
+    const time = (i) => {
+        const x = info[i];
+        const p = posts[i];
+        if (!x || !x.a) return String(p?.time ?? '');   // not a relative time (a full date, 2ch stamp…): as written
+        if (x.a.style === 'clock') {
+            const c = x.a.clock - x.shift;
+            if (c >= 0) return x.shift ? `${String(Math.floor(c / 60)).padStart(2, '0')}:${String(c % 60).padStart(2, '0')}` : String(p.time);
+            return agoDate(feed, Math.ceil(-c / 1440), 'ko');
+        }
+        if (x.age >= 1440) return agoDate(feed, Math.max(1, Math.floor(x.age / 1440)), x.a.style);
+        return x.shift ? agoLabel(x.age, x.a.style) : String(p.time);
+    };
+    return { order, time };
+}
+
+/** The time shown for one post on its board. */
+function postTime(feed, i) {
+    if (!feed || PLATFORMS[feed.platform]?.chat) return String(feed?.data?.posts?.[i]?.time ?? '');
+    return boardTimes(feed).time(i);
+}
+
 /** 과거 글 더보기: a board shows its newest posts; older ones wait behind a button. Watched (👁) posts always show. */
 const PAGE_SIZE = 10;
 const pageShown = new Map();   // feedId → how many unwatched posts are shown
@@ -3001,7 +3165,7 @@ function pagedOut(feed) {
     }
     const limit = pageShown.get(feed.id) ?? PAGE_SIZE;
     let shown = 0;
-    for (let i = feed.data.posts.length - 1; i >= 0; i--) {
+    for (const i of boardTimes(feed).order) {   // most recent first
         const p = feed.data.posts[i];
         if (p.watch) continue;
         if (shown < limit) shown++;
@@ -3026,19 +3190,22 @@ function applyPaging(feed, root) {
 function revealPost(feed, idx) {
     if (!pagedOut(feed).has(idx)) return false;
     let n = 0;
-    for (let i = feed.data.posts.length - 1; i >= idx; i--) if (!feed.data.posts[i].watch) n++;
+    for (const i of boardTimes(feed).order) {
+        if (!feed.data.posts[i].watch) n++;
+        if (i === idx) break;
+    }
     pageShown.set(feed.id, Math.max(n, pageShown.get(feed.id) ?? PAGE_SIZE));
     return true;
 }
 
-/** Boards list the newest post on top (the data keeps writing order, so indexes stay the same).
+/** Boards list the most recent post on top, by the time shown (the data keeps writing order, so indexes stay the same).
  *  Posts behind 과거 글 더보기 are not drawn at all until they are asked for. */
 function newestFirst(feed, fn) {
     const posts = feed.data.posts;
     if (renderOnly != null) return posts[renderOnly] ? [fn(posts[renderOnly], renderOnly)] : [];
     const hidden = pagedOut(feed);
     const out = [];
-    for (let i = posts.length - 1; i >= 0; i--) if (!hidden.has(i)) out.push(fn(posts[i], i));
+    for (const i of boardTimes(feed).order) if (!hidden.has(i)) out.push(fn(posts[i], i));
     return out;
 }
 
@@ -3258,7 +3425,7 @@ function postSummaryHtml(feed, p, i) {
         ${tag ? `<span class="tag">${esc(tag)}</span>` : ''}
         <span class="tt">${p.isMe ? '<i class="fa-solid fa-pen-nib mine"></i> ' : ''}${!titled && pf === 'twitter' ? `<b>${esc(who)}</b> ` : ''}${esc(title)}</span>
         <span class="cnt">${cnt}</span>
-        <span class="mt">${titled || pf !== 'twitter' ? `${esc(who)}${who ? ' · ' : ''}` : ''}${esc(p.time || '')}${extra}</span>
+        <span class="mt">${titled || pf !== 'twitter' ? `${esc(who)}${who ? ' · ' : ''}` : ''}${esc(postTime(feed, i))}${extra}</span>
         <i class="fa-solid fa-chevron-down chev"></i>
     </div>`;
 }
@@ -3323,9 +3490,11 @@ function tdBoard(feed) {
     const st = tdState(feed.id);
     const items = d.posts.map((p, i) => ({ p, i }));
     const base = tdBaseNo(feed.id);
+    const bt = boardTimes(feed);
+    const no = new Map(bt.order.map((i, k) => [i, bt.order.length - k]));   // post numbers go up with time
     const order = st.sort === 'best'
         ? [...items].sort((a, b) => (b.p.likes || 0) - (a.p.likes || 0))
-        : [...items].reverse();   // newest first, like a real board
+        : bt.order.map(i => items[i]);   // most recent first, like a real board
     const best = tdBestList(feed);
     const bi = Math.max(0, Math.min(st.best, best.length - 1));
     const counts = {};
@@ -3344,11 +3513,11 @@ function tdBoard(feed) {
         const open = openPosts.has(`${feed.id}:${i}`) || (composer && composer.feedId === feed.id && composer.postIdx === i);
         return `<article class="stcm-td-post ${open ? 'open' : ''} ${tdVisible(feed, p) ? '' : 'stcm-hide'}" data-post="${i}">
             <div class="stcm-td-row" data-act="td-toggle" data-feed="${fid}" data-idx="${i}">
-                <span class="no">${base + i + 1}</span>
+                <span class="no">${base + (no.get(i) ?? i + 1)}</span>
                 <span class="cat">${esc(cat)}</span>
                 <span class="tt">${p.isMe ? '<i class="fa-solid fa-pen-nib stcm-td-mine"></i>' : ''}${esc(ttl(p) || truncate(p.body, 40))}${n ? ` <em>[${n}]</em>` : ''}</span>
                 <span class="au">${esc(p.author || anon)}</span>
-                <span class="tm">${esc(p.time)}</span>
+                <span class="tm">${esc(bt.time(i))}</span>
                 <span class="vw">${num(p.views, 'ko')}</span>
                 <span class="rc">${num(p.likes)}</span>
             </div>
@@ -3356,7 +3525,7 @@ function tdBoard(feed) {
                 <div class="stcm-td-dhead">
                     <span class="stcm-td-badge">${esc(cat)}</span>
                     <h3>${esc(ttl(p))}</h3>
-                    <div class="stcm-td-meta">${who(p)}<span>${esc(p.time)}</span><span>조회 ${num(p.views, 'ko')}</span><span>${skinCfg.heart ? '♡' : '추천'} ${num(p.likes)}</span><span>댓글 ${n}</span></div>
+                    <div class="stcm-td-meta">${who(p)}<span>${esc(bt.time(i))}</span><span>조회 ${num(p.views, 'ko')}</span><span>${skinCfg.heart ? '♡' : '추천'} ${num(p.likes)}</span><span>댓글 ${n}</span></div>
                 </div>
                 <div class="stcm-body">${txt(p, feed.platform)}</div>${imgBox(p)}
                 <div class="stcm-td-rec">${skinCfg.heart
@@ -3420,7 +3589,7 @@ const renderers = {
             <article class="stcm-n-post" data-post="${i}">
                 <div class="stcm-n-board">${esc(p.tags?.[0] || '자유게시판')}</div>
                 <h3>${esc(ttl(p))}</h3>
-                <div class="stcm-n-meta">${avatar(p.author)}<b>${esc(p.author)}</b>${meBadge(p)}<span>${esc(p.time)}</span><span>조회 ${num(p.views, 'ko')}</span></div>
+                <div class="stcm-n-meta">${avatar(p.author)}<b>${esc(p.author)}</b>${meBadge(p)}<span>${esc(postTime(feed, i))}</span><span>조회 ${num(p.views, 'ko')}</span></div>
                 <div class="stcm-body">${txt(p, 'naver')}</div>${imgBox(p)}
                 <div class="stcm-n-foot"><span><i class="fa-regular fa-heart"></i> 좋아요 ${num(p.likes, 'ko')}</span><span><i class="fa-regular fa-comment"></i> 댓글 ${p.comments.reduce((a, c) => a + 1 + c.replies.length, 0)}</span></div>
                 <div class="stcm-n-comments">
@@ -3443,7 +3612,7 @@ const renderers = {
             ${newestFirst(feed, (p, i) => `
             <article class="stcm-dc-post" data-post="${i}">
                 <h3>${esc(ttl(p))} <span class="stcm-dc-cnt">[${p.comments.reduce((a, c) => a + 1 + c.replies.length, 0)}]</span></h3>
-                <div class="stcm-dc-meta"><span>${who(p)}</span><span>${esc(p.time)}</span><span>조회 ${num(p.views)}</span><span>추천 ${num(p.likes)}</span></div>
+                <div class="stcm-dc-meta"><span>${who(p)}</span><span>${esc(postTime(feed, i))}</span><span>조회 ${num(p.views)}</span><span>추천 ${num(p.likes)}</span></div>
                 <div class="stcm-body">${txt(p, 'dcinside')}</div>${imgBox(p)}
                 <div class="stcm-dc-rec"><span class="up">개추 ${num(p.likes)}</span><span class="down">비추 ${Math.floor((Number(p.likes) || 0) / 7)}</span></div>
                 <div class="stcm-dc-comments">
@@ -3473,7 +3642,7 @@ const renderers = {
             <div class="stcm-r-top"><i class="fa-brands fa-reddit-alien"></i> ${esc(sub)}</div>
             ${newestFirst(feed, (p, i) => `
             <article class="stcm-r-post" data-post="${i}">
-                <div class="stcm-r-meta"><b>${esc(sub)}</b> · Posted by ${esc(uname(p))}${meBadge(p)} · ${esc(p.time)}</div>
+                <div class="stcm-r-meta"><b>${esc(sub)}</b> · Posted by ${esc(uname(p))}${meBadge(p)} · ${esc(postTime(feed, i))}</div>
                 <h3>${esc(ttl(p))}${p.tags?.[0] ? ` <span class="stcm-flair">${esc(p.tags[0])}</span>` : ''}</h3>
                 <div class="stcm-body">${txt(p, 'reddit')}</div>${imgBox(p)}
                 <div class="stcm-r-act"><span class="vote"><i class="fa-solid fa-arrow-up"></i> ${num(p.likes)} <i class="fa-solid fa-arrow-down"></i></span><span><i class="fa-regular fa-comment"></i> ${p.comments.reduce((a, c) => a + 1 + c.replies.length, 0)} Comments</span></div>
@@ -3486,11 +3655,11 @@ const renderers = {
     twitter(feed) {
         const d = feed.data;
         const handle = (o) => `@${esc(String(o.handle || o.author || 'user').replace(/^@/, ''))}`;
-        const tweet = (o, isReply, links = '', replyCount = 0, key = '') => `
+        const tweet = (o, isReply, links = '', replyCount = 0, key = '', tm = o.time) => `
             <div class="stcm-t-tweet ${isReply ? 'reply' : ''}" data-k="${key}">
                 ${avatar(o.author)}
                 <div class="stcm-t-main">
-                    <div class="stcm-t-head"><b>${esc(o.author)}</b>${meBadge(o)}<span>${handle(o)} · ${esc(o.time)}</span></div>
+                    <div class="stcm-t-head"><b>${esc(o.author)}</b>${meBadge(o)}<span>${handle(o)} · ${esc(tm)}</span></div>
                     <div class="stcm-body">${txt(o, 'twitter')}</div>${imgBox(o)}
                     <div class="stcm-t-act">
                         <span><i class="fa-regular fa-comment"></i> ${num(replyCount)}</span>
@@ -3505,7 +3674,7 @@ const renderers = {
             <div class="stcm-t-top"><i class="fa-brands fa-x-twitter"></i> ${esc(d.board || 'Trending')}</div>
             ${newestFirst(feed, (p, i) => `
             <article class="stcm-t-thread" data-post="${i}">
-                ${tweet(p, false, '', p.comments.length, `${i}.op`)}
+                ${tweet(p, false, '', p.comments.length, `${i}.op`, postTime(feed, i))}
                 ${p.comments.map((c, ci) => tweet(c, true, itemLinks(feed, i, ci, null, c), c.replies.length, `${i}.${ci}`) + c.replies.map((r, ri) => tweet(r, true, itemLinks(feed, i, ci, ri, r), 0, `${i}.${ci}.${ri}`)).join('') + (slotAt(feed, i, `c${ci}`) ? `<div class="stcm-t-foot">${slotAt(feed, i, `c${ci}`)}</div>` : '')).join('')}
                 <div class="stcm-t-foot">${postFooter(feed, i)}</div>
             </article>`).join('')}
@@ -3515,9 +3684,9 @@ const renderers = {
     fivech(feed) {
         const d = feed.data;
         const w = uiWords('fivech', feed.lang) ?? UI_WORDS.ja;
-        const res = (o, n, links, key) => `
+        const res = (o, n, links, key, tm = o.time) => `
             <div class="stcm-5-res" data-k="${key}">
-                <div class="stcm-5-head"><span class="n">${n}</span> ${esc(w.name)}<span class="name">${esc(o.author || w.anon.fivech)}</span>${meBadge(o)} <span class="date">${esc(o.time)}</span> <span class="id">ID:${esc(o.handle || '????????')}</span></div>
+                <div class="stcm-5-head"><span class="n">${n}</span> ${esc(w.name)}<span class="name">${esc(o.author || w.anon.fivech)}</span>${meBadge(o)} <span class="date">${esc(tm)}</span> <span class="id">ID:${esc(o.handle || '????????')}</span></div>
                 <div class="stcm-body">${txt(o, 'fivech')}</div>${imgBox(o)}
                 ${links}
             </div>`;
@@ -3525,7 +3694,7 @@ const renderers = {
             <div class="stcm-5-top">${esc(d.board || '板')}</div>
             ${newestFirst(feed, (p, i) => {
                 let n = 1;
-                const all = [res(p, n, itemLinks(feed, i, null, null, p, 1), `${i}.op`) + slotAt(feed, i, 'op')];
+                const all = [res(p, n, itemLinks(feed, i, null, null, p, 1), `${i}.op`, postTime(feed, i)) + slotAt(feed, i, 'op')];
                 p.comments.forEach((c, ci) => {
                     all.push(res(c, ++n, itemLinks(feed, i, ci, null, c, n), `${i}.${ci}`) + slotAt(feed, i, `c${ci}`));
                     c.replies.forEach((r, ri) => {
@@ -3547,7 +3716,7 @@ const renderers = {
             <div class="stcm-w-top"><i class="fa-brands fa-weibo"></i> ${esc(d.board || '微博')}</div>
             ${newestFirst(feed, (p, i) => `
             <article class="stcm-w-post" data-post="${i}">
-                <div class="stcm-w-head">${avatar(p.author)}<div><b>${esc(p.author)}</b>${meBadge(p)}<small>${esc(p.time)} ${esc(uiWords('weibo', feed.lang)?.via ?? '来自 微博客户端')}</small></div></div>
+                <div class="stcm-w-head">${avatar(p.author)}<div><b>${esc(p.author)}</b>${meBadge(p)}<small>${esc(postTime(feed, i))} ${esc(uiWords('weibo', feed.lang)?.via ?? '来自 微博客户端')}</small></div></div>
                 ${p.title ? `<h3>${esc(ttl(p))}</h3>` : ''}
                 <div class="stcm-body">${txt(p, 'weibo')}</div>${imgBox(p)}
                 <div class="stcm-w-act"><span><i class="fa-solid fa-share"></i> ${num(p.shares, 'zh')}</span><span><i class="fa-regular fa-comment"></i> ${num(p.comments.length, 'zh')}</span><span><i class="fa-regular fa-thumbs-up"></i> ${num(p.likes, 'zh')}</span></div>
@@ -3620,7 +3789,7 @@ const renderers = {
                 return `<article class="stcm-bl-post" data-post="${i}">
                 <div class="stcm-bl-ch">${esc(p.tags?.[0] || '블라블라')}</div>
                 <h3>${esc(ttl(p))}</h3>
-                <div class="stcm-bl-meta">${who(p)}<span class="tm">${esc(p.time)}</span></div>
+                <div class="stcm-bl-meta">${who(p)}<span class="tm">${esc(postTime(feed, i))}</span></div>
                 <div class="stcm-body">${txt(p, 'blind')}</div>${imgBox(p)}
                 <div class="stcm-bl-foot"><span><i class="fa-regular fa-eye"></i> ${num(p.views, 'ko')}</span><span><i class="fa-regular fa-thumbs-up"></i> ${num(p.likes, 'ko')}</span><span><i class="fa-regular fa-comment"></i> ${n}</span></div>
                 <div class="stcm-bl-comments">
@@ -3646,7 +3815,7 @@ const renderers = {
                 const hot = (Number(p.likes) || 0) >= 10;
                 return `<article class="stcm-et-post" data-post="${i}">
                 <div class="stcm-et-board">${esc(p.tags?.[0] || '자유게시판')}${hot ? ' <span class="hot">HOT</span>' : ''}</div>
-                <div class="stcm-et-head"><span class="stcm-et-pic"><i class="fa-solid fa-user"></i></span><div><b>${esc(p.author || '익명')}</b>${meBadge(p)}<small>${esc(p.time)}</small></div></div>
+                <div class="stcm-et-head"><span class="stcm-et-pic"><i class="fa-solid fa-user"></i></span><div><b>${esc(p.author || '익명')}</b>${meBadge(p)}<small>${esc(postTime(feed, i))}</small></div></div>
                 <h3>${esc(ttl(p))}</h3>
                 <div class="stcm-body">${txt(p, 'everytime')}</div>${imgBox(p)}
                 <div class="stcm-et-foot"><span class="like"><i class="fa-regular fa-thumbs-up"></i> ${num(p.likes, 'ko')}</span><span class="cmt"><i class="fa-regular fa-comment"></i> ${n}</span><span class="scrap"><i class="fa-regular fa-star"></i> ${num(p.shares, 'ko')}</span></div>
@@ -3676,7 +3845,7 @@ const renderers = {
                 <div class="stcm-tb-floor op">
                     <div class="stcm-tb-user">${avatar(p.author)}<b>${esc(p.author)}</b><span class="lz">${esc(w.lz)}</span>${meBadge(p)}</div>
                     <div class="stcm-body">${txt(p, 'tieba')}</div>${imgBox(p)}
-                    <small>${w.floor(floor)} · ${esc(p.time)}</small>
+                    <small>${w.floor(floor)} · ${esc(postTime(feed, i))}</small>
                 </div>
                 ${p.comments.map((c, ci) => `
                 <div class="stcm-tb-floor" data-k="${i}.${ci}">
@@ -5909,6 +6078,7 @@ function importFeed(f, chatLen, cut = { n: 0 }) {
             replies: take(c?.replies, IMPORT_MAX.replies).map(r => importItem(r, chatLen)),
         }));
         if (p?.part != null) post.part = intOr(p.part, 1);
+        if (Number.isInteger(p?.batch) && p.batch >= 0) post.batch = Math.min(p.batch, 1e9);
         if (p?.watch === true) post.watch = true;
         if (p?.kind === 'dm' && p.dm && typeof p.dm === 'object') {
             const side = (x) => ({
@@ -5936,6 +6106,7 @@ function importFeed(f, chatLen, cut = { n: 0 }) {
         ...(typeof f.boardKey === 'string' ? { boardKey: f.boardKey.slice(0, 600) } : {}),
         ...(typeof f.space === 'string' ? { space: f.space.replace(/[^a-zA-Z0-9-]/g, '').slice(0, 64) } : {}),
         createdAt: intOr(f.createdAt, Date.now()),
+        ...(Number.isFinite(Number(f.batchAt)) && Number(f.batchAt) > 0 ? { batchAt: Math.floor(Number(f.batchAt)) } : {}),
         // keep it inside this chat so branches made later still carry it
         atMessage: Math.min(intOr(f.atMessage), Math.max(0, chatLen - 1)),
         data: { board: String(f.data.board ?? '').slice(0, 200), posts },
