@@ -364,6 +364,11 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
 
 .stcm-more-posts { text-align: center; padding: 6px 0 40px; }
 .stcm-older { text-align: center; padding: 10px 0 2px; }
+.stcm-unposted { margin: 0 0 8px; padding: 6px 10px; border: 1px dashed var(--s-sub); border-radius: 8px; font-size: 12px; }
+.stcm-unposted .row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; padding: 2px 0; }
+.stcm-unposted .row .tx { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
+.stcm-unposted .row small { color: var(--s-sub); }
+.stcm-unposted-hint { color: inherit; font-weight: 600; }
 .stcm-older button { width: min(100%, 420px); font-weight: 700; }
 .stcm-older button small { font-weight: 400; opacity: 0.7; }
 .stcm-more-posts button, .stcm-older button {

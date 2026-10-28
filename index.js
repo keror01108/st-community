@@ -2539,7 +2539,7 @@ async function submitPlayerPost(args) {
     try { await submitPlayerPostNow(args); } finally { submitting = false; }
 }
 
-async function submitPlayerPostNow({ title, body, identity, react, board, category, image = '' }) {
+async function submitPlayerPostNow({ title, body, identity, react, board, category, image = '', draftId = '' }) {
     if (!body.trim()) { toastr.warning('내용을 입력해 주세요.'); return; }
     if (!(await ensureFeedsReady())) return;
     if (!checkIdentity(identity)) return;
@@ -2560,7 +2560,7 @@ async function submitPlayerPostNow({ title, body, identity, react, board, catego
     // still the same chat, the same loaded copy, the same board? Otherwise nothing is written anywhere:
     // the text is kept for the write form
     if (!stillTarget(start, isNew ? [] : [feed])) {
-        keepPostDraft({ title, body, image, chatId: start.chatId });
+        keepPostDraft(start.chatId, { id: draftId, title, body, image, identity, react, board, category, platform: feed.platform, mode: feed.mode, feedId: isNew ? '' : feed.id, space: feedSpace(feed), boardKey: feedBoardKey(feed) });
         return;
     }
     // from here on no waiting until everything is in this chat's list
@@ -2569,13 +2569,15 @@ async function submitPlayerPostNow({ title, body, identity, react, board, catego
     if (isNew) addFeedNow(feed);
     setIdentity(identity);
     feed.data.posts.push(post);
+    dropUnposted(start.chatId, draftId);   // a kept post that is now posted
     const postIdx = feed.data.posts.length - 1;
     if (pf.chat) dsSel.set(feed.id, postIdx);
     openPosts.add(`${feed.id}:${postIdx}`);   // your own new post opens right away
     await saveChatStore();   // the file write is scheduled before this waits
-    if (!stillTarget(start, [feed])) return;   // saved for its chat; no drawing / reactions in another one
-    showFeed(feed.id, { scrollToPost: postIdx });
-    if (react) await generateMoreComments(feed.id, postIdx, { playerJustPosted: true });
+    if (!stillTarget(start, [feed], post)) return;   // saved for its chat; no drawing / reactions in another one
+    const at = feed.data.posts.indexOf(post);   // a post above may have been deleted during the wait
+    showFeed(feed.id, { scrollToPost: at });
+    if (react) await generateMoreComments(feed.id, at, { playerJustPosted: true });
 }
 
 /** Boards that number anonymous commenters per post (익명1, 익명2… / 깡1, 깡2…). op: what the post's own writer shows as. */
@@ -2629,11 +2631,154 @@ function stillTarget(start, feeds = [], post = null) {
     return !post || feeds.some(f => f.data.posts.includes(post));
 }
 
-/** A post that couldn't be placed: kept for the write form of that chat. */
-let postDraft = null;   // { title, body, image, chatId }
-function keepPostDraft(d) {
-    postDraft = d;
-    toastr.warning('그 사이 채팅이나 피드가 바뀌어서 글을 올리지 않았어요. 쓴 내용은 그 채팅의 글쓰기 창에 다시 채워 둘게요.', '커뮤니티', { timeOut: 8000 });
+/** Posts / comments that couldn't be placed (the chat or feed changed while they were being sent), kept per chat
+ *  until this page is closed: chatId → { posts: [...], comments: [...] }. A record stays until it is posted or
+ *  thrown away (filling a form with it doesn't remove it); nothing is written over another one. */
+const unposted = new Map();
+function unpostedOf(chatId) {
+    if (!unposted.has(chatId)) unposted.set(chatId, { posts: [], comments: [] });
+    return unposted.get(chatId);
+}
+function findUnposted(chatId, id) {
+    const u = unposted.get(chatId);
+    return u?.posts.find(d => d.id === id) ?? u?.comments.find(d => d.id === id) ?? null;
+}
+/** A kept record by its id, in whichever chat it belongs to. */
+function findUnpostedAny(id) {
+    for (const chatId of unposted.keys()) {
+        const d = findUnposted(chatId, id);
+        if (d) return d;
+    }
+    return null;
+}
+
+/** Edits made in a form that was filled from a kept record go into that record (so a later visit shows them). */
+function syncComposeDraft(view) {
+    const d = view?.dataset?.draft ? findUnpostedAny(view.dataset.draft) : null;
+    if (!d) return;
+    const img = view.querySelector('.stcm-cp-imgbox:not(.stcm-hide) .stcm-cp-img');
+    Object.assign(d, {
+        title: view.querySelector('.stcm-cp-title')?.value ?? d.title,
+        body: view.querySelector('.stcm-cp-body')?.value ?? d.body,
+        image: img ? img.value : '',
+        board: view.querySelector('.stcm-cp-board')?.value ?? d.board,
+        category: view.querySelector('.stcm-cp-cat')?.value ?? d.category,
+        react: view.querySelector('.stcm-cp-react')?.checked ?? d.react,
+        identity: readIdentity(view),
+    });
+}
+function syncCommentDraft() {
+    const d = composer?.draft?.unpostedId ? findUnpostedAny(composer.draft.unpostedId) : null;
+    if (!d) return;
+    d.body = composer.draft.body ?? d.body;
+    if (composer.draft.react != null) d.react = composer.draft.react;
+    if (composer.draft.as) d.identity = { as: composer.draft.as, nick: composer.draft.nick ?? '', charName: composer.draft.charName ?? '' };
+    // the comment it answers (or none) as it is now
+    const post = getFeed(composer.feedId)?.data.posts[composer.postIdx];
+    if (post) {
+        const c = composer.replyTo != null ? post.comments[composer.replyTo] : null;
+        d.reply = c ? { author: c.author, body: c.body, handle: c.handle ?? '', time: c.time ?? '' } : null;
+    }
+}
+
+function dropUnposted(chatId, id) {
+    const u = unposted.get(chatId);
+    if (!u || !id) return;
+    u.posts = u.posts.filter(d => d.id !== id);
+    u.comments = u.comments.filter(d => d.id !== id);
+    if (!u.posts.length && !u.comments.length) unposted.delete(chatId);
+}
+function keepUnposted(list, d) {
+    const rec = { ...d, id: d.id || `u${Date.now().toString(36)}${randomId(4)}`, shown: false };
+    const k = list.findIndex(x => x.id === rec.id);
+    if (k >= 0) list[k] = rec; else list.push(rec);
+    return rec;
+}
+
+/** Copy the whole text (a fallback when there is nowhere to put it back). */
+function copyText(text) {
+    navigator.clipboard?.writeText(text).then(() => toastr.success('복사했어요.', '', { timeOut: 1500 }), () => toastr.error('복사하지 못했어요.'));
+}
+
+/** Where a post draft was going: "네이버 카페 · 세계관 속 · 별빛 카페 · 공포판". */
+function draftWhere(d) {
+    const sp = d.space ? spaceById(d.space)?.name : '';
+    return [PLATFORMS[d.platform]?.label ?? d.platform, MODES[d.mode]?.label ?? d.mode, sp, d.boardKey ? boardName(d.boardKey, d.platform) : ''].filter(Boolean).join(' · ');
+}
+
+function keepPostDraft(chatId, d) {
+    const rec = keepUnposted(unpostedOf(chatId).posts, d);
+    toastr.warning(`그 사이 채팅이나 피드가 바뀌어서 글을 올리지 않았어요. 그 채팅에서 원래 올리던 곳(${esc(draftWhere(rec))})의 글쓰기 창을 열면 쓴 내용이 그대로 다시 채워져요. (눌러서 전체 복사)`, '커뮤니티', { timeOut: 10000, onclick: () => copyText([rec.title, rec.body].filter(Boolean).join('\n\n')) });
+}
+
+function keepCommentDraft(chatId, d) {
+    keepUnposted(unpostedOf(chatId).comments, d);
+    toastr.warning(`그 사이 채팅이나 피드가 바뀌어서 댓글을 올리지 않았어요. 그 채팅에서 원래 글이 있는 피드를 열면 댓글 창에 그대로 다시 채워져요. (눌러서 전체 복사)<br><small>${esc(truncate(d.body, 120))}</small>`, '커뮤니티', { timeOut: 15000, escapeHtml: false, onclick: () => copyText(d.body) });
+}
+
+/** The same item as before: the only one that matches. -1: not there; -2: several look the same (don't guess —
+ *  an old index proves nothing once something above it was deleted). */
+function pickLike(list, same) {
+    let found = -1;
+    for (let i = 0; i < list.length; i++) {
+        if (!same(list[i])) continue;
+        if (found >= 0) return -2;
+        found = i;
+    }
+    return found;
+}
+
+/** The post a comment was written on (the loaded copy may be a new one): its index now, -1 gone, -2 unclear. */
+function findPostLike(feed, key) {
+    return pickLike(feed.data.posts, p => !!p && (p.title ?? '') === key.title && p.body === key.body && (p.author ?? '') === key.author && (p.time ?? '') === (key.time ?? p.time ?? ''));
+}
+
+/** Put a kept comment back into its comment box. Returns the post index, or null when its post can't be told. */
+function openCommentDraft(feed, d) {
+    const idx = findPostLike(feed, d.post);
+    if (idx < 0) return null;
+    const post = feed.data.posts[idx];
+    const ri = d.reply ? pickLike(post.comments, c => !!c && c.author === d.reply.author && c.body === d.reply.body && (c.handle ?? '') === (d.reply.handle ?? c.handle ?? '') && (c.time ?? '') === (d.reply.time ?? c.time ?? '')) : -1;
+    const chatLike = PLATFORMS[feed.platform]?.chat;
+    d.shown = true;
+    composer = { feedId: feed.id, postIdx: idx, replyTo: ri >= 0 ? ri : null, place: ri >= 0 && !chatLike ? `c${ri}` : 'end', draft: { body: d.body, react: d.react, ...d.identity, unpostedId: d.id } };
+    openPosts.add(`${feed.id}:${idx}`);
+    const why = !d.reply || ri >= 0 ? ''
+        : ri === -2 ? ' (같은 내용의 댓글이 여러 개라 어느 댓글에 답글을 달던 건지 알 수 없어서, 일반 댓글로 들어가요. 답글로 달려면 그 댓글의 "답글"을 눌러 주세요)'
+        : ' (답글 달던 댓글이 없어져서 일반 댓글로 들어가요)';
+    toastr.info(`올리지 못했던 댓글을 다시 채워 뒀어요.${why}`, '', { timeOut: why ? 7000 : 3500 });
+    return idx;
+}
+
+/** Opening a feed: a kept comment goes back into its box once per visit to the chat (not again after closing it). */
+function restoreCommentDraft(feed) {
+    const u = unposted.get(feedState.chatId);
+    if (!u?.comments.length || !feed || composer) return null;
+    for (const d of u.comments) {
+        if (d.shown || d.feedId !== feed.id) continue;
+        const idx = openCommentDraft(feed, d);
+        d.shown = true;   // its post gone / unclear: it stays in the list above the posts instead
+        if (idx != null) return idx;
+    }
+    return null;
+}
+
+/** Kept comments of this feed (or of a feed that is gone) that aren't in a comment box: listed above the posts. */
+function unpostedNotice(feed) {
+    const u = unposted.get(feedState.chatId);
+    // (a comment box whose feed is gone doesn't count as holding it)
+    const inBox = composer && getFeed(composer.feedId) ? composer.draft?.unpostedId : null;
+    const list = (u?.comments ?? []).filter(d => (d.feedId === feed?.id || !getFeed(d.feedId)) && inBox !== d.id);
+    if (!list.length) return '';
+    return `<div class="stcm-unposted">${list.map(d => {
+        const here = feed && d.feedId === feed.id ? findPostLike(feed, d.post) : -1;
+        const where = here >= 0 ? '' : here === -2 ? ' <small>(같은 글이 여러 개라 원래 글을 알 수 없어요)</small>' : !getFeed(d.feedId) ? ' <small>(원래 피드가 없어졌어요)</small>' : ' <small>(원래 글이 없어졌어요)</small>';
+        const id = esc(d.id);
+        return `<div class="row"><i class="fa-regular fa-comment-dots"></i><span class="tx"><b>올리지 못한 댓글</b>${where} ${esc(truncate(d.body, 80))}</span>
+            ${here >= 0 ? `<a class="stcm-link" data-act="unposted-open" data-draft="${id}">다시 쓰기</a>` : ''}
+            <a class="stcm-link" data-act="unposted-copy" data-draft="${id}">복사</a>
+            <a class="stcm-link" data-act="unposted-drop" data-draft="${id}">버리기</a></div>`;
+    }).join('')}</div>`;
 }
 
 let submitting = false;   // one player post / comment at a time (an AI nickname can take a moment)
@@ -2644,7 +2789,7 @@ async function submitPlayerComment(args) {
     try { await submitPlayerCommentNow(args); } finally { submitting = false; }
 }
 
-async function submitPlayerCommentNow({ feedId, postIdx, replyTo, body, identity, react }) {
+async function submitPlayerCommentNow({ feedId, postIdx, replyTo, body, identity, react, draftId = '' }) {
     const feed = getFeed(feedId);
     const post = feed?.data.posts[postIdx];
     if (!post) return;
@@ -2661,7 +2806,13 @@ async function submitPlayerCommentNow({ feedId, postIdx, replyTo, body, identity
     else await resolveNick({ feed, post, identity, text: body, item });   // may wait for an AI nickname
 
     if (!stillTarget(start, [feed], post)) {
-        toastr.warning(`그 사이 채팅이나 피드가 바뀌어서 댓글을 올리지 않았어요. 쓴 댓글: ${esc(truncate(body.trim(), 200))}`, '커뮤니티', { timeOut: 15000 });
+        keepCommentDraft(start.chatId, {
+            id: draftId,
+            feedId: feed.id,
+            post: { title: post.title ?? '', body: post.body, author: post.author ?? '', time: post.time ?? '' },
+            reply: replyTarget ? { author: replyTarget.author, body: replyTarget.body, handle: replyTarget.handle ?? '', time: replyTarget.time ?? '' } : null,
+            body: body.trim(), identity: { as: identity.as, nick: identity.nick ?? '', charName: identity.charName ?? '' }, react,
+        });
         return;
     }
     // no waiting from here until the comment is in the list
@@ -2676,9 +2827,10 @@ async function submitPlayerCommentNow({ feedId, postIdx, replyTo, body, identity
         post.comments.push(c);
     }
     composer = null;
-    postIdx = feed.data.posts.indexOf(post);
+    dropUnposted(start.chatId, draftId);   // a kept comment that is now posted
     await saveChatStore();   // the file write is scheduled before this waits
     if (!stillTarget(start, [feed], post)) return;   // saved for its chat; no drawing / reactions in another one
+    postIdx = feed.data.posts.indexOf(post);   // a post above may have been deleted during the wait
     updatePost(feed.id, postIdx);
     if (isPinned(feed.id, postIdx)) refreshInjection();
     if (react) await generateMoreComments(feed.id, postIdx, { playerJustPosted: true });
@@ -3105,44 +3257,77 @@ const timesCache = new Map();
 function computeBoardTimes(feed) {
     const posts = feed?.data?.posts ?? [];
     const batches = postBatches(posts);
-    const parsed = posts.map(p => parseAgo(p.time));
-    // per round: its oldest and most recent written time (capped at a day)
+    const anchor = Number(feed?.batchAt) || Number(feed?.updatedAt) || Number(feed?.createdAt) || Date.now();
+    const parsed = posts.map(p => parseAgo(p.time) ?? parseDate(p.time, anchor));
+    // per round: its oldest and most recent relative time (those move back as rounds pass; written dates don't)
     const span = new Map();
     batches.forEach((b, i) => {
-        const min = Math.min(parsed[i]?.min ?? 0, 1440);
         const r = span.get(b) ?? { lo: Infinity, hi: 0 };
-        span.set(b, { lo: Math.min(r.lo, min), hi: Math.max(r.hi, min) });
+        const a = parsed[i];
+        if (a && a.style !== 'date') { r.lo = Math.min(r.lo, a.min); r.hi = Math.max(r.hi, a.min); }
+        span.set(b, r);
     });
     const rounds = [...span.keys()].sort((a, b) => b - a);   // newest round first
     // each older round goes back 5–7 hours, and always behind the oldest post of the round after it
     const off = new Map();
     let acc = 0;
+    let newerHi = 0;   // the oldest relative time so far, shifts included
     rounds.forEach((b, k) => {
-        if (k) {
-            const newer = span.get(rounds[k - 1]);
-            acc += Math.max(batchStep(feed.id, rounds[k - 1]), newer.hi - span.get(b).lo + 10);
+        const r = span.get(b);
+        if (k) acc += batchStep(feed.id, rounds[k - 1]);
+        if (r.lo !== Infinity) {
+            if (k) acc = Math.max(acc, newerHi - r.lo + 10);
+            newerHi = r.hi + acc;
         }
         off.set(b, acc);
     });
-    const info = posts.map((p, i) => {
+    // a time that can't be read keeps its place in the round: as recent as the post written before it
+    const age = new Array(posts.length);
+    const lastIn = new Map();
+    posts.forEach((p, i) => {
         const a = parsed[i];
-        const shift = off.get(batches[i]) ?? 0;
-        return { i, a, shift, age: (a?.min ?? 0) + shift };
+        const b = batches[i];
+        if (a) age[i] = a.style === 'date' ? a.min : a.min + off.get(b);
+        else age[i] = lastIn.has(b) ? lastIn.get(b) : (span.get(b).lo !== Infinity ? span.get(b).hi + off.get(b) : off.get(b));
+        lastIn.set(b, age[i]);
     });
-    const order = info.slice().sort((x, y) => x.age - y.age || y.i - x.i).map(x => x.i);
+    // newer round first; inside a round, the more recent time first (then the later-written one)
+    const order = posts.map((p, i) => i).sort((x, y) => batches[y] - batches[x] || age[x] - age[y] || y - x);
     const time = (i) => {
-        const x = info[i];
+        const a = parsed[i];
         const p = posts[i];
-        if (!x || !x.a) return String(p?.time ?? '');   // not a relative time (a full date, 2ch stamp…): as written
-        if (x.a.style === 'clock') {
-            const c = x.a.clock - x.shift;
-            if (c >= 0) return x.shift ? `${String(Math.floor(c / 60)).padStart(2, '0')}:${String(c % 60).padStart(2, '0')}` : String(p.time);
+        const shift = off.get(batches[i]) ?? 0;
+        if (!a || a.style === 'date') return String(p?.time ?? '');   // a written date, a 2ch stamp, unreadable: as written
+        if (a.style === 'clock') {
+            const c = a.clock - shift;
+            if (c >= 0) return shift ? `${String(Math.floor(c / 60)).padStart(2, '0')}:${String(c % 60).padStart(2, '0')}` : String(p.time);
             return agoDate(feed, Math.ceil(-c / 1440), 'ko');
         }
-        if (x.age >= 1440) return agoDate(feed, Math.max(1, Math.floor(x.age / 1440)), x.a.style);
-        return x.shift ? agoLabel(x.age, x.a.style) : String(p.time);
+        const total = a.min + shift;
+        if (total >= 1440) return agoDate(feed, Math.max(1, Math.floor(total / 1440)), a.style);
+        return shift ? agoLabel(total, a.style) : String(p.time);
     };
     return { order, time };
+}
+
+/** A written date ("2020-01-01", "2026/10/26(月) 12:34:56", "10.26", "10월 26일", "10月26日") → minutes before anchor. */
+function parseDate(raw, anchor) {
+    const s = String(raw ?? '').trim();
+    const now = new Date(anchor);
+    let y;
+    let mo;
+    let d;
+    let m;
+    if ((m = /^(\d{4})\s*[-./年]\s*(\d{1,2})\s*[-./月]\s*(\d{1,2})/.exec(s))) [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+    else if ((m = /^(\d{1,2})\s*(?:[./]|월|月)\s*(\d{1,2})\s*(?:일|日)?\.?(?:\s|$|\()/.exec(`${s} `))) [mo, d] = [Number(m[1]), Number(m[2])];
+    else return null;
+    if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+    const hm = /(\d{1,2}):(\d{2})/.exec(s.slice(m[0].length));
+    const at = (yy) => new Date(yy, mo - 1, d, hm ? Number(hm[1]) : 0, hm ? Number(hm[2]) : 0).getTime();   // no time: start of that day
+    let t = at(y ?? now.getFullYear());
+    // "12.30" seen in January: last year (compared by day — today's date without a time is today)
+    if (y == null && new Date(now.getFullYear(), mo - 1, d) > new Date(now.getFullYear(), now.getMonth(), now.getDate())) t = at(now.getFullYear() - 1);
+    return { min: Math.max(0, Math.round((anchor - t) / 60000)), style: 'date' };
 }
 
 /** The time shown for one post on its board. */
@@ -3372,7 +3557,9 @@ function composerSlot(feed, i) {
     const ph = isDm ? `@${dmPartnerLabel(post)}에게 메시지 보내기` : chat ? `#${String(post.title || '일반').replace(/^#\s*/, '')}에 메시지 보내기` : (thread ? '레스 내용 (>>번호 로 앵커)' : '댓글 내용');
     // In a DM the sender is fixed: the side that started it
     const ident = isDm ? `<div class="stcm-cp-target">보내는 사람: <b>${esc(dmSideName(post.dm?.me))}</b> → <b>${esc(dmPartnerLabel(post))}</b></div>` : identityControls(composer.draft, post);
+    const kept = composer.draft?.unpostedId && findUnposted(feedState.chatId, composer.draft.unpostedId);
     return `<div class="stcm-composer" data-feed="${esc(feed.id)}" data-idx="${i}">
+        ${kept ? `<div class="stcm-cp-hint stcm-unposted-hint">올리지 못했던 댓글이에요. 등록하면 보관 목록에서 빠져요 · <a class="stcm-link" data-act="unposted-drop" data-draft="${esc(kept.id)}">보관 목록에서 버리기</a></div>` : ''}
         ${ident}
         ${target ? `<div class="stcm-cp-target">↳ <b>${esc(target.author)}</b>님에게 ${chat ? '답장' : '답글'} <a class="stcm-link" data-act="reply-cancel">취소</a></div>` : ''}
         <textarea class="stcm-cp-body" rows="3" placeholder="${esc(ph)}">${esc(composer.draft?.body ?? '')}</textarea>
@@ -3381,7 +3568,7 @@ function composerSlot(feed, i) {
             <button data-act="ai-write-comment" title="고른 신분으로 AI가 써 줘요. 칸에 글이 있으면 그걸 다듬어요."><i class="fa-solid fa-wand-magic-sparkles"></i> AI로 쓰기</button>
         </div>
         <div class="stcm-cp-foot">
-            <label class="stcm-cp-check"><input type="checkbox" class="stcm-cp-react" checked> 반응 생성</label>
+            <label class="stcm-cp-check"><input type="checkbox" class="stcm-cp-react" ${composer.draft?.react === false ? '' : 'checked'}> 반응 생성</label>
             <button data-act="cancel-comment">취소</button>
             <button class="primary" data-act="submit-comment"><i class="fa-solid fa-paper-plane"></i> 등록</button>
         </div>
@@ -4843,6 +5030,7 @@ async function onFeedClick(e) {
         const prevPost = composer && composer.feedId === feedId ? composer.postIdx : null;
         const keepDraft = composer && next && composer.feedId === next.feedId && composer.postIdx === next.postIdx ? composer.draft : null;
         composer = next ? { ...next, draft: next.draft ?? keepDraft } : null;
+        syncCommentDraft();   // a kept comment that now answers another comment (or none) remembers that
         if (composer) openPosts.add(`${feedId}:${idx}`);
         if (prevPost != null && prevPost !== idx) updatePost(feedId, prevPost);
         updatePost(feedId, idx, { focusComposer: !!composer });
@@ -4927,15 +5115,18 @@ async function onFeedClick(e) {
         return;
     }
     if (act === 'reply-cancel') {
-        if (composer) { composer.replyTo = null; }
+        if (composer) { captureDraft(); composer.replyTo = null; syncCommentDraft(); }   // a kept reply now goes in as a plain comment
         updatePost(composer?.feedId ?? feedId, composer?.postIdx ?? idx, { focusComposer: true });
         return;
     }
     if (act === 'cancel-comment') {
         const at = composer?.postIdx ?? idx;
         const fid = composer?.feedId ?? feedId;
+        captureDraft();   // a kept comment keeps its last edits (closing isn't throwing it away)
+        const kept = composer?.draft?.unpostedId && findUnposted(feedState.chatId, composer.draft.unpostedId);
         composer = null;
-        updatePost(fid, at);
+        if (kept) showFeed(fid, { keepScroll: true });   // it goes back to the list above the posts
+        else updatePost(fid, at);
         return;
     }
     if (act === 'submit-comment') {
@@ -4947,7 +5138,32 @@ async function onFeedClick(e) {
             body: box.querySelector('.stcm-cp-body').value,
             identity: readIdentity(box),
             react: box.querySelector('.stcm-cp-react').checked,
+            draftId: composer?.draft?.unpostedId ?? '',
         });
+        return;
+    }
+    if (act === 'unposted-open' || act === 'unposted-copy' || act === 'unposted-drop') {
+        const d = findUnposted(feedState.chatId, el.dataset.draft);
+        if (!d) return;
+        if (act === 'unposted-copy') { copyText(d.title ? `${d.title}\n\n${d.body}` : d.body); return; }
+        if (act === 'unposted-drop') {
+            dropUnposted(feedState.chatId, d.id);
+            if (composer?.draft?.unpostedId === d.id) delete composer.draft.unpostedId;
+            el.closest('.stcm-unposted-hint, .stcm-unposted .row')?.remove();
+            document.querySelector('.stcm-compose-view')?.removeAttribute('data-draft');
+            toastr.info('보관해 둔 내용을 버렸어요. (입력 칸에 있는 글은 그대로예요)', '', { timeOut: 2500 });
+            return;
+        }
+        const feed = getFeed(currentFeedId);
+        if (!feed) return;
+        captureDraft();
+        if (composer && String(composer.draft?.body ?? '').trim()) { toastr.warning('쓰던 댓글 창을 먼저 등록하거나 닫아 주세요.'); return; }
+        const prev = composer?.feedId === feed.id ? composer.postIdx : null;
+        composer = null;
+        const idx = openCommentDraft(feed, d);
+        if (idx == null) return;
+        if (prev != null && prev !== idx) updatePost(feed.id, prev);
+        showFeed(feed.id, { scrollToPost: idx });
         return;
     }
     if (act === 'older-posts') {
@@ -4983,6 +5199,7 @@ async function onFeedClick(e) {
         });
         if (out?.image && imgEl && document.body.contains(imgEl)) {
             imgEl.value = out.image;
+            syncComposeDraft(box);
             toastr.success('AI가 사진 묘사를 채웠어요.', '', { timeOut: 1500 });
         }
         return;
@@ -5007,6 +5224,7 @@ async function onFeedClick(e) {
             bodyEl.value = out.body;
             const nickEl = box.querySelector('.stcm-cp-nick');
             if (nickEl && out.nickname && !nickEl.value.trim()) nickEl.value = out.nickname;
+            syncComposeDraft(box);
             toastr.success('AI가 쓴 글을 채웠어요. 고친 뒤 올리기를 누르세요.', '', { timeOut: 2000 });
         }
         return;
@@ -5033,7 +5251,7 @@ async function onFeedClick(e) {
             live.value = out.body;
             const nickEl = live.closest('.stcm-composer')?.querySelector('.stcm-cp-nick');
             if (nickEl && out.nickname && !nickEl.value.trim()) nickEl.value = out.nickname;
-            if (composer) composer.draft = { ...(composer.draft ?? {}), body: out.body };
+            if (composer) { composer.draft = { ...(composer.draft ?? {}), body: out.body }; syncCommentDraft(); }
             try { live.focus({ preventScroll: true }); } catch { /* ignore */ }
         }
         return;
@@ -5125,6 +5343,7 @@ async function onFeedClick(e) {
             image: box.querySelector('.stcm-cp-imgbox:not(.stcm-hide) .stcm-cp-img')?.value ?? '',
             identity: readIdentity(box),
             react: box.querySelector('.stcm-cp-react').checked,
+            draftId: box.dataset.draft ?? '',
         });
         return;
     }
@@ -5677,7 +5896,7 @@ function showFeed(feedId, opts = {}) {
         const spName = spaceById(currentSpace(selPlatform))?.name;
         const where = `<b>${esc(PLATFORMS[selPlatform]?.label)}</b>${spName ? ` · ${esc(spName)}` : ''} · ${esc(MODES[selMode]?.label)}${bk !== null ? ` · ${esc(boardName(bk, selPlatform))}` : ''}`;
         bar.innerHTML = `<span class="stcm-fb-info">${where}</span>`;
-        el.innerHTML = `<div class="stcm-empty"><i class="fa-solid fa-comments"></i><br>${store.feeds.length ? `아직 ${where} ${PLATFORMS[selPlatform]?.chat ? '채널이' : '글이'} 없어요.` : '아직 글이 없어요.'}<br><b>생성</b>을 누르거나 <i class="fa-solid fa-pen"></i> 버튼으로 직접 글을 써 보세요.${store.feeds.length ? '<br><small>다른 커뮤니티 글은 <i class="fa-solid fa-clock-rotate-left"></i> 지난 피드에서 볼 수 있어요.</small>' : ''}</div>`;
+        el.innerHTML = unpostedNotice(null) + `<div class="stcm-empty"><i class="fa-solid fa-comments"></i><br>${store.feeds.length ? `아직 ${where} ${PLATFORMS[selPlatform]?.chat ? '채널이' : '글이'} 없어요.` : '아직 글이 없어요.'}<br><b>생성</b>을 누르거나 <i class="fa-solid fa-pen"></i> 버튼으로 직접 글을 써 보세요.${store.feeds.length ? '<br><small>다른 커뮤니티 글은 <i class="fa-solid fa-clock-rotate-left"></i> 지난 피드에서 볼 수 있어요.</small>' : ''}</div>`;
         el.scrollTop = 0;
         return;
     }
@@ -5693,8 +5912,13 @@ function showFeed(feedId, opts = {}) {
     updateFoldAllButton(feed);
     const render = hasKey(renderers, feed.platform) ? renderers[feed.platform] : renderers.naver;
     indexItems(feed);
+    const back = restoreCommentDraft(feed);   // a comment that couldn't be placed earlier: back in its box
+    if (back != null) {
+        if (PLATFORMS[feed.platform]?.chat) dsSel.set(feed.id, back);
+        else if (opts.scrollToPost == null) opts = { ...opts, scrollToPost: back };
+    }
     if (opts.scrollToPost != null) revealPost(feed, opts.scrollToPost);
-    el.innerHTML = render(feed) + `
+    el.innerHTML = unpostedNotice(feed) + render(feed) + `
         <div class="stcm-older stcm-hide"><button data-act="older-posts" data-feed="${esc(feed.id)}"></button></div>
         <div class="stcm-more-posts"><button data-act="more-posts" data-feed="${esc(feed.id)}"><i class="fa-solid fa-plus"></i> ${PLATFORMS[feed.platform]?.chat ? '이 서버에 채널 더 만들기' : '이 게시판에 글 더 불러오기'}</button></div>`;
 
@@ -5780,6 +6004,7 @@ function restoreSettingsHome() {
 
 /** Remember where the reader was in the current feed before switching views. */
 function leaveFeed() {
+    if (view === 'compose') syncComposeDraft(document.querySelector('#stcm_feed .stcm-compose-view'));   // last edits of a kept post
     restoreSettingsHome();
     const el = document.getElementById('stcm_feed');
     if (view === 'feed' && currentFeedId && el) feedScroll.set(currentFeedId, el.scrollTop);
@@ -5833,7 +6058,9 @@ function captureDraft() {
     if (!composer) return;
     const box = document.querySelector('#stcm_feed .stcm-composer');
     if (!box) return;
-    composer.draft = { body: box.querySelector('.stcm-cp-body')?.value ?? '', inst: box.querySelector('.stcm-cp-inst')?.value ?? '', ...readIdentity(box) };
+    const unpostedId = composer.draft?.unpostedId;
+    composer.draft = { body: box.querySelector('.stcm-cp-body')?.value ?? '', inst: box.querySelector('.stcm-cp-inst')?.value ?? '', react: box.querySelector('.stcm-cp-react')?.checked !== false, ...readIdentity(box), ...(unpostedId ? { unpostedId } : {}) };
+    syncCommentDraft();
 }
 
 /** Re-render a single post in place; the rest of the feed and the scroll position stay put. */
@@ -5896,14 +6123,26 @@ function showCompose() {
     const p = PLATFORMS[selPlatform];
     const feed = getFeed(currentFeedId);
     const appending = feedMatchesSelection(feed);
+    // a post that couldn't be placed earlier in this chat (the chat / feed changed while it was being sent):
+    // it comes back only where it was going (that feed, or the same community · mode · cafe · topic board when it
+    // was starting a new feed or its feed is gone), with everything that was picked. It stays kept until posted.
+    const u = unposted.get(feedState.chatId);
+    const fits = (x) => {
+        const orig = x.feedId ? getFeed(x.feedId) : null;
+        if (orig) return appending && feed.id === orig.id;
+        return feedMatchesSelection({ platform: x.platform, mode: x.mode, space: x.space ?? '', boardKey: x.boardKey ?? '' });
+    };
+    const d = u?.posts.find(fits) ?? null;
+    const elsewhere = (u?.posts ?? []).filter(x => x !== d);
     const bar = document.getElementById('stcm_feedbar');
     const el = document.getElementById('stcm_feed');
     bar.innerHTML = `<button id="stcm_back"><i class="fa-solid fa-arrow-left"></i> 돌아가기</button><span class="stcm-fb-info">글쓰기 · <b>${esc(p.label)}</b> · ${esc(MODES[selMode].label)}</span>`;
-    el.innerHTML = `<div class="stcm-compose-view">
+    el.innerHTML = `<div class="stcm-compose-view"${d ? ` data-draft="${esc(d.id)}"` : ''}>
+        ${d ? `<p class="stcm-cp-hint stcm-unposted-hint">올리지 못했던 글을 다시 채웠어요. 올리면 보관 목록에서 빠져요 · <a class="stcm-link" data-act="unposted-drop" data-draft="${esc(d.id)}">보관 목록에서 버리기</a></p>` : ''}
         <p class="stcm-cp-hint">${appending
             ? `지금 보고 있는 <b>${esc(feed.data.board || p.label)}</b> 피드에 글이 올라가요.`
             : '선택한 커뮤니티에 새 피드를 만들고 글을 올려요. (위에서 모드·커뮤니티를 바꿀 수 있어요)'}</p>
-        ${identityControls()}
+        ${identityControls(d?.identity)}
         ${appending || currentSpace(selPlatform) ? '' : `<input class="stcm-cp-board" type="text" placeholder="게시판 / 갤러리 / 서브레딧 / 해시태그 이름 (선택)">`}
         ${p.hasTitle || p.chat ? `<input class="stcm-cp-title" type="text" placeholder="${p.chat ? '채널 이름 (예: 잡담) — 새 채널이 생기고 첫 메시지가 올라가요' : (p.thread ? '스레드 제목' : '제목')}">` : ''}
         ${TD_SKINS[selPlatform] ? `<select class="stcm-cp-cat">${tdCats(selPlatform).filter(c => c !== '전체').map(c => `<option value="${esc(c)}" ${feed && tdState(feed.id).cat === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>` : ''}
@@ -5924,19 +6163,31 @@ function showCompose() {
         </div>
     </div>`;
     el.scrollTop = 0;
-    // a post that couldn't be placed earlier (the chat / feed changed while it was being sent)
-    if (postDraft && postDraft.chatId === feedState.chatId) {
-        const d = postDraft;
-        postDraft = null;
+    if (d) {
         const t = el.querySelector('.stcm-cp-title');
         if (t) t.value = d.title ?? '';
         el.querySelector('.stcm-cp-body').value = d.body ?? '';
+        const b = el.querySelector('.stcm-cp-board');
+        if (b) b.value = d.board ?? '';
+        const cat = el.querySelector('.stcm-cp-cat');
+        if (cat && d.category && [...cat.options].some(o => o.value === d.category)) cat.value = d.category;
+        el.querySelector('.stcm-cp-react').checked = d.react !== false;
         if (String(d.image ?? '').trim()) {
             el.querySelector('.stcm-cp-imgbox')?.classList.remove('stcm-hide');
             el.querySelector('[data-act="cp-photo"]')?.classList.add('on');
             el.querySelector('.stcm-cp-img').value = d.image;
         }
-        toastr.info('올리지 못했던 글을 다시 채워 뒀어요.', '', { timeOut: 2500 });
+        // edits go into the kept record too (typing, picks, the photo toggle, AI writing)
+        const view = el.querySelector('.stcm-compose-view');
+        const sync = () => syncComposeDraft(view);
+        view.addEventListener('input', sync);
+        view.addEventListener('change', sync);
+        view.addEventListener('click', () => setTimeout(sync));
+        toastr.info(`올리지 못했던 글을 다시 채워 뒀어요.${elsewhere.length ? ` (못 올린 글 ${elsewhere.length}개가 더 있어요)` : ''}`, '', { timeOut: 3500 });
+    } else if (elsewhere.length) {
+        const names = [...new Set(elsewhere.map(draftWhere))].join(', ');
+        const x = elsewhere[0];
+        toastr.info(`이 채팅에 올리지 못한 글이 있어요: ${esc(names)}. 그곳을 골라 글쓰기를 열면 다시 채워져요. (눌러서 전체 복사)`, '', { timeOut: 8000, onclick: () => copyText([x.title, x.body].filter(Boolean).join('\n\n')) });
     }
     el.querySelector(p.hasTitle ? '.stcm-cp-title' : '.stcm-cp-body')?.focus();
 }
@@ -7423,9 +7674,12 @@ async function onMessageReceived(messageId, type) {
 
 async function onChatChanged() {
     abortCtl?.abort();
+    captureDraft();   // a kept comment / post being edited: its edits stay with it
+    if (view === 'compose') syncComposeDraft(document.querySelector('#stcm_feed .stcm-compose-view'));
     composer = null;
     currentFeedId = null;
     pendingImport = null;
+    for (const u of unposted.values()) for (const d of u.comments) d.shown = false;   // kept comments come back on the next visit
     feedScroll.clear();
     await flushFeedWrite();   // previous chat's pending change
     refreshInjection();       // pins live in the chat file, so this works before the feeds load
