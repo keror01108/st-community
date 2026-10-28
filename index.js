@@ -24,6 +24,7 @@ const defaultSettings = Object.freeze({
     commentCount: 5,
     continueCount: 5,
     contextMessages: 20,
+    storyMsgChars: 1500,         // story log: longest part of one chat message sent (0 = no limit)
     npcPosts: 'auto',
     noMention: false,            // 인물 언급 금지: generated posts never mention any story character, {{user}} or side character
     customSpaces: [],            // [{ id, platform, name, desc, locale: { mode: inherit|story|country|custom, country, custom } }]
@@ -1011,9 +1012,38 @@ function stripMarkup(text) {
         .trim();
 }
 
+/** 메시지당 최대 글자 수: 0 = 자르지 않음, 그 외에는 적은 글자 수 그대로 (정수로). Saving and using go through this. */
+function normMsgChars(v) {
+    const n = Math.round(Number(v));
+    return Number.isFinite(n) && n > 0 ? Math.min(n, 1000000) : 0;
+}
+function storyMsgLimit() {
+    return normMsgChars(getSettings().storyMsgChars);
+}
+
 function truncate(text, n) {
     text = String(text ?? '');
-    return text.length > n ? text.slice(0, n) + '…' : text;
+    return text.length > n ? text.slice(0, cutPoint(text, n)) + '…' : text;
+}
+
+/** Where to cut so no character is split: the last letter boundary at or before n (emoji, 👨‍👩‍👧, flags, 한글 자모 stay whole).
+ *  Boundaries are found from the start of the text (a piece cut out of the middle can pair 🇰🇷🇰🇷 wrongly);
+ *  segmenting is lazy, so it stops at n and the rest of a long text is never looked at. */
+let graphemes = null;
+function cutPoint(text, n) {
+    n = Math.max(0, Math.floor(n));
+    if (graphemes === null) graphemes = typeof Intl !== 'undefined' && Intl.Segmenter ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : false;
+    if (graphemes) {
+        let cut = 0;
+        for (const g of graphemes.segment(text)) {
+            const end = g.index + g.segment.length;
+            if (end > n) break;
+            cut = end;
+        }
+        return cut;
+    }
+    const c = text.charCodeAt(n - 1);   // no Segmenter: at least don't split a surrogate pair
+    return c >= 0xD800 && c <= 0xDBFF ? n - 1 : n;
 }
 
 function hashColor(name) {
@@ -1310,7 +1340,7 @@ async function buildContextBlock() {
     }
 
     const log = recent
-        .map(m => `${m.name}: ${truncate(m.text, 1500)}`)
+        .map(m => `${m.name}: ${storyMsgLimit() ? truncate(m.text, storyMsgLimit()) : m.text}`)
         .join('\n\n');
     parts.push(`[Story so far — most recent messages, oldest first]\n${log || '(no messages yet)'}`);
 
@@ -7315,6 +7345,7 @@ function addSettingsPanel() {
             <label>글당 댓글 수 <input id="stcm_set_comments" type="number" min="0" max="20" class="text_pole"></label>
             <label>이어서/반응 댓글 수 <input id="stcm_set_continue" type="number" min="1" max="30" class="text_pole"></label>
             <label>참고할 최근 메시지 <input id="stcm_set_ctx" type="number" min="1" max="100" class="text_pole"></label>
+            <label>메시지당 최대 글자 수 <small>(0 = 자르지 않음)</small> <input id="stcm_set_msgchars" type="number" min="0" max="1000000" step="1" class="text_pole"></label>
             <label>최대 응답 토큰 <input id="stcm_set_tokens" type="number" min="500" max="32000" step="100" class="text_pole"></label>
             <label>2ch·레딧 스레드 최대 레스 <input id="stcm_set_cap" type="number" min="10" max="10000" step="10" class="text_pole"></label>
             <label>반영 글 삽입 깊이 <input id="stcm_set_depth" type="number" min="0" max="50" class="text_pole"></label>
@@ -7498,6 +7529,16 @@ function addSettingsPanel() {
     bind('stcm_set_comments', 'commentCount');
     bind('stcm_set_continue', 'continueCount');
     bind('stcm_set_ctx', 'contextMessages');
+    bind('stcm_set_msgchars', 'storyMsgChars');
+    {   // the box shows exactly what is used (0.5 → 1, -3 → 0)
+        const el = document.getElementById('stcm_set_msgchars');
+        if (el) el.value = String(normMsgChars(s.storyMsgChars));
+        el?.addEventListener('change', () => {
+            const n = normMsgChars(s.storyMsgChars);
+            if (s.storyMsgChars !== n) { s.storyMsgChars = n; saveSettings(); }
+            el.value = String(n);
+        });
+    }
     bind('stcm_set_tokens', 'maxTokens');
     bind('stcm_set_card', 'includeCard', 'checked');
     bind('stcm_set_excludetags', 'excludeTags');
