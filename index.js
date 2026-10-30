@@ -25,6 +25,8 @@ const defaultSettings = Object.freeze({
     continueCount: 5,
     contextMessages: 20,
     storyMsgChars: 1500,         // story log: longest part of one chat message sent (0 = no limit)
+    tailEnabled: false,          // 맨 밑 프롬프트: one more message at the very end of every request
+    tailRole: 'user',            // 'user' | 'assistant'
     npcPosts: 'auto',
     noMention: false,            // 인물 언급 금지: generated posts never mention any story character, {{user}} or side character
     customSpaces: [],            // [{ id, platform, name, desc, locale: { mode: inherit|story|country|custom, country, custom } }]
@@ -62,6 +64,7 @@ const defaultSettings = Object.freeze({
     stores: {},                  // feed file index: storeId → { chat, owner, size, deletedAt }
     topics: '공포: 괴담, 무서운 경험담, 미스터리\n낚시: 어그로성 제목, 반전 있는 낚시글\n웃음: 웃긴 썰, 드립, 짤 설명\n연애: 연애 상담, 썸, 이별, 짝사랑\n고민: 인생·학교·직장 고민 상담\n정보: 정보 공유, 꿀팁, 후기\n질문: 궁금한 거 물어보는 글\n썰: 경험담, 목격담\n논쟁: 의견 대립, 키배 유발 주제',
     topicSelected: [],           // names of selected topics
+    topicRenames: {},            // old topic name → [{ to: new name, at: when renamed }] (boards made before keep showing)
     topicMix: 'each',            // each: assign one topic per post | mix: let the model mix them
     topicScope: 'all',           // all: manual + auto generation | auto: auto generation only
     threadCap: 1000,             // max posts per thread on capped platforms (2ch, Reddit)
@@ -164,6 +167,7 @@ Output ONLY a JSON object, no code fences: {"title": "post title, or empty when 
 
     dm_continue: `<thread> is a private Discord DM conversation between {{me}} and {{partner}}. Write the next {{count}} messages FROM {{partnerName}} only, reacting to the latest messages (or opening the conversation naturally if it is empty). Several short consecutive messages are fine, like real chat. Do not write messages for the other side. {{partnerName}} only knows what they would plausibly know in the story, and speaks in their own voice. Set "author" to "{{partnerName}}" and "reply_to" to -1 unless replying to a specific earlier message.`,
 
+    tail: '',
     inject_dm: `[Private Discord direct messages these people actually exchanged. Both sides remember them; let them shape knowledge, mood and dialogue when relevant. Nobody else has seen them unless shared.]`,
 
     amount_posts: `Write {{count}} posts. Each post has roughly {{comments}} comments (vary it: popular posts more, boring ones fewer). Add replies to some comments where natural, unless the platform style says otherwise.`,
@@ -193,7 +197,7 @@ Set "board" to "{{space}}". Its members are the kind of people who would join it
 Follow it for who the users are and where and when they live, even where it differs from the story's own setting.`,
     reasoning_min: `Answer right away. Do not think out loud, do not write a reasoning, analysis or <think> section, and do not plan step by step before answering — output only what is asked for.`,
     translate_separate: `Translate the "text" of every item into natural {{translation}}. Keep the tone, slang, emoji, line breaks (\n) and formatting such as >>12 anchors, #hashtags#, [emoji] tags and @mentions. Keep personal names as they are, or transliterate them only when that is how {{translation}} speakers would write them. If a text is already in {{translation}}, return "" for it. Reply with JSON only, in this exact shape: {"items":[{"id":0,"text":"..."}]}`,
-    translation: `ALSO fill "body_tr" for every post and comment with a natural {{translation}} translation that keeps the tone and slang. If the original is already in {{translation}}, leave "body_tr" empty. Likewise fill "title_tr" with the translated post title (empty when the post has no title or the title is already in {{translation}}), and "image_tr" with the translated photo description (empty when there is no photo or it is already in {{translation}}).`,
+    translation: `ALSO fill "body_tr" for every post and comment with a natural {{translation}} translation that keeps the tone and slang. If the original is already in {{translation}}, leave "body_tr" empty. Likewise fill "title_tr" with the translated post title (empty when the post has no title or the title is already in {{translation}}), and each "desc_tr" in "media" with the translated photo / video description (empty when it is already in {{translation}}).`,
 
     inject_authored: `[Online posts that story characters wrote themselves. Each name before "(posting as ...)" is the story character who actually wrote that post or comment on that community, and they remember doing it. Other lines are replies from other users, which those characters may have read. Let this shape the characters' knowledge, mood and dialogue when relevant (they may mention it, check the reactions, regret it, or be confronted about it by someone who saw it).]`,
 
@@ -212,8 +216,7 @@ Follow it for who the users are and where and when they live, even where it diff
       "title_tr": "",
       "body": "post text; use \\n for line breaks",
       "body_tr": "",
-      "image": "",
-      "image_tr": "",
+      "media": [ { "type": "photo", "desc": "", "desc_tr": "" } ],
       "time": "relative time as shown on the platform, written in the output language",
       "likes": 0, "views": 0, "shares": 0,
       "tags": ["optional flair / category / hashtag"],
@@ -228,7 +231,7 @@ Follow it for who the users are and where and when they live, even where it diff
 }
 Numbers must be plain integers. Escape double quotes inside strings. Every poster must feel like a distinct person with their own voice.
 List the posts from oldest to newest: the last post in "posts" is the most recent one, and the "time" values fit that order.
-"image" is for a post that comes with a photo or screenshot: describe what the picture shows in one or two short sentences in the output language, without brackets (e.g. a selfie, food, a street or scenery shot, a screenshot of a chat or article, fan art, merch, an evidence photo). Leave it empty when the post has no picture — use it where it suits the community and the post, not on every post. The body may refer to it ("사진 보셈", "pic related").`,
+"media" lists the photos, screenshots and videos attached to a post, in order. "type" is "photo" or "video"; "desc" describes what that photo or video shows in one or two short sentences in the output language, without brackets (e.g. a selfie, food, a street or scenery shot, a screenshot of a chat or article, fan art, merch, an evidence photo; for a video: what happens in the clip — a short fancam, a vlog moment, a funny clip, CCTV or dashcam footage). A post may have several (a photo dump, before/after shots, a few clips). Use an empty list when the post has no picture or video — add them where they suit the community and the post, not on every post. The body may refer to them ("사진 보셈", "pic related", "영상 ㄱㄱ").`,
 
     format_comments: `OUTPUT FORMAT: Return ONLY a JSON object, with no code fences and no commentary, matching:
 {
@@ -299,6 +302,7 @@ const PROMPT_LABELS = {
     guide_kkangtong: '스타일: 깡통',
     dm_continue: '디스코드 DM 이어가기 지시',
     inject_dm: '본편 반영: 디스코드 DM',
+    tail: '맨 밑 프롬프트 (켰을 때만 — 요청 맨 끝 메시지)',
 };
 
 // ---------------------------------------------------------------------------
@@ -379,6 +383,13 @@ function getSettings() {
     if (!s.modelOverrides || typeof s.modelOverrides !== 'object' || Array.isArray(s.modelOverrides)) s.modelOverrides = {};
     if (!s.extMemoryChoice || typeof s.extMemoryChoice !== 'object' || Array.isArray(s.extMemoryChoice)) s.extMemoryChoice = {};
     if (!s.secOpen || typeof s.secOpen !== 'object' || Array.isArray(s.secOpen)) s.secOpen = {};
+    if (!s.topicRenames || typeof s.topicRenames !== 'object' || Array.isArray(s.topicRenames)) s.topicRenames = {};
+    for (const k of Object.keys(s.topicRenames)) {
+        const v = s.topicRenames[k];
+        if (typeof v === 'string') s.topicRenames[k] = [{ to: v, at: Date.now() }];   // 1.37.0 kept only the new name
+        else if (!Array.isArray(v)) delete s.topicRenames[k];
+        else s.topicRenames[k] = v.filter(e => e && typeof e.to === 'string' && Number.isFinite(e.at));
+    }
     if (!Array.isArray(s.customSpaces)) s.customSpaces = [];
     if (!cleanSpaceLists.has(s.customSpaces)) {   // once per list, not on every getSettings()
         s.customSpaces = s.customSpaces
@@ -920,6 +931,12 @@ function getChatStore() {
     st.wi.picks ??= {};
     st.lastMode ??= null;
     st.locale = cleanLocale(st.locale, false);   // this chat's community background
+    // free-text backgrounds written in this chat (newest first), so you can switch between them
+    if (!Array.isArray(st.localeCustoms) || st.localeCustoms.some(x => typeof x !== 'string')) {
+        st.localeCustoms = (Array.isArray(st.localeCustoms) ? st.localeCustoms : []).filter(x => typeof x === 'string' && x.trim()).map(x => x.slice(0, 600)).slice(0, LOCALE_CUSTOM_MAX);
+    }
+    if (st.locale.mode === 'custom' && !st.localeCustoms.includes(st.locale.custom)) st.localeCustoms.unshift(st.locale.custom);
+    if (st.localeCustoms.length > LOCALE_CUSTOM_MAX) st.localeCustoms.length = LOCALE_CUSTOM_MAX;
     st.lastPlatform ??= null;
     return st;
 }
@@ -1397,8 +1414,26 @@ function currentBoardKey() {
 }
 
 function feedBoardKey(f) {
-    if (typeof f?.boardKey === 'string') return f.boardKey;
-    return [...new Set(f?.topics ?? [])].sort().join('|');   // older feeds: the topics they were made with
+    const key = typeof f?.boardKey === 'string' ? f.boardKey : [...new Set(f?.topics ?? [])].sort().join('|');   // older feeds: the topics they were made with
+    return renamedBoardKey(key, Number(f?.createdAt) || 0);
+}
+
+/** A board key with renamed topics under their new names: a board made as "연애" shows under "로맨스" after a rename.
+ *  Only renames made after the feed was made count, so a new "연애" topic added later is its own board again. */
+function renamedBoardKey(key, madeAt = 0) {
+    const map = getSettings().topicRenames;
+    if (!key || !map || !Object.keys(map).length) return key;
+    const now = (n) => {
+        // every rename after the last one followed (each step is later in time, so this always ends)
+        let since = madeAt;
+        for (;;) {
+            const next = (hasKey(map, n) ? map[n] : []).filter(e => e.at > since).sort((a, b) => a.at - b.at)[0];
+            if (!next) return n;
+            n = next.to;
+            since = next.at;
+        }
+    };
+    return [...new Set(key.split('|').map(now))].sort().join('|');
 }
 
 function boardLabel(key) {
@@ -1516,10 +1551,9 @@ function whoLine(o) {
     return `${o.author || 'anon'}${o.handle ? ` (${o.handle})` : ''}`;
 }
 
-/** The post's photo for prompts: commenters can react to what it shows. */
+/** The post's photos / videos for prompts: commenters can react to what they show. */
 function photoLine(post) {
-    const img = String(post?.image ?? '').trim();
-    return img ? `\n[Attached photo: ${truncate(img, 400)}]` : '';
+    return postMedia(post).filter(m => m.desc.trim()).map(m => `\n[Attached ${m.type === 'video' ? 'video' : 'photo'}: ${truncate(m.desc.trim(), 400)}]`).join('');
 }
 
 /** Serialize one post and its comments for the continuation prompt. */
@@ -1620,9 +1654,19 @@ async function buildContinuePrompt({ feed, postIdx, count, playerJustPosted }) {
 // ---------------------------------------------------------------------------
 // Model call + parsing
 // ---------------------------------------------------------------------------
-async function callModel(system, user, signal, connValue, modelOverride = '') {
+/** 맨 밑 프롬프트: the last message of a request (user or assistant role), when it is on and not empty. */
+function tailMessage() {
+    const s = getSettings();
+    if (!s.tailEnabled) return null;
+    const text = fillTpl(getPrompt('tail'), {}).trim();
+    if (!text) return null;
+    return { role: s.tailRole === 'assistant' ? 'assistant' : 'user', content: text };
+}
+
+async function callModel(system, user, signal, connValue, modelOverride = '', { noTail = false } = {}) {
     const c = ctx();
     const s = getSettings();
+    const tail = noTail ? null : tailMessage();
     const conn = resolveConnection(connValue);
     const forced = String(modelOverride ?? '').trim();
     // 추론 최소화: an instruction for every model, plus SillyTavern's lowest reasoning effort where a request can carry it
@@ -1631,7 +1675,7 @@ async function callModel(system, user, signal, connValue, modelOverride = '') {
 
     if (conn.type === 'api') {
         if (!conn.api) throw new Error('골라 둔 API가 지워졌어요. 커뮤니티 창의 API 설정에서 다시 골라 주세요.');
-        return callCustomApi(forced ? { ...conn.api, model: forced } : conn.api, system, user, signal, lowEffort);
+        return callCustomApi(forced ? { ...conn.api, model: forced } : conn.api, system, user, signal, lowEffort, tail);
     }
     if (conn.type === 'profile') {
         if (!connectionManagerOn()) throw new Error('Connection Manager 확장이 꺼져 있어요. 커뮤니티 창의 API 설정에서 다른 연결을 고르거나, 확장을 다시 켜 주세요.');
@@ -1640,6 +1684,7 @@ async function callModel(system, user, signal, connValue, modelOverride = '') {
         const messages = [
             { role: 'system', content: system },
             { role: 'user', content: user },
+            ...(tail ? [tail] : []),
         ];
         if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
         const model = forced || String(s.modelOverrides[conn.profile.id] ?? '').trim();
@@ -1674,7 +1719,7 @@ async function callModel(system, user, signal, connValue, modelOverride = '') {
     // Fallback: main API (generateRaw takes no AbortSignal, so check afterwards)
     const out = await c.generateRaw({
         systemPrompt: system,
-        prompt: user,
+        prompt: tail ? [{ role: 'user', content: user }, tail] : user,
         responseLength: Number(s.maxTokens) || 4000,
         trimNames: false,
     });
@@ -1791,9 +1836,8 @@ function normPost(p) {
         ...normItem(p),
         title: String(p?.title ?? '').slice(0, 500),
         title_tr: String(p?.title_tr ?? '').slice(0, 500),
-        // a photo / screenshot attached to the post, as a text description (no real image)
-        image: String(p?.image ?? '').slice(0, 1000),
-        image_tr: String(p?.image_tr ?? '').slice(0, 1000),
+        // photos / screenshots / videos attached to the post, as text descriptions (no real files)
+        media: cleanMedia(p),
         views: toInt(p?.views),
         shares: toInt(p?.shares),
         tags: Array.isArray(p?.tags) ? p.tags.slice(0, 10).map(t => String(t).slice(0, 60)) : [],
@@ -1974,7 +2018,7 @@ async function translateItems(feedId, todo, { target, conn, model, mark = null, 
             const text = typeof r?.text === 'string' ? r.text.trim() : '';
             if (!t || !text || text === String(t.o[t.field]).trim()) continue;
             if (t.field === 'title') t.o.title_tr = text.slice(0, 500);
-            else if (t.field === 'image') t.o.image_tr = text.slice(0, 1000);
+            else if (t.field === 'desc') t.o.desc_tr = text.slice(0, 1000);
             else { t.o.body_tr = text.slice(0, 8000); delete t.o.body_ko; }
             touched.add(t.postIdx);
         }
@@ -1991,13 +2035,13 @@ async function translateFeed(feedId) {
     const todo = [];
     feed.data.posts.forEach((p, i) => {
         if (String(p.title ?? '').trim() && !p.title_tr && !trTriedTitle.has(p)) todo.push({ o: p, postIdx: i, field: 'title' });
-        if (String(p.image ?? '').trim() && !p.image_tr && !trTriedImage.has(p)) todo.push({ o: p, postIdx: i, field: 'image' });
+        for (const m of postMedia(p)) if (String(m.desc ?? '').trim() && !m.desc_tr && !trTriedImage.has(m)) todo.push({ o: m, postIdx: i, field: 'desc' });
         for (const o of [p, ...p.comments, ...p.comments.flatMap(cm => cm.replies)]) {
             if (o && String(o.body ?? '').trim() && !o.body_tr && !o.body_ko && !trTried.has(o)) todo.push({ o, postIdx: i, field: 'body' });
         }
     });
     if (!todo.length) return;
-    const mark = (t, on) => { const set = t.field === 'title' ? trTriedTitle : t.field === 'image' ? trTriedImage : trTried; if (on) set.add(t.o); else set.delete(t.o); };
+    const mark = (t, on) => { const set = t.field === 'title' ? trTriedTitle : t.field === 'desc' ? trTriedImage : trTried; if (on) set.add(t.o); else set.delete(t.o); };
     const chatId = ctx().getCurrentChatId?.();
     const touched = await translateItems(feedId, todo, { target, ...trConnection(), mark, chatId });
     if (!touched.size || ctx().getCurrentChatId?.() !== chatId) return;   // chat switched meanwhile: don't save into the new one
@@ -2033,13 +2077,13 @@ function trOn(o) {
 }
 
 function postHasTr(p) {
-    return !!(p.title_tr || p.image_tr || p.body_tr || p.body_ko || p.comments.some(cm => cm.body_tr || cm.body_ko || cm.replies.some(r => r.body_tr || r.body_ko)));
+    return !!(p.title_tr || postMedia(p).some(m => m.desc_tr) || p.body_tr || p.body_ko || p.comments.some(cm => cm.body_tr || cm.body_ko || cm.replies.some(r => r.body_tr || r.body_ko)));
 }
 
 function postTrItems(p, i, force) {
     const out = [];
     if (String(p.title ?? '').trim() && (force || !p.title_tr)) out.push({ o: p, postIdx: i, field: 'title' });
-    if (String(p.image ?? '').trim() && (force || !p.image_tr)) out.push({ o: p, postIdx: i, field: 'image' });
+    for (const m of postMedia(p)) if (String(m.desc ?? '').trim() && (force || !m.desc_tr)) out.push({ o: m, postIdx: i, field: 'desc' });
     for (const o of [p, ...p.comments, ...p.comments.flatMap(cm => cm.replies)]) {
         if (String(o.body ?? '').trim() && (force || !(o.body_tr || o.body_ko))) out.push({ o, postIdx: i, field: 'body' });
     }
@@ -2569,7 +2613,7 @@ async function submitPlayerPost(args) {
     try { await submitPlayerPostNow(args); } finally { submitting = false; }
 }
 
-async function submitPlayerPostNow({ title, body, identity, react, board, category, image = '', draftId = '' }) {
+async function submitPlayerPostNow({ title, body, identity, react, board, category, media = [], draftId = '' }) {
     if (!body.trim()) { toastr.warning('내용을 입력해 주세요.'); return; }
     if (!(await ensureFeedsReady())) return;
     if (!checkIdentity(identity)) return;
@@ -2584,13 +2628,14 @@ async function submitPlayerPostNow({ title, body, identity, react, board, catego
     if (isAnonLabel(feed.platform, identity.nick)) identity = { ...identity, nick: '' };
     const post = playerItem(feed.platform, { ...identity, body: body.trim(), title: pf.hasTitle || pf.chat ? (title.trim() || (pf.chat ? '잡담' : '')) : '' }, feedLang(feed));
     if (category) post.tags = [category];
-    if (String(image).trim()) post.image = String(image).trim().slice(0, 1000);
+    const att = cleanMedia({ media });
+    if (att.length) post.media = att;
     await resolveNick({ feed, identity, text: `${title}\n${body}`, item: post });   // may wait for an AI nickname
 
     // still the same chat, the same loaded copy, the same board? Otherwise nothing is written anywhere:
     // the text is kept for the write form
     if (!stillTarget(start, isNew ? [] : [feed])) {
-        keepPostDraft(start.chatId, { id: draftId, title, body, image, identity, react, board, category, platform: feed.platform, mode: feed.mode, feedId: isNew ? '' : feed.id, space: feedSpace(feed), boardKey: feedBoardKey(feed) });
+        keepPostDraft(start.chatId, { id: draftId, title, body, media: att, identity, react, board, category, platform: feed.platform, mode: feed.mode, feedId: isNew ? '' : feed.id, space: feedSpace(feed), boardKey: feedBoardKey(feed), madeAt: Date.now() });
         return;
     }
     // from here on no waiting until everything is in this chat's list
@@ -2686,11 +2731,10 @@ function findUnpostedAny(id) {
 function syncComposeDraft(view) {
     const d = view?.dataset?.draft ? findUnpostedAny(view.dataset.draft) : null;
     if (!d) return;
-    const img = view.querySelector('.stcm-cp-imgbox:not(.stcm-hide) .stcm-cp-img');
     Object.assign(d, {
         title: view.querySelector('.stcm-cp-title')?.value ?? d.title,
         body: view.querySelector('.stcm-cp-body')?.value ?? d.body,
-        image: img ? img.value : '',
+        media: readMediaRows(view),
         board: view.querySelector('.stcm-cp-board')?.value ?? d.board,
         category: view.querySelector('.stcm-cp-cat')?.value ?? d.category,
         react: view.querySelector('.stcm-cp-react')?.checked ?? d.react,
@@ -2982,8 +3026,13 @@ async function aiWrite({ kind, mode, platformId, identity, instruction, draft, f
         if (photo) {
             // only the picture: what this author's photo / screenshot shows
             parts.push(`<post>\n${photo.title?.trim() ? `Title: ${photo.title.trim()}\n` : ''}${draft?.trim() || '(no text yet)'}\n</post>`);
-            if (photo.current?.trim()) parts.push(`<current_photo_description>\n${photo.current.trim()}\n</current_photo_description>`);
-            parts.push(`The author of the post above (${describeAuthor(identity, platformId)}) attaches a photo or screenshot to it. Describe what the picture shows — what is in it, framing, mood — in one or two short sentences, in the same language as the post, fitting the post, the community and the story world. No brackets, no quotes. ${photo.current?.trim() ? 'Improve the current description, keeping its idea.' : ''} Reply with JSON only: {"image": "..."}`);
+            const video = photo.kind === 'video';
+            const others = (photo.others ?? []).filter(m => m.desc?.trim());
+            if (others.length) parts.push(`<other_attachments>\nThe post already has: ${others.map(m => `[${m.type === 'video' ? 'video' : 'photo'}] ${truncate(m.desc.trim(), 200)}`).join(' / ')}\nThis one is another, different ${video ? 'video' : 'picture'}.\n</other_attachments>`);
+            if (photo.current?.trim()) parts.push(`<current_${video ? 'video' : 'photo'}_description>\n${photo.current.trim()}\n</current_${video ? 'video' : 'photo'}_description>`);
+            parts.push(video
+                ? `The author of the post above (${describeAuthor(identity, platformId)}) attaches a short video to it. Describe what the video shows — the scene, what happens, notable sound — in one or two short sentences, in the same language as the post, fitting the post, the community and the story world. No brackets, no quotes. ${photo.current?.trim() ? 'Improve the current description, keeping its idea.' : ''} Reply with JSON only: {"image": "..."}`
+                : `The author of the post above (${describeAuthor(identity, platformId)}) attaches a photo or screenshot to it. Describe what the picture shows — what is in it, framing, mood — in one or two short sentences, in the same language as the post, fitting the post, the community and the story world. No brackets, no quotes. ${photo.current?.trim() ? 'Improve the current description, keeping its idea.' : ''} Reply with JSON only: {"image": "..."}`);
             const raw = await callModel(b.system, parts.filter(x => !x.startsWith('<draft>')).join('\n\n'), signal);
             if (!stillSameChat()) return null;
             let image = '';
@@ -3042,7 +3091,7 @@ function postHasStoryAuthor(post) {
 function postToPinText(post) {
     const lines = [];
     const head = post.title ? `"${post.title}" — ` : '';
-    lines.push(`${head}${authorLabel(post)}: ${truncate(post.body, 500)}${post.image?.trim() ? ` [photo: ${truncate(post.image.trim(), 200)}]` : ''}`);
+    lines.push(`${head}${authorLabel(post)}: ${truncate(post.body, 500)}${postMedia(post).filter(m => m.desc.trim()).map(m => ` [${m.type === 'video' ? 'video' : 'photo'}: ${truncate(m.desc.trim(), 200)}]`).join('')}`);
     const comments = post.comments ?? [];
     const keep = new Set([0, 1, 2, comments.length - 1]);
     comments.forEach((c, i) => {
@@ -3163,14 +3212,79 @@ function ttl(p) {
 }
 let composer = null;   // { feedId, postIdx, replyTo }
 
-/** A post's attached photo, shown as its description: [사진 내용]. */
+/** A post's attached photos / videos, shown as their descriptions: [사진 내용], ▶ [영상 내용]. */
 function imgBox(o) {
-    const img = String(o?.image ?? '').trim();
-    if (!img) return '';
-    const tr = String(o.image_tr ?? '').trim();
-    const on = !!tr && trOn(o);
-    const both = on && getSettings().trDisplay === 'both';
-    return `<div class="stcm-img"><i class="fa-regular fa-image"></i><span>[${esc(on && !both ? tr : img)}]${both ? `<span class="stcm-tr-below">[${esc(tr)}]</span>` : ''}</span></div>`;
+    const list = postMedia(o).filter(m => m.desc.trim());
+    if (!list.length) return '';
+    const showTr = trOn(o);
+    const both = getSettings().trDisplay === 'both';
+    return list.map(m => {
+        const tr = String(m.desc_tr ?? '').trim();
+        const on = !!tr && showTr;
+        const video = m.type === 'video';
+        return `<div class="stcm-img${video ? ' video' : ''}"><i class="fa-${video ? 'solid fa-film' : 'regular fa-image'}"></i><span>${video ? '▶ ' : ''}[${esc(on && !both ? tr : m.desc)}]${on && both ? `<span class="stcm-tr-below">[${esc(tr)}]</span>` : ''}</span></div>`;
+    }).join('');
+}
+
+/** 사진·영상: a post's list of attached media ({ type: 'photo' | 'video', desc, desc_tr }).
+ *  Older posts kept one photo in image / image_tr: that becomes the first item (and is saved that way). */
+const MEDIA_MAX = 10;
+function postMedia(p) {
+    if (!p || typeof p !== 'object') return [];
+    if (Array.isArray(p.media)) return p.media;
+    if (!Object.hasOwn(p, 'image') && !Object.hasOwn(p, 'image_tr')) return [];
+    p.media = cleanMedia(p);
+    delete p.image;
+    delete p.image_tr;
+    return p.media;
+}
+
+/** Media from the model, a saved post or an imported file: "media" (objects or plain strings), older "image",
+ *  also "images" / "videos" lists — every field rebuilt with known types. */
+function cleanMedia(p) {
+    const out = [];
+    const add = (type, desc, tr = '') => {
+        const d = String(desc ?? '').replace(/^\s*\[|\]\s*$/g, '').trim().slice(0, 1000);
+        if (d && out.length < MEDIA_MAX) out.push({ type: type === 'video' ? 'video' : 'photo', desc: d, desc_tr: String(tr ?? '').trim().slice(0, 1000) });
+    };
+    const kindOf = (t) => (/video|clip|movie|gif|영상|動画|视频|視頻/i.test(String(t ?? '')) ? 'video' : 'photo');
+    if (Array.isArray(p?.media)) {
+        for (const m of p.media) {
+            if (typeof m === 'string') add('photo', m);
+            else if (m && typeof m === 'object') add(kindOf(m.type ?? m.kind), m.desc ?? m.description ?? m.text, m.desc_tr ?? m.description_tr ?? m.text_tr);
+        }
+    }
+    if (typeof p?.image === 'string') add('photo', p.image, p.image_tr);
+    for (const [key, type] of [['images', 'photo'], ['videos', 'video']]) {
+        if (Array.isArray(p?.[key])) for (const m of p[key]) add(type, typeof m === 'string' ? m : (m?.desc ?? m?.description), typeof m === 'object' ? (m?.desc_tr ?? '') : '');
+    }
+    if (typeof p?.video === 'string') add('video', p.video, p.video_tr);
+    return out;
+}
+
+/** One photo / video row in the write form. */
+function addMediaRow(root, type, desc = '') {
+    const list = root.querySelector('.stcm-cp-medialist');
+    if (!list) return null;
+    const video = type === 'video';
+    const row = document.createElement('div');
+    row.className = 'stcm-cp-media';
+    row.dataset.type = video ? 'video' : 'photo';
+    row.innerHTML = `<div class="stcm-cp-media-head"><i class="fa-${video ? 'solid fa-film' : 'regular fa-image'}"></i> <b>${video ? '영상' : '사진'}</b>
+            <button data-act="ai-photo" title="제목·본문과 고른 신분에 맞춰 AI가 ${video ? '영상' : '사진'} 묘사를 써 줘요"><i class="fa-solid fa-wand-magic-sparkles"></i> AI로 묘사</button>
+            <button data-act="cp-media-del" title="이 ${video ? '영상' : '사진'} 빼기"><i class="fa-solid fa-xmark"></i></button></div>
+        <textarea rows="2" maxlength="1000" placeholder="${video ? '영상 묘사 — 예: 축제 불꽃놀이를 찍은 짧은 영상. 터질 때마다 사람들 환호성' : '사진 묘사 — 예: 축제 야시장 사진. 사람들 사이로 등불이 줄지어 걸려 있음'}"></textarea>`;
+    row.querySelector('textarea').value = desc;
+    list.append(row);
+    return row;
+}
+
+/** The write form's photos / videos, in order (empty ones left out). skip: a row not to count. */
+function readMediaRows(root, skip = null) {
+    return [...(root?.querySelectorAll('.stcm-cp-media') ?? [])]
+        .filter(r => r !== skip)
+        .map(r => ({ type: r.dataset.type === 'video' ? 'video' : 'photo', desc: r.querySelector('textarea')?.value.trim() ?? '' }))
+        .filter(m => m.desc);
 }
 
 // ---------------------------------------------------------------------------
@@ -4930,6 +5044,7 @@ function buildOverlay() {
         const b = e.target.closest('button');
         if (!b) return;
         if (b.dataset.spaceAct === 'edit') { spaceEdit = null; showSpaceEditor(); return; }
+        if (b.dataset.spaceAct === 'settings') { spaceEdit = { id: currentSpace(selPlatform) }; showSpaceEditor(); return; }
         if (b.dataset.space == null) return;
         setCurrentSpace(selPlatform, b.dataset.space);
         renderSpaceChips();
@@ -4949,7 +5064,7 @@ function buildOverlay() {
         const b = e.target.closest('button');
         if (!b) return;
         const s = getSettings();
-        if (b.dataset.topicAct === 'edit') { showTopicEditor(); return; }
+        if (b.dataset.topicAct === 'edit') { topicEdit = null; showTopicEditor(); return; }
         if (b.dataset.topicAct === 'free') s.topicSelected = [];
         else if (b.dataset.topicAct === 'mix') s.topicMix = s.topicMix === 'mix' ? 'each' : 'mix';
         else if (b.dataset.topic) {
@@ -5203,14 +5318,18 @@ async function onFeedClick(e) {
         showFeed(feed.id, { keepScroll: true });   // draws the next ones under the current list; the view stays
         return;
     }
-    if (act === 'cp-photo') {
+    if (act === 'cp-photo' || act === 'cp-video') {
         const box = el.closest('.stcm-compose-view');
-        const ib = box?.querySelector('.stcm-cp-imgbox');
-        if (!ib) return;
-        const show = ib.classList.contains('stcm-hide');
-        ib.classList.toggle('stcm-hide', !show);
-        el.classList.toggle('on', show);
-        if (show) ib.querySelector('.stcm-cp-img')?.focus();
+        if (!box) return;
+        if (box.querySelectorAll('.stcm-cp-media').length >= MEDIA_MAX) { toastr.info(`사진·영상은 한 글에 ${MEDIA_MAX}개까지 붙일 수 있어요.`); return; }
+        addMediaRow(box, act === 'cp-video' ? 'video' : 'photo', '')?.querySelector('textarea')?.focus();
+        syncComposeDraft(box);
+        return;
+    }
+    if (act === 'cp-media-del') {
+        const box = el.closest('.stcm-compose-view');
+        el.closest('.stcm-cp-media')?.remove();
+        syncComposeDraft(box);
         return;
     }
     if (act === 'ai-photo') {
@@ -5219,18 +5338,20 @@ async function onFeedClick(e) {
         if (!checkIdentity(identity)) return;
         const feed = getFeed(currentFeedId);
         const appending = feedMatchesSelection(feed);
-        const imgEl = box.querySelector('.stcm-cp-img');
+        const row = el.closest('.stcm-cp-media');
+        const imgEl = row?.querySelector('textarea');
+        const others = readMediaRows(box, row);
         const out = await aiWrite({
             kind: 'post', mode: selMode, platformId: selPlatform, identity,
             instruction: box.querySelector('.stcm-cp-inst').value,
             draft: box.querySelector('.stcm-cp-body').value,
             feed: appending ? feed : { data: { board: box.querySelector('.stcm-cp-board')?.value ?? '' } },
-            photo: { title: box.querySelector('.stcm-cp-title')?.value ?? '', current: imgEl?.value ?? '' },
+            photo: { title: box.querySelector('.stcm-cp-title')?.value ?? '', current: imgEl?.value ?? '', kind: row?.dataset.type === 'video' ? 'video' : 'photo', others },
         });
         if (out?.image && imgEl && document.body.contains(imgEl)) {
             imgEl.value = out.image;
             syncComposeDraft(box);
-            toastr.success('AI가 사진 묘사를 채웠어요.', '', { timeOut: 1500 });
+            toastr.success(row?.dataset.type === 'video' ? 'AI가 영상 묘사를 채웠어요.' : 'AI가 사진 묘사를 채웠어요.', '', { timeOut: 1500 });
         }
         return;
     }
@@ -5370,7 +5491,7 @@ async function onFeedClick(e) {
             body: box.querySelector('.stcm-cp-body').value,
             board: box.querySelector('.stcm-cp-board')?.value ?? '',
             category: box.querySelector('.stcm-cp-cat')?.value ?? '',
-            image: box.querySelector('.stcm-cp-imgbox:not(.stcm-hide) .stcm-cp-img')?.value ?? '',
+            media: readMediaRows(box),
             identity: readIdentity(box),
             react: box.querySelector('.stcm-cp-react').checked,
             draftId: box.dataset.draft ?? '',
@@ -5459,7 +5580,7 @@ function renderTopicChips() {
     el.innerHTML = `<span class="stcm-topic-label"${scopeNote}><i class="fa-solid fa-tags"></i> 글 주제${s.topicScope === 'auto' ? '(자동만)' : ''}</span>
         <button data-topic-act="free" class="${anySel ? '' : 'active'}">자유</button>
         ${topics.map(t => `<button data-topic="${esc(t.name)}" class="${sel.has(t.name) ? 'active' : ''}" title="${esc(t.desc)}">${esc(t.name)}</button>`).join('')}
-        <button data-topic-act="edit" title="주제 추가·관리"><i class="fa-solid fa-plus"></i></button>
+        <button data-topic-act="edit" title="주제 추가·관리 (이름·설명 고치기도 여기서)"><i class="fa-solid fa-plus"></i></button>
         <button data-topic-act="mix" class="stcm-topic-mix" title="여러 주제를 골랐을 때 배정 방식" style="${sel.size > 1 ? '' : 'visibility:hidden'}">${s.topicMix === 'mix' ? '섞어서' : '글마다 하나씩'}</button>`;
     el.scrollLeft = keepLeft;
 }
@@ -5485,6 +5606,8 @@ function setCurrentSpace(platformId, id) {
     s.spaceSelected = { ...(s.spaceSelected ?? {}), [platformId]: id || '' };
     saveSettings();
 }
+
+const LOCALE_CUSTOM_MAX = 10;   // free-text backgrounds kept per chat
 
 function chatLocale() {
     const st = hasChat() ? getChatStore() : null;
@@ -5530,20 +5653,25 @@ function renderSpaceChips() {
     el.innerHTML = `<span class="stcm-topic-label" title="내가 만든 ${unit}"><i class="fa-solid fa-house-flag"></i> ${unit}</span>
         <button data-space="" class="${cur ? '' : 'active'}" title="AI가 어울리는 ${unit}를 정해요">기본</button>
         ${list.map(sp => `<button data-space="${esc(sp.id)}" class="${cur === sp.id ? 'active' : ''}" title="${esc(sp.desc)}">${esc(sp.name)}</button>`).join('')}
+        ${cur ? `<button data-space-act="settings" title="'${esc(spaceById(cur)?.name ?? '')}' 설정 바꾸기 (이름·설명·배경)"><i class="fa-solid fa-gear"></i></button>` : ''}
         <button data-space-act="edit" title="${unit} 만들기·관리"><i class="fa-solid fa-plus"></i> 만들기</button>`;
     el.scrollLeft = keepLeft;
     updatePicker();
 }
 
-/** "배경" select next to the language select (per chat). */
+/** "배경" select next to the language select (per chat). Free-text backgrounds written in this chat stay in the
+ *  list; "직접 입력…" is always there to write another one. */
 function renderLocaleSelect() {
     const sel = document.getElementById('stcm_locale');
     if (!sel) return;
     const loc = chatLocale();
-    const val = loc.mode === 'country' ? `c:${loc.country}` : loc.mode;
+    const customs = (hasChat() ? getChatStore().localeCustoms : null) ?? [];
+    const val = loc.mode === 'country' ? `c:${loc.country}` : loc.mode === 'custom' ? `u:${customs.indexOf(loc.custom)}` : loc.mode;
     sel.innerHTML = `<option value="story">배경: 이야기대로</option>
         ${COUNTRIES.map(([k, ko]) => `<option value="c:${k}">배경: ${esc(ko)}</option>`).join('')}
-        <option value="custom">${loc.mode === 'custom' ? `배경: ${esc(truncate(loc.custom, 12))}` : '배경: 직접 입력…'}</option>`;
+        ${customs.map((t, i) => `<option value="u:${i}" title="${esc(t)}">배경: ${esc(truncate(t, 12))}</option>`).join('')}
+        <option value="custom">배경: 직접 입력…</option>
+        ${customs.length ? '<option value="manage">배경: 직접 입력한 것 정리…</option>' : ''}`;
     sel.value = val;
     sel.disabled = !hasChat();
     sel.title = loc.mode === 'custom' ? `커뮤니티 배경 (이 채팅): ${loc.custom}` : '커뮤니티 배경 (이 채팅)';
@@ -5554,14 +5682,43 @@ async function onLocaleChange(sel) {
     if (!st) return;
     const chatAtStart = ctx().getCurrentChatId?.();
     const v = sel.value;
+    const { Popup, POPUP_RESULT } = ctx();
     if (v === 'custom') {
-        const { Popup } = ctx();
-        const cur = st.locale?.mode === 'custom' ? st.locale.custom : '';
+        // a new one (the ones written before stay in the list)
         const text = Popup?.show?.input
-            ? await Popup.show.input('커뮤니티 배경 직접 입력', '이 채팅의 커뮤니티 사람들이 사는 곳·때를 적어 주세요. (예: 1990년대 일본 오사카, 2050년 화성 이주민 도시)', cur, { rows: 3 })
-            : prompt('커뮤니티 배경', cur);
+            ? await Popup.show.input('커뮤니티 배경 직접 입력', '이 채팅의 커뮤니티 사람들이 사는 곳·때를 적어 주세요. (예: 1990년대 일본 오사카, 2050년 화성 이주민 도시) 앞에 적은 배경은 목록에 그대로 남아서 다시 고를 수 있어요.', '', { rows: 3 })
+            : prompt('커뮤니티 배경', '');
         if (text == null || !String(text).trim() || ctx().getCurrentChatId?.() !== chatAtStart) { renderLocaleSelect(); return; }
-        st.locale = { mode: 'custom', country: '', custom: String(text).trim().slice(0, 600) };
+        const t = String(text).trim().slice(0, 600);
+        st.localeCustoms = [t, ...st.localeCustoms.filter(x => x !== t)].slice(0, LOCALE_CUSTOM_MAX);
+        st.locale = { mode: 'custom', country: '', custom: t };
+    } else if (v === 'manage') {
+        // edit or remove one of the written backgrounds (an empty box removes it)
+        const list = st.localeCustoms.map((t, i) => `${i + 1}. ${truncate(t, 60)}`).join('\n');
+        const pick = Popup?.show?.input
+            ? await Popup.show.input('직접 입력한 배경 정리', `고칠 배경의 번호를 적어 주세요.\n${list}`, '1')
+            : prompt(`고칠 배경의 번호\n${list}`, '1');
+        const k = Number(pick) - 1;
+        if (pick == null || !Number.isInteger(k) || !st.localeCustoms[k] || ctx().getCurrentChatId?.() !== chatAtStart) { renderLocaleSelect(); return; }
+        const old = st.localeCustoms[k];
+        const text = Popup?.show?.input
+            ? await Popup.show.input('배경 고치기', '내용을 고쳐 주세요. 칸을 모두 비우면 목록에서 지워요.', old, { rows: 3 })
+            : prompt('배경 고치기 (비우면 지움)', old);
+        if (text == null || ctx().getCurrentChatId?.() !== chatAtStart) { renderLocaleSelect(); return; }
+        const t = String(text).trim().slice(0, 600);
+        if (!t) {
+            const ok = Popup?.show?.confirm ? (await Popup.show.confirm('배경 지우기', `"${truncate(old, 40)}"을(를) 목록에서 지울까요?`)) === POPUP_RESULT.AFFIRMATIVE : confirm('목록에서 지울까요?');
+            if (!ok || ctx().getCurrentChatId?.() !== chatAtStart) { renderLocaleSelect(); return; }
+            st.localeCustoms = st.localeCustoms.filter(x => x !== old);
+            if (st.locale.mode === 'custom' && st.locale.custom === old) st.locale = { mode: 'story', country: '', custom: '' };
+        } else {
+            st.localeCustoms = st.localeCustoms.map(x => (x === old ? t : x)).filter((x, i, a) => a.indexOf(x) === i);
+            if (st.locale.mode === 'custom' && st.locale.custom === old) st.locale = { mode: 'custom', country: '', custom: t };
+        }
+    } else if (v.startsWith('u:')) {
+        const t = st.localeCustoms[Number(v.slice(2))];
+        if (!t) { renderLocaleSelect(); return; }
+        st.locale = { mode: 'custom', country: '', custom: t };
     } else if (v.startsWith('c:')) {
         st.locale = { mode: 'country', country: v.slice(2), custom: '' };
     } else {
@@ -5699,6 +5856,8 @@ function renderBoardChips() {
     el.scrollLeft = keepLeft;
 }
 
+let topicEdit = null;   // name of the topic being edited in the topic manager (null = adding)
+
 function showTopicEditor() {
     leaveFeed();
     view = 'topics';
@@ -5707,13 +5866,19 @@ function showTopicEditor() {
     const bar = document.getElementById('stcm_feedbar');
     const el = document.getElementById('stcm_feed');
     const topics = parseTopics();
+    const editing = topicEdit && topics.find(t => t.name === topicEdit) ? topics.find(t => t.name === topicEdit) : null;
+    if (!editing) topicEdit = null;
     bar.innerHTML = `<button id="stcm_back"><i class="fa-solid fa-arrow-left"></i> 돌아가기</button><span class="stcm-fb-info">글 주제 추가·관리 · ${topics.length}개</span>`;
     el.innerHTML = `<div class="stcm-compose-view">
-        <p class="stcm-cp-hint">새 주제를 추가하면 바로 선택돼요. 설명은 AI에게 전달되니 원하는 느낌을 적어 주세요. (같은 이름이면 설명이 바뀌어요)</p>
+        <p class="stcm-cp-hint">${editing
+            ? `<b>"${esc(editing.name)}" 고치기</b> — 이름을 바꿔도 이 주제로 쌓인 판과 글은 새 이름의 판에 그대로 보여요.`
+            : '새 주제를 추가하면 바로 선택돼요. 설명은 AI에게 전달되니 원하는 느낌을 적어 주세요. 이미 있는 주제는 <i class="fa-solid fa-pen"></i>로 이름·설명을 고칠 수 있어요.'}</p>
         <div class="stcm-topic-add">
-            <input id="stcm_tp_name" type="text" maxlength="40" placeholder="주제 이름 (예: 자캐 목격담)">
-            <input id="stcm_tp_desc" type="text" maxlength="200" placeholder="설명 (선택) — 예: 캐릭터를 길에서 봤다는 글">
-            <button class="primary" data-act="topic-add"><i class="fa-solid fa-plus"></i> 추가</button>
+            <input id="stcm_tp_name" type="text" maxlength="40" placeholder="주제 이름 (예: 자캐 목격담)" value="${esc(editing?.name ?? '')}">
+            <input id="stcm_tp_desc" type="text" maxlength="200" placeholder="설명 (선택) — 예: 캐릭터를 길에서 봤다는 글" value="${esc(editing?.desc ?? '')}">
+            ${editing
+                ? '<button data-act="topic-edit-cancel">취소</button><button class="primary" data-act="topic-add"><i class="fa-solid fa-floppy-disk"></i> 저장</button>'
+                : '<button class="primary" data-act="topic-add"><i class="fa-solid fa-plus"></i> 추가</button>'}
         </div>
         <div class="stcm-list">
             ${topics.map(t => `
@@ -5722,6 +5887,7 @@ function showTopicEditor() {
                     <b>${sel.has(t.name) ? '<i class="fa-solid fa-check"></i> ' : ''}${esc(t.name)}</b>
                     ${t.desc ? `<small>${esc(t.desc)}</small>` : ''}
                 </div>
+                <button data-act="topic-edit" data-name="${esc(t.name)}" title="이름·설명 고치기"><i class="fa-solid fa-pen"></i></button>
                 <button data-act="topic-del" data-name="${esc(t.name)}" title="삭제"><i class="fa-solid fa-xmark"></i></button>
             </div>`).join('') || '<div class="stcm-empty">주제가 없어요. 위에서 추가해 보세요.</div>'}
         </div>
@@ -5765,10 +5931,32 @@ async function onTopicAction(el) {
     const s = getSettings();
     const act = el.dataset.act;
     const list = parseTopics();
+    if (act === 'topic-edit') { topicEdit = el.dataset.name; showTopicEditor(); return; }
+    if (act === 'topic-edit-cancel') { topicEdit = null; showTopicEditor(); return; }
     if (act === 'topic-add') {
-        const name = document.getElementById('stcm_tp_name').value.replace(/[:：\n|]/g, ' ').trim();   // '|' joins topics in a board key
+        const name = document.getElementById('stcm_tp_name').value.replace(/[:：\n|]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40);   // '|' joins topics in a board key
         const desc = document.getElementById('stcm_tp_desc').value.replace(/\n/g, ' ').trim();
         if (!name) { toastr.warning('주제 이름을 적어 주세요.'); return; }
+        const old = topicEdit ? list.find(t => t.name === topicEdit) : null;
+        if (old) {
+            // editing: new name and description; boards made under the old name follow it
+            if (name !== old.name && list.some(t => t.name === name)) { toastr.warning(`"${esc(name)}" 주제가 이미 있어요. 다른 이름을 적어 주세요.`); return; }
+            const was = old.name;
+            old.desc = desc;
+            if (name !== was) {
+                old.name = name;
+                // boards made under the old name until now follow the new one (a later topic of that name won't)
+                const at = Math.max(Date.now(), ...Object.values(s.topicRenames).flat().map(e => e.at + 1));
+                s.topicRenames[was] = [...(s.topicRenames[was] ?? []), { to: name, at }];
+                s.topicSelected = (s.topicSelected ?? []).map(n => (n === was ? name : n));
+            }
+            topicEdit = null;
+            writeTopics(list);
+            toastr.success(name !== was ? `"${esc(was)}" → "${esc(name)}"로 바꿨어요.` : `"${esc(name)}" 설명을 바꿨어요.`, '', { timeOut: 2500 });
+            renderBoardChips();
+            showTopicEditor();
+            return;
+        }
         const found = list.find(t => t.name === name);
         if (found) { found.desc = desc || found.desc; toastr.info(`"${esc(name)}" 설명을 바꿨어요.`); }
         else list.push({ name, desc });
@@ -5934,7 +6122,7 @@ function showFeed(feedId, opts = {}) {
     // a renamed cafe / gallery: its feeds show the new name (in every chat, as they are opened)
     const spNow = spaceById(feedSpace(feed));
     if (spNow && feed.data.board !== spNow.name) { feed.data.board = spNow.name; scheduleFeedWrite(); }
-    const hasTr = feed.data.posts.some(p => p.body_tr || p.body_ko || p.title_tr || p.image_tr || p.comments.some(c => c.body_tr || c.body_ko));
+    const hasTr = feed.data.posts.some(p => p.body_tr || p.body_ko || p.title_tr || postMedia(p).some(m => m.desc_tr) || p.comments.some(c => c.body_tr || c.body_ko));
     const when = new Date(feed.updatedAt || feed.createdAt).toLocaleString();
     bar.innerHTML = `<span class="stcm-fb-info"><b>${esc(PLATFORMS[feed.platform]?.label)}</b> · ${esc(MODES[feed.mode]?.label)} · #${feedLastAt(feed)} 시점 · ${esc(when)}${currentBoardKey() !== null ? ` · ${esc(boardName(feedBoardKey(feed), feed.platform))}` : (feed.topics?.length ? ` · 주제: ${esc(feed.topics.join(', '))}` : '')}${feed.topic ? ` · “${esc(truncate(feed.topic, 30))}”` : ''}</span>
         ${foldable(feed) && feed.data.posts.length ? '<button id="stcm_fold_all" data-act="fold-all"></button>' : ''}
@@ -6160,7 +6348,8 @@ function showCompose() {
     const fits = (x) => {
         const orig = x.feedId ? getFeed(x.feedId) : null;
         if (orig) return appending && feed.id === orig.id;
-        return feedMatchesSelection({ platform: x.platform, mode: x.mode, space: x.space ?? '', boardKey: x.boardKey ?? '' });
+        // the board as it was when the post was kept (topic renames since then still apply; a topic made later doesn't)
+        return feedMatchesSelection({ platform: x.platform, mode: x.mode, space: x.space ?? '', boardKey: x.boardKey ?? '', createdAt: Number(x.madeAt) || Date.now() });
     };
     const d = u?.posts.find(fits) ?? null;
     const elsewhere = (u?.posts ?? []).filter(x => x !== d);
@@ -6177,16 +6366,14 @@ function showCompose() {
         ${p.hasTitle || p.chat ? `<input class="stcm-cp-title" type="text" placeholder="${p.chat ? '채널 이름 (예: 잡담) — 새 채널이 생기고 첫 메시지가 올라가요' : (p.thread ? '스레드 제목' : '제목')}">` : ''}
         ${TD_SKINS[selPlatform] ? `<select class="stcm-cp-cat">${tdCats(selPlatform).filter(c => c !== '전체').map(c => `<option value="${esc(c)}" ${feed && tdState(feed.id).cat === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>` : ''}
         <textarea class="stcm-cp-body" rows="7" placeholder="${p.thread ? '>>1 본문' : '본문'}"></textarea>
-        <div class="stcm-cp-imgbox stcm-hide">
-            <textarea class="stcm-cp-img" rows="2" maxlength="1000" placeholder="사진 묘사 — 예: 축제 야시장 사진. 사람들 사이로 등불이 줄지어 걸려 있음"></textarea>
-            <button data-act="ai-photo" title="제목·본문과 고른 신분에 맞춰 AI가 사진 묘사를 써 줘요"><i class="fa-solid fa-wand-magic-sparkles"></i> AI로 사진 묘사</button>
-        </div>
+        <div class="stcm-cp-medialist"></div>
         <div class="stcm-cp-ai">
             <input class="stcm-cp-inst" type="text" maxlength="500" placeholder="AI에게 지시 (선택) — 비우면 고른 글 주제에 맞게">
             <button data-act="ai-write-post" title="고른 신분으로 AI가 제목과 본문을 써 줘요. 본문 칸에 글이 있으면 그걸 다듬어요."><i class="fa-solid fa-wand-magic-sparkles"></i> AI로 쓰기</button>
         </div>
         <div class="stcm-cp-foot">
-            <button data-act="cp-photo" class="stcm-cp-photo" title="글에 사진 붙이기 (사진 대신 묘사가 들어가요)"><i class="fa-regular fa-image"></i> 사진</button>
+            <button data-act="cp-photo" class="stcm-cp-photo" title="글에 사진 한 장 더 붙이기 (사진 대신 묘사가 들어가요)"><i class="fa-regular fa-image"></i> 사진</button>
+            <button data-act="cp-video" class="stcm-cp-photo" title="글에 영상 하나 더 붙이기 (영상 대신 묘사가 들어가요)"><i class="fa-solid fa-film"></i> 영상</button>
             <label class="stcm-cp-check"><input type="checkbox" class="stcm-cp-react" checked> 올리고 바로 반응 생성</label>
             <button data-act="cancel-post">취소</button>
             <button class="primary" data-act="submit-post"><i class="fa-solid fa-paper-plane"></i> 올리기</button>
@@ -6202,11 +6389,7 @@ function showCompose() {
         const cat = el.querySelector('.stcm-cp-cat');
         if (cat && d.category && [...cat.options].some(o => o.value === d.category)) cat.value = d.category;
         el.querySelector('.stcm-cp-react').checked = d.react !== false;
-        if (String(d.image ?? '').trim()) {
-            el.querySelector('.stcm-cp-imgbox')?.classList.remove('stcm-hide');
-            el.querySelector('[data-act="cp-photo"]')?.classList.add('on');
-            el.querySelector('.stcm-cp-img').value = d.image;
-        }
+        for (const m of cleanMedia(d)) addMediaRow(el, m.type, m.desc);
         // edits go into the kept record too (typing, picks, the photo toggle, AI writing)
         const view = el.querySelector('.stcm-compose-view');
         const sync = () => syncComposeDraft(view);
@@ -6631,7 +6814,7 @@ async function postBackend(path, body, signal) {
     return json;
 }
 
-async function callCustomApi(api, system, user, signal, extra = {}) {
+async function callCustomApi(api, system, user, signal, extra = {}, tail = null) {
     const kind = API_KINDS[api.kind] ?? API_KINDS.openai;
     if (!String(api.model ?? '').trim()) throw new Error(`"${api.name}"에 모델이 정해지지 않았어요. 커뮤니티 창의 API 설정에서 모델을 적어 주세요.`);
     const body = {
@@ -6639,7 +6822,7 @@ async function callCustomApi(api, system, user, signal, extra = {}) {
         reverse_proxy: api.url,
         proxy_password: api.key || '',
         model: String(api.model).trim(),
-        messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+        messages: [{ role: 'system', content: system }, { role: 'user', content: user }, ...(tail ? [tail] : [])],
         max_tokens: Number(getSettings().maxTokens) || 4000,
         stream: false,
         ...extra,
@@ -7018,7 +7201,7 @@ async function onApiClick(act, el) {
         const timer = setTimeout(() => ctl.abort(), 60000);
         try {
             const system = fillTpl(getPrompt('translate_separate'), { translation: trTarget() });
-            const raw = await callModel(system, JSON.stringify({ items: [{ id: 0, text: 'Good morning! The festival starts tonight.' }] }), ctl.signal, s.translateConn, s.translateModel);
+            const raw = await callModel(system, JSON.stringify({ items: [{ id: 0, text: 'Good morning! The festival starts tonight.' }] }), ctl.signal, s.translateConn, s.translateModel, { noTail: true });
             let text = '';
             try { const d = extractJson(raw); text = (Array.isArray(d) ? d : d?.items ?? [])[0]?.text ?? ''; } catch { /* not JSON */ }
             setNote(note, text ? `번역 확인: ${truncate(text, 60)}` : `응답은 왔는데 형식이 달라요: ${truncate(String(raw ?? '').trim(), 60)}`, !!text);
@@ -7148,7 +7331,7 @@ async function testApi(btn) {
     let ok = false;
     let msg = '';
     try {
-        const reply = await callModel('This is a connection test.', 'Reply with exactly: OK', ctl.signal);
+        const reply = await callModel('This is a connection test.', 'Reply with exactly: OK', ctl.signal, undefined, '', { noTail: true });
         ok = !!String(reply ?? '').trim();
         msg = ok ? `응답 받음: ${truncate(String(reply).trim(), 40)}` : '빈 응답이 왔어요. 모델이나 토큰 설정을 확인해 주세요.';
     } catch (e) {
@@ -7453,6 +7636,15 @@ function addSettingsPanel() {
             <summary><i class="fa-solid fa-pen-to-square"></i> 프롬프트 편집</summary>
             <div class="stcm-sec-body">
           <small class="stcm-help">AI가 읽는 지시문이에요. 영어 권장.</small>
+          <div class="stcm-tail-set">
+            <label class="checkbox_label"><input id="stcm_set_tail" type="checkbox"><span>맨 밑 프롬프트 사용 <small>(아래 목록의 "맨 밑 프롬프트" 내용을 모든 생성 요청의 맨 끝에 메시지 하나로 붙여요. 연결 테스트에는 안 붙어요)</small></span></label>
+            <label>맨 밑 프롬프트 롤
+              <select id="stcm_set_tailrole" class="text_pole">
+                <option value="user">User</option>
+                <option value="assistant">Assistant (AI가 이 글에 이어서 답해요)</option>
+              </select>
+            </label>
+          </div>
           <select id="stcm_set_prompt_key" class="text_pole">${promptOpts}</select>
           <textarea id="stcm_set_prompt" class="text_pole stcm-prompt-box" rows="10"></textarea>
           <div class="stcm-prompt-row">
@@ -7530,6 +7722,8 @@ function addSettingsPanel() {
     bind('stcm_set_continue', 'continueCount');
     bind('stcm_set_ctx', 'contextMessages');
     bind('stcm_set_msgchars', 'storyMsgChars');
+    bind('stcm_set_tail', 'tailEnabled', 'checked');
+    bind('stcm_set_tailrole', 'tailRole');
     {   // the box shows exactly what is used (0.5 → 1, -3 → 0)
         const el = document.getElementById('stcm_set_msgchars');
         if (el) el.value = String(normMsgChars(s.storyMsgChars));
@@ -7599,6 +7793,7 @@ function addSettingsPanel() {
         const k = keySel.value;
         const custom = s.prompts[k];
         box.value = (typeof custom === 'string' && custom.trim()) ? custom : DEFAULT_PROMPTS[k];
+        box.placeholder = k === 'tail' ? '여기 적은 글이 요청 맨 끝에 붙어요 (위에서 "맨 밑 프롬프트 사용"을 켜야 들어가요). 예: 출력은 반드시 JSON 하나만.' : '';
         state.textContent = (typeof custom === 'string' && custom.trim()) ? '수정됨' : '기본값';
     };
     keySel.addEventListener('change', load);

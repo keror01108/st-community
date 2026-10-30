@@ -384,7 +384,7 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
 /* ---------- AI write row, import panel ---------- */
 .stcm-cp-ai { display: flex; gap: 6px; }
 .stcm-cp-ai input { flex: 1 1 auto; min-width: 0; }
-.stcm-cp-ai button, .stcm-cp-imgbox button {
+.stcm-cp-ai button, .stcm-cp-media-head button {
     flex: 0 0 auto;
     border: 1px solid var(--s-accent);
     background: transparent;
@@ -1243,11 +1243,16 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
 }
 .stcm-img > i { margin-top: 3px; opacity: 0.8; }
 .stcm-img .stcm-tr-below { display: block; }
-.stcm-cp-imgbox { display: flex; flex-direction: column; gap: 6px; }
-.stcm-cp-imgbox:not(.stcm-hide) { display: flex; }
-.stcm-cp-imgbox button { align-self: flex-end; }
-.stcm-cp-foot .stcm-cp-photo { margin-right: auto; }
-.stcm-cp-foot .stcm-cp-photo.on { background: var(--s-hover); }
+.stcm-img.video { border-style: solid; }
+.stcm-img + .stcm-img { margin-top: 4px; }
+.stcm-cp-medialist { display: flex; flex-direction: column; gap: 8px; }
+.stcm-cp-medialist:empty { display: none; }
+.stcm-cp-media { display: flex; flex-direction: column; gap: 4px; padding: 6px 8px; border: 1px dashed var(--s-border); border-radius: 8px; }
+.stcm-cp-media-head { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.stcm-cp-media-head b { margin-right: auto; }
+.stcm-cp-media-head [data-act="cp-media-del"] { border-color: var(--s-border); color: var(--s-sub); }
+.stcm-cp-media textarea { width: 100%; box-sizing: border-box; }
+.stcm-cp-foot [data-act="cp-video"] { margin-right: auto; }
 
 /* ---------- save status (header) ---------- */
 .stcm-save {
