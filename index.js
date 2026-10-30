@@ -28,7 +28,7 @@ const defaultSettings = Object.freeze({
     tailEnabled: false,          // 맨 밑 프롬프트: one more message at the very end of every request
     tailRole: 'user',            // 'user' | 'assistant'
     npcPosts: 'auto',
-    noMention: false,            // 인물 언급 금지: generated posts never mention any story character, {{user}} or side character
+    mentionScope: 'all',         // 언급 범위: all | char (only {{char}}) | user (only {{user}}) | none (nobody from the story)
     customSpaces: [],            // [{ id, platform, name, desc, locale: { mode: inherit|story|country|custom, country, custom } }]
     spaceSelected: {},           // platform → space id ('' = 기본)
     nickMode: 'random',          // empty nickname box: 'random' (instant, community style) · 'ai' (fits the person and the post)
@@ -188,6 +188,8 @@ Output ONLY a JSON object, no code fences: {"title": "post title, or empty when 
     language_foreign: `This is a {{language}}-localized version of {{platform}}, whose users normally write in {{native}}. The platform guide's example words, slang and emoji tags are written in {{native}} — never copy them; express the same nuance with natural {{language}} (emoji tags too, e.g. [눈물] or [tears] instead of [泪]). Do not borrow slang that belongs to {{language}}-speaking sites either (for Korean: 원덬, 덬, 글쓴덬, 갤러, 념글, 개추, ㅇㅇ and similar terms from Korean communities). Write the way a skilled translator would localize these posts, so it still reads as {{platform}} culture.`,
 
     npc_on: `Named side characters (NPCs) from the story — friends, family, classmates, coworkers, rivals and other people who appear in the story or the world information, but not {{char}} or {{user}} — DO use this community. Let one or two of them post or comment as themselves under fitting handles, in their own voice, knowing only what they would know. They may talk about {{char}}/{{user}} from their own point of view.`,
+    only_char: `STRICT — ONLY {{char}}: posts and comments may mention and discuss {{char}} (what {{char}} did, said or seems like), but must not mention, name, describe, quote, impersonate or allude to {{user}} or any other character or person from the story or the world information — not by name, nickname, title, appearance, role or pronoun — and none of them posts or comments. Where the story involves {{user}} or others, talk about {{char}} alone and leave the other people out completely. This overrides every rule above that asks for anyone else.`,
+    only_user: `STRICT — ONLY {{user}}: posts and comments may mention and discuss {{user}} (what {{user}} did, said or seems like), but must not mention, name, describe, quote, impersonate or allude to {{char}} or any other character or person from the story or the world information — not by name, nickname, title, appearance, role or pronoun — and none of them posts or comments. Where the story involves {{char}} or others, talk about {{user}} alone and leave the other people out completely. This overrides every rule above that asks for anyone else.`,
     no_mention: `STRICT — NO STORY PEOPLE: do not mention, name, describe, quote, impersonate or allude to {{char}}, {{user}}, or any other character or person from the story or the world information — not by name, nickname, title, appearance, role or pronoun — and none of them posts or comments. No post or comment is about them or about what they did. This overrides every rule above that asks for them. Instead write ordinary community content for this platform, mode and topic: in the reader mode, talk about the work only in general terms without its characters (updates, pacing, art or writing style, the fandom, unrelated chatter); in the in-world mode, everyday life, the setting, places, trends and happenings that involve no story characters.`,
     npc_off: `Named side characters (NPCs) from the story — anyone who appears in the story or the world information besides {{char}} and {{user}} — do NOT post or comment themselves. Every poster is an ordinary member with no name in the story; story characters may only be mentioned, rumored about or described by others.`,
     community_space: `COMMUNITY SPACE (made by the user): this happens in "{{space}}" on {{platform}}. About it: {{about}}
@@ -282,7 +284,9 @@ const PROMPT_LABELS = {
     setting_custom: '배경: 직접 입력했을 때',
     npc_on: '주변 인물(NPC): 직접 글 쓰기',
     npc_off: '주변 인물(NPC): 글 쓰지 않기',
-    no_mention: '인물 언급 금지',
+    only_char: '언급 범위: 캐릭터만',
+    only_user: '언급 범위: 유저만',
+    no_mention: '언급 범위: 아무도 언급 안 함 (인물 언급 금지)',
     inject_authored: '본편 반영: 캐릭터/유저가 쓴 글',
     inject_world: '본편 반영: 세계관 속 글',
     inject_meta: '본편 반영: 독자 반응',
@@ -383,6 +387,11 @@ function getSettings() {
     if (!s.modelOverrides || typeof s.modelOverrides !== 'object' || Array.isArray(s.modelOverrides)) s.modelOverrides = {};
     if (!s.extMemoryChoice || typeof s.extMemoryChoice !== 'object' || Array.isArray(s.extMemoryChoice)) s.extMemoryChoice = {};
     if (!s.secOpen || typeof s.secOpen !== 'object' || Array.isArray(s.secOpen)) s.secOpen = {};
+    if (Object.hasOwn(s, 'noMention')) {   // before 1.40: one on/off switch for "nobody"
+        if (s.noMention === true) s.mentionScope = 'none';
+        delete s.noMention;
+    }
+    if (!['all', 'char', 'user', 'none'].includes(s.mentionScope)) s.mentionScope = 'all';
     if (!s.topicRenames || typeof s.topicRenames !== 'object' || Array.isArray(s.topicRenames)) s.topicRenames = {};
     for (const k of Object.keys(s.topicRenames)) {
         const v = s.topicRenames[k];
@@ -1366,7 +1375,11 @@ async function buildContextBlock() {
 
 /** Whether named side characters of the story post themselves (world mode only: readers are outside the story). */
 function npcRule(mode, vars) {
-    if (getSettings().noMention) return fillTpl(getPrompt('no_mention'), vars);   // nobody from the story appears at all
+    // 언급 범위: only {{char}}, only {{user}}, or nobody from the story (side characters never post then)
+    const scope = getSettings().mentionScope;
+    if (scope === 'none') return fillTpl(getPrompt('no_mention'), vars);
+    if (scope === 'char') return fillTpl(getPrompt('only_char'), vars);
+    if (scope === 'user') return fillTpl(getPrompt('only_user'), vars);
     const v = getSettings().npcPosts;
     if (mode !== 'world' || (v !== 'on' && v !== 'off')) return '';
     return fillTpl(getPrompt(v === 'on' ? 'npc_on' : 'npc_off'), vars);
@@ -1567,8 +1580,8 @@ function serializeThread(feed, postIdx) {
         let n = 1;
         const items = [`>>${n} ${whoLine(post)}${playerMark(post, userName)}\nThread title: ${post.title}\n${post.body}${photoLine(post)}`];
         for (const c of post.comments) {
-            items.push(`>>${++n} ${whoLine(c)}${playerMark(c, userName)}\n${c.body}`);
-            for (const r of c.replies) items.push(`>>${++n} ${whoLine(r)}${playerMark(r, userName)}\n${r.body}`);
+            items.push(`>>${++n} ${whoLine(c)}${playerMark(c, userName)}\n${c.body}${photoLine(c)}`);
+            for (const r of c.replies) items.push(`>>${++n} ${whoLine(r)}${playerMark(r, userName)}\n${r.body}${photoLine(r)}`);
         }
         const head = items[0];
         const tail = items.slice(1).slice(-MAX_THREAD_ITEMS_IN_PROMPT);
@@ -1600,8 +1613,8 @@ function serializeThread(feed, postIdx) {
     if (start > 0) lines.push('(… older comments omitted …)');
     post.comments.slice(start).forEach((c, k) => {
         const i = start + k;
-        lines.push(`[c${i}] ${whoLine(c)}${playerMark(c, userName)}: ${c.body}`);
-        for (const r of c.replies) lines.push(`    ↳ ${whoLine(r)}${playerMark(r, userName)}: ${r.body}`);
+        lines.push(`[c${i}] ${whoLine(c)}${playerMark(c, userName)}: ${c.body}${photoLine(c)}`);
+        for (const r of c.replies) lines.push(`    ↳ ${whoLine(r)}${playerMark(r, userName)}: ${r.body}${photoLine(r)}`);
     });
     return lines.join('\n');
 }
@@ -2035,7 +2048,9 @@ async function translateFeed(feedId) {
     const todo = [];
     feed.data.posts.forEach((p, i) => {
         if (String(p.title ?? '').trim() && !p.title_tr && !trTriedTitle.has(p)) todo.push({ o: p, postIdx: i, field: 'title' });
-        for (const m of postMedia(p)) if (String(m.desc ?? '').trim() && !m.desc_tr && !trTriedImage.has(m)) todo.push({ o: m, postIdx: i, field: 'desc' });
+        for (const o of [p, ...p.comments, ...p.comments.flatMap(cm => cm.replies)]) {
+            for (const m of postMedia(o)) if (String(m.desc ?? '').trim() && !m.desc_tr && !trTriedImage.has(m)) todo.push({ o: m, postIdx: i, field: 'desc' });
+        }
         for (const o of [p, ...p.comments, ...p.comments.flatMap(cm => cm.replies)]) {
             if (o && String(o.body ?? '').trim() && !o.body_tr && !o.body_ko && !trTried.has(o)) todo.push({ o, postIdx: i, field: 'body' });
         }
@@ -2077,13 +2092,15 @@ function trOn(o) {
 }
 
 function postHasTr(p) {
-    return !!(p.title_tr || postMedia(p).some(m => m.desc_tr) || p.body_tr || p.body_ko || p.comments.some(cm => cm.body_tr || cm.body_ko || cm.replies.some(r => r.body_tr || r.body_ko)));
+    return !!(p.title_tr || [p, ...p.comments, ...p.comments.flatMap(cm => cm.replies)].some(o => postMedia(o).some(m => m.desc_tr)) || p.body_tr || p.body_ko || p.comments.some(cm => cm.body_tr || cm.body_ko || cm.replies.some(r => r.body_tr || r.body_ko)));
 }
 
 function postTrItems(p, i, force) {
     const out = [];
     if (String(p.title ?? '').trim() && (force || !p.title_tr)) out.push({ o: p, postIdx: i, field: 'title' });
-    for (const m of postMedia(p)) if (String(m.desc ?? '').trim() && (force || !m.desc_tr)) out.push({ o: m, postIdx: i, field: 'desc' });
+    for (const o of [p, ...p.comments, ...p.comments.flatMap(cm => cm.replies)]) {
+        for (const m of postMedia(o)) if (String(m.desc ?? '').trim() && (force || !m.desc_tr)) out.push({ o: m, postIdx: i, field: 'desc' });
+    }
     for (const o of [p, ...p.comments, ...p.comments.flatMap(cm => cm.replies)]) {
         if (String(o.body ?? '').trim() && (force || !(o.body_tr || o.body_ko))) out.push({ o, postIdx: i, field: 'body' });
     }
@@ -2635,6 +2652,7 @@ async function submitPlayerPostNow({ title, body, identity, react, board, catego
     // still the same chat, the same loaded copy, the same board? Otherwise nothing is written anywhere:
     // the text is kept for the write form
     if (!stillTarget(start, isNew ? [] : [feed])) {
+        forgetComposeForm(start.chatId);   // the kept record takes it over (no second copy in the form memory)
         keepPostDraft(start.chatId, { id: draftId, title, body, media: att, identity, react, board, category, platform: feed.platform, mode: feed.mode, feedId: isNew ? '' : feed.id, space: feedSpace(feed), boardKey: feedBoardKey(feed), madeAt: Date.now() });
         return;
     }
@@ -2645,6 +2663,7 @@ async function submitPlayerPostNow({ title, body, identity, react, board, catego
     setIdentity(identity);
     feed.data.posts.push(post);
     dropUnposted(start.chatId, draftId);   // a kept post that is now posted
+    forgetComposeForm(start.chatId);
     const postIdx = feed.data.posts.length - 1;
     if (pf.chat) dsSel.set(feed.id, postIdx);
     openPosts.add(`${feed.id}:${postIdx}`);   // your own new post opens right away
@@ -2745,6 +2764,7 @@ function syncCommentDraft() {
     const d = composer?.draft?.unpostedId ? findUnpostedAny(composer.draft.unpostedId) : null;
     if (!d) return;
     d.body = composer.draft.body ?? d.body;
+    if (Array.isArray(composer.draft.media)) d.media = cleanMedia({ media: composer.draft.media });
     if (composer.draft.react != null) d.react = composer.draft.react;
     if (composer.draft.as) d.identity = { as: composer.draft.as, nick: composer.draft.nick ?? '', charName: composer.draft.charName ?? '' };
     // the comment it answers (or none) as it is now
@@ -2769,6 +2789,12 @@ function keepUnposted(list, d) {
     return rec;
 }
 
+/** A kept post / comment as plain text: title, body and its photos / videos. */
+function draftText(d) {
+    const media = cleanMedia(d).map(m => `[${m.type === 'video' ? '영상' : '사진'}] ${m.desc}`);
+    return [d.title, d.body, ...media].map(x => String(x ?? '').trim()).filter(Boolean).join('\n\n');
+}
+
 /** Copy the whole text (a fallback when there is nowhere to put it back). */
 function copyText(text) {
     navigator.clipboard?.writeText(text).then(() => toastr.success('복사했어요.', '', { timeOut: 1500 }), () => toastr.error('복사하지 못했어요.'));
@@ -2782,12 +2808,12 @@ function draftWhere(d) {
 
 function keepPostDraft(chatId, d) {
     const rec = keepUnposted(unpostedOf(chatId).posts, d);
-    toastr.warning(`그 사이 채팅이나 피드가 바뀌어서 글을 올리지 않았어요. 그 채팅에서 원래 올리던 곳(${esc(draftWhere(rec))})의 글쓰기 창을 열면 쓴 내용이 그대로 다시 채워져요. (눌러서 전체 복사)`, '커뮤니티', { timeOut: 10000, onclick: () => copyText([rec.title, rec.body].filter(Boolean).join('\n\n')) });
+    toastr.warning(`그 사이 채팅이나 피드가 바뀌어서 글을 올리지 않았어요. 그 채팅에서 원래 올리던 곳(${esc(draftWhere(rec))})의 글쓰기 창을 열면 쓴 내용이 그대로 다시 채워져요. (눌러서 전체 복사)`, '커뮤니티', { timeOut: 10000, onclick: () => copyText(draftText(rec)) });
 }
 
 function keepCommentDraft(chatId, d) {
     keepUnposted(unpostedOf(chatId).comments, d);
-    toastr.warning(`그 사이 채팅이나 피드가 바뀌어서 댓글을 올리지 않았어요. 그 채팅에서 원래 글이 있는 피드를 열면 댓글 창에 그대로 다시 채워져요. (눌러서 전체 복사)<br><small>${esc(truncate(d.body, 120))}</small>`, '커뮤니티', { timeOut: 15000, escapeHtml: false, onclick: () => copyText(d.body) });
+    toastr.warning(`그 사이 채팅이나 피드가 바뀌어서 댓글을 올리지 않았어요. 그 채팅에서 원래 글이 있는 피드를 열면 댓글 창에 그대로 다시 채워져요. (눌러서 전체 복사)<br><small>${esc(truncate(draftText(d), 120))}</small>`, '커뮤니티', { timeOut: 15000, escapeHtml: false, onclick: () => copyText(draftText(d)) });
 }
 
 /** The same item as before: the only one that matches. -1: not there; -2: several look the same (don't guess —
@@ -2815,7 +2841,7 @@ function openCommentDraft(feed, d) {
     const ri = d.reply ? pickLike(post.comments, c => !!c && c.author === d.reply.author && c.body === d.reply.body && (c.handle ?? '') === (d.reply.handle ?? c.handle ?? '') && (c.time ?? '') === (d.reply.time ?? c.time ?? '')) : -1;
     const chatLike = PLATFORMS[feed.platform]?.chat;
     d.shown = true;
-    composer = { feedId: feed.id, postIdx: idx, replyTo: ri >= 0 ? ri : null, place: ri >= 0 && !chatLike ? `c${ri}` : 'end', draft: { body: d.body, react: d.react, ...d.identity, unpostedId: d.id } };
+    composer = { cid: newComposerId(), feedId: feed.id, postIdx: idx, replyTo: ri >= 0 ? ri : null, place: ri >= 0 && !chatLike ? `c${ri}` : 'end', draft: { body: d.body, react: d.react, media: d.media ?? [], ...d.identity, unpostedId: d.id } };
     openPosts.add(`${feed.id}:${idx}`);
     const why = !d.reply || ri >= 0 ? ''
         : ri === -2 ? ' (같은 내용의 댓글이 여러 개라 어느 댓글에 답글을 달던 건지 알 수 없어서, 일반 댓글로 들어가요. 답글로 달려면 그 댓글의 "답글"을 눌러 주세요)'
@@ -2848,7 +2874,7 @@ function unpostedNotice(feed) {
         const here = feed && d.feedId === feed.id ? findPostLike(feed, d.post) : -1;
         const where = here >= 0 ? '' : here === -2 ? ' <small>(같은 글이 여러 개라 원래 글을 알 수 없어요)</small>' : !getFeed(d.feedId) ? ' <small>(원래 피드가 없어졌어요)</small>' : ' <small>(원래 글이 없어졌어요)</small>';
         const id = esc(d.id);
-        return `<div class="row"><i class="fa-regular fa-comment-dots"></i><span class="tx"><b>올리지 못한 댓글</b>${where} ${esc(truncate(d.body, 80))}</span>
+        return `<div class="row"><i class="fa-regular fa-comment-dots"></i><span class="tx"><b>올리지 못한 댓글</b>${where} ${esc(truncate(draftText(d), 80))}</span>
             ${here >= 0 ? `<a class="stcm-link" data-act="unposted-open" data-draft="${id}">다시 쓰기</a>` : ''}
             <a class="stcm-link" data-act="unposted-copy" data-draft="${id}">복사</a>
             <a class="stcm-link" data-act="unposted-drop" data-draft="${id}">버리기</a></div>`;
@@ -2863,11 +2889,12 @@ async function submitPlayerComment(args) {
     try { await submitPlayerCommentNow(args); } finally { submitting = false; }
 }
 
-async function submitPlayerCommentNow({ feedId, postIdx, replyTo, body, identity, react, draftId = '' }) {
+async function submitPlayerCommentNow({ feedId, postIdx, replyTo, body, identity, react, media = [], draftId = '' }) {
     const feed = getFeed(feedId);
     const post = feed?.data.posts[postIdx];
     if (!post) return;
-    if (!body.trim()) { toastr.warning('내용을 입력해 주세요.'); return; }
+    const att = commentMediaOn(feed, post) ? cleanMedia({ media }) : [];
+    if (!body.trim() && !att.length) { toastr.warning('내용을 입력해 주세요.'); return; }
     if (!checkIdentity(identity)) return;
     if (isThreadFull(feed, post)) { toastr.warning('이 스레드는 꽉 찼어요. 후속 스레에 써 주세요.'); return; }
 
@@ -2875,6 +2902,7 @@ async function submitPlayerCommentNow({ feedId, postIdx, replyTo, body, identity
     const start = workTarget();
     const replyTarget = replyTo != null && replyTo >= 0 ? post.comments[replyTo] ?? null : null;
     const item = playerItem(feed.platform, { ...identity, body: body.trim() }, feedLang(feed));
+    if (att.length) item.media = att;
     if (post.kind === 'dm') { /* a DM's sender name is fixed by the DM itself */ }
     else if (NUMBERED_ANON[feed.platform] && (!identity.nick?.trim() || isAnonLabel(feed.platform, identity.nick)) && !customNickInPost(post, identity, feed)) item.author = numberedName(post, feed.platform, identity);
     else await resolveNick({ feed, post, identity, text: body, item });   // may wait for an AI nickname
@@ -2885,7 +2913,7 @@ async function submitPlayerCommentNow({ feedId, postIdx, replyTo, body, identity
             feedId: feed.id,
             post: { title: post.title ?? '', body: post.body, author: post.author ?? '', time: post.time ?? '' },
             reply: replyTarget ? { author: replyTarget.author, body: replyTarget.body, handle: replyTarget.handle ?? '', time: replyTarget.time ?? '' } : null,
-            body: body.trim(), identity: { as: identity.as, nick: identity.nick ?? '', charName: identity.charName ?? '' }, react,
+            body: body.trim(), media: att, identity: { as: identity.as, nick: identity.nick ?? '', charName: identity.charName ?? '' }, react,
         });
         return;
     }
@@ -3025,14 +3053,17 @@ async function aiWrite({ kind, mode, platformId, identity, instruction, draft, f
         if (b.extra) parts.push(`<extra_instructions>\n${b.extra}\n</extra_instructions>`);
         if (photo) {
             // only the picture: what this author's photo / screenshot shows
-            parts.push(`<post>\n${photo.title?.trim() ? `Title: ${photo.title.trim()}\n` : ''}${draft?.trim() || '(no text yet)'}\n</post>`);
+            const what = photo.target === 'comment' ? (platformId === 'fivech' ? 'new res (reply post in the thread)' : 'new comment') : 'post';
+            parts.push(photo.target === 'comment'
+                ? `<new_${platformId === 'fivech' ? 'res' : 'comment'}>\nThe ${what} being written in the thread above:\n${draft?.trim() || '(no text yet)'}\n</new_${platformId === 'fivech' ? 'res' : 'comment'}>`
+                : `<post>\n${photo.title?.trim() ? `Title: ${photo.title.trim()}\n` : ''}${draft?.trim() || '(no text yet)'}\n</post>`);
             const video = photo.kind === 'video';
             const others = (photo.others ?? []).filter(m => m.desc?.trim());
-            if (others.length) parts.push(`<other_attachments>\nThe post already has: ${others.map(m => `[${m.type === 'video' ? 'video' : 'photo'}] ${truncate(m.desc.trim(), 200)}`).join(' / ')}\nThis one is another, different ${video ? 'video' : 'picture'}.\n</other_attachments>`);
+            if (others.length) parts.push(`<other_attachments>\nThe ${what} already has: ${others.map(m => `[${m.type === 'video' ? 'video' : 'photo'}] ${truncate(m.desc.trim(), 200)}`).join(' / ')}\nThis one is another, different ${video ? 'video' : 'picture'}.\n</other_attachments>`);
             if (photo.current?.trim()) parts.push(`<current_${video ? 'video' : 'photo'}_description>\n${photo.current.trim()}\n</current_${video ? 'video' : 'photo'}_description>`);
             parts.push(video
-                ? `The author of the post above (${describeAuthor(identity, platformId)}) attaches a short video to it. Describe what the video shows — the scene, what happens, notable sound — in one or two short sentences, in the same language as the post, fitting the post, the community and the story world. No brackets, no quotes. ${photo.current?.trim() ? 'Improve the current description, keeping its idea.' : ''} Reply with JSON only: {"image": "..."}`
-                : `The author of the post above (${describeAuthor(identity, platformId)}) attaches a photo or screenshot to it. Describe what the picture shows — what is in it, framing, mood — in one or two short sentences, in the same language as the post, fitting the post, the community and the story world. No brackets, no quotes. ${photo.current?.trim() ? 'Improve the current description, keeping its idea.' : ''} Reply with JSON only: {"image": "..."}`);
+                ? `The author of the ${what} above (${describeAuthor(identity, platformId)}) attaches a short video to it. Describe what the video shows — the scene, what happens, notable sound — in one or two short sentences, in the same language as the ${what}, fitting it, the thread, the community and the story world. No brackets, no quotes. ${photo.current?.trim() ? 'Improve the current description, keeping its idea.' : ''} Reply with JSON only: {"image": "..."}`
+                : `The author of the ${what} above (${describeAuthor(identity, platformId)}) attaches a photo or screenshot to it. Describe what the picture shows — what is in it, framing, mood — in one or two short sentences, in the same language as the ${what}, fitting it, the thread, the community and the story world. No brackets, no quotes. ${photo.current?.trim() ? 'Improve the current description, keeping its idea.' : ''} Reply with JSON only: {"image": "..."}`);
             const raw = await callModel(b.system, parts.filter(x => !x.startsWith('<draft>')).join('\n\n'), signal);
             if (!stillSameChat()) return null;
             let image = '';
@@ -3091,7 +3122,8 @@ function postHasStoryAuthor(post) {
 function postToPinText(post) {
     const lines = [];
     const head = post.title ? `"${post.title}" — ` : '';
-    lines.push(`${head}${authorLabel(post)}: ${truncate(post.body, 500)}${postMedia(post).filter(m => m.desc.trim()).map(m => ` [${m.type === 'video' ? 'video' : 'photo'}: ${truncate(m.desc.trim(), 200)}]`).join('')}`);
+    const att = (o, n) => postMedia(o).filter(m => m.desc.trim()).map(m => ` [${m.type === 'video' ? 'video' : 'photo'}: ${truncate(m.desc.trim(), n)}]`).join('');
+    lines.push(`${head}${authorLabel(post)}: ${truncate(post.body, 500)}${att(post, 200)}`);
     const comments = post.comments ?? [];
     const keep = new Set([0, 1, 2, comments.length - 1]);
     comments.forEach((c, i) => {
@@ -3106,11 +3138,11 @@ function postToPinText(post) {
     comments.forEach((c, i) => {
         if (!keep.has(i)) { skipped = true; return; }
         if (skipped) { lines.push('  ↳ …'); skipped = false; }
-        lines.push(`  ↳ ${authorLabel(c)}: ${truncate(c.body, storyAuthor(c) ? 400 : 150)}`);
+        lines.push(`  ↳ ${authorLabel(c)}: ${truncate(c.body, storyAuthor(c) ? 400 : 150)}${att(c, 150)}`);
         const rs = c.replies.filter(r => storyAuthor(r));
         const others = c.replies.filter(r => !storyAuthor(r)).slice(0, storyAuthor(c) ? 3 : 1);
         for (const r of c.replies) {
-            if (rs.includes(r) || others.includes(r)) lines.push(`      ↳ ${authorLabel(r)}: ${truncate(r.body, storyAuthor(r) ? 400 : 120)}`);
+            if (rs.includes(r) || others.includes(r)) lines.push(`      ↳ ${authorLabel(r)}: ${truncate(r.body, storyAuthor(r) ? 400 : 120)}${att(r, 120)}`);
         }
     });
     return lines.join('\n');
@@ -3210,7 +3242,8 @@ function ttl(p) {
     if (!(p?.title_tr && trOn(p))) return p?.title ?? '';
     return getSettings().trDisplay === 'both' ? `${p.title} — ${p.title_tr}` : p.title_tr;
 }
-let composer = null;   // { feedId, postIdx, replyTo }
+let composer = null;   // { cid, feedId, postIdx, replyTo, place, draft } — cid: this comment box's own id
+function newComposerId() { return `c${Date.now().toString(36)}${randomId(5)}`; }
 
 /** A post's attached photos / videos, shown as their descriptions: [사진 내용], ▶ [영상 내용]. */
 function imgBox(o) {
@@ -3262,29 +3295,108 @@ function cleanMedia(p) {
     return out;
 }
 
-/** One photo / video row in the write form. */
-function addMediaRow(root, type, desc = '') {
-    const list = root.querySelector('.stcm-cp-medialist');
-    if (!list) return null;
-    const video = type === 'video';
-    const row = document.createElement('div');
-    row.className = 'stcm-cp-media';
-    row.dataset.type = video ? 'video' : 'photo';
-    row.innerHTML = `<div class="stcm-cp-media-head"><i class="fa-${video ? 'solid fa-film' : 'regular fa-image'}"></i> <b>${video ? '영상' : '사진'}</b>
-            <button data-act="ai-photo" title="제목·본문과 고른 신분에 맞춰 AI가 ${video ? '영상' : '사진'} 묘사를 써 줘요"><i class="fa-solid fa-wand-magic-sparkles"></i> AI로 묘사</button>
-            <button data-act="cp-media-del" title="이 ${video ? '영상' : '사진'} 빼기"><i class="fa-solid fa-xmark"></i></button></div>
-        <textarea rows="2" maxlength="1000" placeholder="${video ? '영상 묘사 — 예: 축제 불꽃놀이를 찍은 짧은 영상. 터질 때마다 사람들 환호성' : '사진 묘사 — 예: 축제 야시장 사진. 사람들 사이로 등불이 줄지어 걸려 있음'}"></textarea>`;
-    row.querySelector('textarea').value = desc;
-    list.append(row);
-    return row;
+/** 2ch reses and Reddit comments you write can carry photos / videos too (not in a DM). */
+const COMMENT_MEDIA = new Set(['fivech', 'reddit']);
+function commentMediaOn(feed, post) {
+    return COMMENT_MEDIA.has(feed?.platform) && post?.kind !== 'dm';
 }
 
-/** The write form's photos / videos, in order (empty ones left out). skip: a row not to count. */
-function readMediaRows(root, skip = null) {
+/** One photo / video row of a write form / comment box, as HTML. mid: the row's own id (kept when the box is
+ *  drawn again), so an AI description that comes back later goes into that very row — or nowhere if it was removed. */
+function mediaRowHtml(type, desc = '', mid = '') {
+    const video = type === 'video';
+    const id = /^[a-zA-Z0-9]{1,20}$/.test(String(mid)) ? mid : `m${Date.now().toString(36)}${randomId(5)}`;
+    return `<div class="stcm-cp-media" data-type="${video ? 'video' : 'photo'}" data-mid="${id}"><div class="stcm-cp-media-head"><i class="fa-${video ? 'solid fa-film' : 'regular fa-image'}"></i> <b>${video ? '영상' : '사진'}</b>
+            <button data-act="ai-photo" title="글과 고른 신분에 맞춰 AI가 ${video ? '영상' : '사진'} 묘사를 써 줘요"><i class="fa-solid fa-wand-magic-sparkles"></i> AI로 묘사</button>
+            <button data-act="cp-media-del" title="이 ${video ? '영상' : '사진'} 빼기"><i class="fa-solid fa-xmark"></i></button></div>
+        <textarea rows="2" maxlength="1000" placeholder="${video ? '영상 묘사 — 예: 축제 불꽃놀이를 찍은 짧은 영상. 터질 때마다 사람들 환호성' : '사진 묘사 — 예: 축제 야시장 사진. 사람들 사이로 등불이 줄지어 걸려 있음'}">${esc(desc)}</textarea></div>`;
+}
+
+/** Add a photo / video row to a write form or comment box. */
+function addMediaRow(root, type, desc = '', mid = '') {
+    const list = root.querySelector('.stcm-cp-medialist');
+    if (!list) return null;
+    list.insertAdjacentHTML('beforeend', mediaRowHtml(type, desc, mid));
+    return list.lastElementChild;
+}
+
+/** The write form being filled in, per chat (until it is posted or thrown away, or the page is closed):
+ *  leaving for another menu, switching boards or closing the panel keeps it, and an AI answer that comes back
+ *  meanwhile lands in it. */
+const composeDrafts = new Map();   // chatId → { formId, title, body, board, category, media, identity, react, inst, unpostedId }
+const aiPendingForms = new Set();  // forms waiting for an AI answer: kept even while still empty
+
+function readComposeForm(view) {
+    return {
+        title: view.querySelector('.stcm-cp-title')?.value ?? '',
+        body: view.querySelector('.stcm-cp-body')?.value ?? '',
+        board: view.querySelector('.stcm-cp-board')?.value ?? '',
+        category: view.querySelector('.stcm-cp-cat')?.value ?? '',
+        media: readMediaRows(view, null, true),
+        identity: readIdentity(view),
+        react: view.querySelector('.stcm-cp-react')?.checked !== false,
+        inst: view.querySelector('.stcm-cp-inst')?.value ?? '',
+        unpostedId: view.dataset.draft || '',
+        formId: view.dataset.fid || '',
+    };
+}
+
+/** Remember the write form (an empty one is forgotten; a posted / thrown-away one is never written back). */
+function saveComposeForm(view) {
+    const chatId = view?.dataset?.chat;
+    if (!chatId || view.dataset.done) return;
+    const d = readComposeForm(view);
+    const empty = !d.title.trim() && !d.body.trim() && !d.board.trim() && !d.inst.trim() && !d.media.length && !d.unpostedId;
+    if (empty && !aiPendingForms.has(d.formId)) composeDrafts.delete(chatId); else composeDrafts.set(chatId, d);
+}
+
+/** After an AI request: a form that is still empty (the AI failed / gave nothing) is not kept. */
+function settleComposeForm(chatId, formId) {
+    const d = composeDrafts.get(chatId);
+    if (!d || d.formId !== formId || aiPendingForms.has(formId)) return;
+    const empty = !d.title.trim() && !d.body.trim() && !d.board.trim() && !d.inst.trim() && !d.media.length && !d.unpostedId;
+    if (empty) composeDrafts.delete(chatId);
+}
+
+/** The write form is done (posted / thrown away / taken over by a kept record): forget it. */
+function forgetComposeForm(chatId) {
+    composeDrafts.delete(chatId);
+    const v = document.querySelector(`#stcm_feed .stcm-compose-view[data-chat="${CSS.escape(String(chatId ?? ''))}"]`);
+    if (v) v.dataset.done = '1';
+}
+
+/** An AI answer for the write form it was asked from: into that form if it is open, else into the kept copy of it.
+ *  A form that was posted or thrown away meanwhile (a new one has another id) gets nothing. */
+function updateComposeForm(chatId, formId, fn) {
+    const v = document.querySelector(`#stcm_feed .stcm-compose-view[data-chat="${CSS.escape(String(chatId ?? ''))}"][data-fid="${CSS.escape(String(formId ?? ''))}"]:not([data-done])`);
+    if (v) saveComposeForm(v);
+    const d = composeDrafts.get(chatId);
+    if (!d || !formId || d.formId !== formId) return false;
+    fn(d);
+    if (v) {
+        // show it in the open form
+        const t = v.querySelector('.stcm-cp-title');
+        if (t) t.value = d.title ?? '';
+        v.querySelector('.stcm-cp-body').value = d.body ?? '';
+        const nick = v.querySelector('.stcm-cp-nick');
+        if (nick) nick.value = d.identity?.nick ?? nick.value;
+        for (const m of d.media) {
+            const row = m.mid ? v.querySelector(`.stcm-cp-media[data-mid="${CSS.escape(m.mid)}"] textarea`) : null;
+            if (row) row.value = m.desc;
+        }
+        syncComposeDraft(v);
+        saveComposeForm(v);
+    }
+    return true;
+}
+
+/** A form's photos / videos, in order. skip: a row not to count; keepEmpty: also rows not filled in yet
+ *  (a comment box drawn again keeps them). */
+function readMediaRows(root, skip = null, keepEmpty = false) {
     return [...(root?.querySelectorAll('.stcm-cp-media') ?? [])]
         .filter(r => r !== skip)
-        .map(r => ({ type: r.dataset.type === 'video' ? 'video' : 'photo', desc: r.querySelector('textarea')?.value.trim() ?? '' }))
-        .filter(m => m.desc);
+        .map(r => ({ type: r.dataset.type === 'video' ? 'video' : 'photo', desc: r.querySelector('textarea')?.value.trim() ?? '', ...(keepEmpty ? { mid: r.dataset.mid } : {}) }))
+        .filter(m => keepEmpty || m.desc);
 }
 
 // ---------------------------------------------------------------------------
@@ -3581,7 +3693,8 @@ function itemLinks(feed, i, ci, ri, o, n = null) {
     if (o && ci != null && (o.body_tr || o.body_ko) && trOn(o)) {
         links.push(`<a class="stcm-link" data-act="tr-edit-item" data-feed="${esc(feed.id)}" data-idx="${i}" data-ci="${ci}"${ri != null ? ` data-ri="${ri}"` : ''}>번역 수정</a>`);
     }
-    if (o && ci != null) {   // any comment / reply / message can be removed, generated ones too
+    if (o && ci != null) {   // any comment / reply / message can be edited or removed, generated ones too
+        links.push(`<a class="stcm-link" data-act="edit-item" data-feed="${esc(feed.id)}" data-idx="${i}" data-ci="${ci}"${ri != null ? ` data-ri="${ri}"` : ''}>수정</a>`);
         links.push(`<a class="stcm-link danger" data-act="del-item" data-feed="${esc(feed.id)}" data-idx="${i}" data-ci="${ci}"${ri != null ? ` data-ri="${ri}"` : ''}>삭제</a>`);
     }
     return links.length ? `<span class="stcm-links">${links.join('')}</span>` : '';
@@ -3605,6 +3718,7 @@ function postActions(feed, i) {
         ${post.kind === 'dm' ? '' : `<button class="stcm-tog icon ${crossRefOn(post) ? 'on' : ''}" data-act="crossref" data-feed="${esc(feed.id)}" data-idx="${i}" title="${getSettings().crossRef ? '전체 설정에서 켜져 있어요' : (post.crossRef ? '이 글만 다른 글 참고 끄기' : '이 글을 이어갈 때 다른 게시글도 참고')}"><i class="fa-solid fa-link"></i></button>`}
         ${trButtons(feed, i)}
         <button class="stcm-pin ${on ? 'on' : ''}" data-act="pin" data-feed="${esc(feed.id)}" data-idx="${i}" title="본편에 반영"><i class="fa-solid fa-thumbtack"></i>${on ? '반영 중' : '반영'}</button>
+        ${post.kind === 'dm' ? '' : `<button class="icon" data-act="edit-post" data-feed="${esc(feed.id)}" data-idx="${i}" title="${esc(postKindLabel(feed, post))} 수정 (제목·본문·사진·영상)"><i class="fa-solid fa-pencil"></i></button>`}
         <button data-act="del-post" data-feed="${esc(feed.id)}" data-idx="${i}" title="${esc(postKindLabel(feed, post))} 삭제"><i class="fa-solid fa-trash-can"></i></button>
     </div>`;
 }
@@ -3702,16 +3816,20 @@ function composerSlot(feed, i) {
     // In a DM the sender is fixed: the side that started it
     const ident = isDm ? `<div class="stcm-cp-target">보내는 사람: <b>${esc(dmSideName(post.dm?.me))}</b> → <b>${esc(dmPartnerLabel(post))}</b></div>` : identityControls(composer.draft, post);
     const kept = composer.draft?.unpostedId && findUnposted(feedState.chatId, composer.draft.unpostedId);
+    const withMedia = commentMediaOn(feed, post);
     return `<div class="stcm-composer" data-feed="${esc(feed.id)}" data-idx="${i}">
         ${kept ? `<div class="stcm-cp-hint stcm-unposted-hint">올리지 못했던 댓글이에요. 등록하면 보관 목록에서 빠져요 · <a class="stcm-link" data-act="unposted-drop" data-draft="${esc(kept.id)}">보관 목록에서 버리기</a></div>` : ''}
         ${ident}
         ${target ? `<div class="stcm-cp-target">↳ <b>${esc(target.author)}</b>님에게 ${chat ? '답장' : '답글'} <a class="stcm-link" data-act="reply-cancel">취소</a></div>` : ''}
         <textarea class="stcm-cp-body" rows="3" placeholder="${esc(ph)}">${esc(composer.draft?.body ?? '')}</textarea>
+        ${withMedia ? `<div class="stcm-cp-medialist">${(composer.draft?.media ?? []).map(m => mediaRowHtml(m.type, m.desc, m.mid)).join('')}</div>` : ''}
         <div class="stcm-cp-ai">
             <input class="stcm-cp-inst" type="text" maxlength="500" value="${esc(composer.draft?.inst ?? '')}" placeholder="AI에게 지시 (선택) — 비우면 알아서">
             <button data-act="ai-write-comment" title="고른 신분으로 AI가 써 줘요. 칸에 글이 있으면 그걸 다듬어요."><i class="fa-solid fa-wand-magic-sparkles"></i> AI로 쓰기</button>
         </div>
         <div class="stcm-cp-foot">
+            ${withMedia ? `<button data-act="cp-photo" class="stcm-cp-photo" title="${thread ? '레스' : '댓글'}에 사진 한 장 더 붙이기 (사진 대신 묘사가 들어가요)"><i class="fa-regular fa-image"></i> 사진</button>
+            <button data-act="cp-video" class="stcm-cp-photo" title="${thread ? '레스' : '댓글'}에 영상 하나 더 붙이기 (영상 대신 묘사가 들어가요)"><i class="fa-solid fa-film"></i> 영상</button>` : ''}
             <label class="stcm-cp-check"><input type="checkbox" class="stcm-cp-react" ${composer.draft?.react === false ? '' : 'checked'}> 반응 생성</label>
             <button data-act="cancel-comment">취소</button>
             <button class="primary" data-act="submit-comment"><i class="fa-solid fa-paper-plane"></i> 등록</button>
@@ -3965,7 +4083,7 @@ const renderers = {
         const comment = (c, i, ci, ri) => `
             <div class="stcm-r-c" style="--depth:${ri == null ? 0 : 1}" data-k="${i}.${ci}${ri == null ? '' : '.' + ri}">
                 <div class="stcm-r-cmeta">${avatar(c.handle || c.author, 'sm')}<b>${esc(uname(c))}</b>${meBadge(c)}<span>· ${esc(c.time)}</span></div>
-                <div class="stcm-body">${txt(c, 'reddit')}</div>
+                <div class="stcm-body">${txt(c, 'reddit')}</div>${imgBox(c)}
                 <div class="stcm-r-cact"><i class="fa-solid fa-arrow-up"></i> ${num(c.likes)} <i class="fa-solid fa-arrow-down"></i>${itemLinks(feed, i, ci, ri, c)}</div>
                 ${ri == null ? (c.replies ?? []).map((r, rj) => comment(r, i, ci, rj)).join('') + slotAt(feed, i, `c${ci}`) : ''}
             </div>`;
@@ -5174,7 +5292,9 @@ async function onFeedClick(e) {
         captureDraft();
         const prevPost = composer && composer.feedId === feedId ? composer.postIdx : null;
         const keepDraft = composer && next && composer.feedId === next.feedId && composer.postIdx === next.postIdx ? composer.draft : null;
-        composer = next ? { ...next, draft: next.draft ?? keepDraft } : null;
+        // the same comment box on the same post (another reply target, an anchor) stays the same piece of writing
+        const samePost = composer && next && composer.feedId === next.feedId && composer.postIdx === next.postIdx;
+        composer = next ? { ...next, draft: next.draft ?? keepDraft, cid: samePost && composer.cid ? composer.cid : newComposerId() } : null;
         syncCommentDraft();   // a kept comment that now answers another comment (or none) remembers that
         if (composer) openPosts.add(`${feedId}:${idx}`);
         if (prevPost != null && prevPost !== idx) updatePost(feedId, prevPost);
@@ -5283,6 +5403,7 @@ async function onFeedClick(e) {
             body: box.querySelector('.stcm-cp-body').value,
             identity: readIdentity(box),
             react: box.querySelector('.stcm-cp-react').checked,
+            media: readMediaRows(box),
             draftId: composer?.draft?.unpostedId ?? '',
         });
         return;
@@ -5290,7 +5411,7 @@ async function onFeedClick(e) {
     if (act === 'unposted-open' || act === 'unposted-copy' || act === 'unposted-drop') {
         const d = findUnposted(feedState.chatId, el.dataset.draft);
         if (!d) return;
-        if (act === 'unposted-copy') { copyText(d.title ? `${d.title}\n\n${d.body}` : d.body); return; }
+        if (act === 'unposted-copy') { copyText(draftText(d)); return; }
         if (act === 'unposted-drop') {
             dropUnposted(feedState.chatId, d.id);
             if (composer?.draft?.unpostedId === d.id) delete composer.draft.unpostedId;
@@ -5319,7 +5440,7 @@ async function onFeedClick(e) {
         return;
     }
     if (act === 'cp-photo' || act === 'cp-video') {
-        const box = el.closest('.stcm-compose-view');
+        const box = el.closest('.stcm-compose-view, .stcm-composer');
         if (!box) return;
         if (box.querySelectorAll('.stcm-cp-media').length >= MEDIA_MAX) { toastr.info(`사진·영상은 한 글에 ${MEDIA_MAX}개까지 붙일 수 있어요.`); return; }
         addMediaRow(box, act === 'cp-video' ? 'video' : 'photo', '')?.querySelector('textarea')?.focus();
@@ -5327,9 +5448,70 @@ async function onFeedClick(e) {
         return;
     }
     if (act === 'cp-media-del') {
-        const box = el.closest('.stcm-compose-view');
+        const box = el.closest('.stcm-compose-view, .stcm-composer');
         el.closest('.stcm-cp-media')?.remove();
         syncComposeDraft(box);
+        return;
+    }
+    if (act === 'ai-photo' && el.closest('.stcm-edit-view')) {
+        // a photo / video on a post or comment being edited
+        const box = el.closest('.stcm-edit-view');
+        const t = editTarget;
+        const feed = t ? getFeed(t.feedId) : null;
+        const pi = feed ? feed.data.posts.indexOf(t.post) : -1;
+        if (!feed || pi < 0) return;
+        const row = el.closest('.stcm-cp-media');
+        if (!row) return;
+        const type = row.dataset.type === 'video' ? 'video' : 'photo';
+        const o = t.item;
+        const identity = o.isMe ? { as: o.as ?? 'mob', nick: o.author ?? '', charName: o.charName ?? '' } : { as: 'mob', nick: o.author ?? '', charName: '' };
+        const out = await aiWrite({
+            kind: t.kind === 'post' ? 'post' : 'comment', mode: feed.mode, platformId: feed.platform, identity,
+            instruction: '', draft: box.querySelector('.stcm-cp-body').value,
+            feed, postIdx: t.kind === 'post' ? null : pi,
+            photo: { target: t.kind === 'post' ? 'post' : 'comment', title: box.querySelector('.stcm-cp-title')?.value ?? '', current: row.querySelector('textarea').value, kind: type, others: readMediaRows(box, row) },
+        });
+        if (out?.image && document.body.contains(row)) {
+            row.querySelector('textarea').value = out.image;
+            toastr.success(type === 'video' ? 'AI가 영상 묘사를 채웠어요.' : 'AI가 사진 묘사를 채웠어요.', '', { timeOut: 1500 });
+        }
+        return;
+    }
+    if (act === 'ai-photo' && el.closest('.stcm-composer')) {
+        // a photo / video on a res or comment you are writing
+        const box = el.closest('.stcm-composer');
+        const identity = readIdentity(box);
+        if (!checkIdentity(identity)) return;
+        const fid = box.dataset.feed;
+        const pi = Number(box.dataset.idx);
+        const feed = getFeed(fid);
+        if (!feed) return;
+        const row = el.closest('.stcm-cp-media');
+        if (!row) return;
+        const type = row.dataset.type === 'video' ? 'video' : 'photo';
+        const mid = row.dataset.mid;
+        captureDraft();   // the rows (and what is written) stay even if you leave now
+        const cid = composer?.cid;
+        const out = await aiWrite({
+            kind: composer?.replyTo != null ? 'reply' : 'comment', mode: feed.mode, platformId: feed.platform, identity,
+            instruction: box.querySelector('.stcm-cp-inst').value,
+            draft: box.querySelector('.stcm-cp-body').value,
+            feed, postIdx: pi, replyTo: composer?.replyTo ?? null,
+            photo: { target: 'comment', current: row?.querySelector('textarea')?.value ?? '', kind: type, others: readMediaRows(box, row) },
+        });
+        // the box may have been drawn again while the AI wrote: find the same row in the live one
+        const same = !!composer && composer.cid === cid;   // still the comment box it was asked from
+        const live = same ? document.querySelector(`#stcm_feed .stcm-composer[data-feed="${CSS.escape(fid)}"][data-idx="${pi}"]`) : null;
+        const liveRow = mid ? live?.querySelector(`.stcm-cp-media[data-mid="${CSS.escape(mid)}"]`) : null;   // removed meanwhile: nothing is written
+        if (out?.image && liveRow?.dataset.type === type) {
+            liveRow.querySelector('textarea').value = out.image;
+            captureDraft();
+            toastr.success(type === 'video' ? 'AI가 영상 묘사를 채웠어요.' : 'AI가 사진 묘사를 채웠어요.', '', { timeOut: 1500 });
+        } else if (out?.image && !live && same) {
+            // the box isn't on screen: the row (if it is still there) gets it for when you come back
+            const m = (composer.draft?.media ?? []).find(x => x.mid === mid && x.type === type);
+            if (m) { m.desc = out.image; syncCommentDraft(); }
+        }
         return;
     }
     if (act === 'ai-photo') {
@@ -5341,18 +5523,25 @@ async function onFeedClick(e) {
         const row = el.closest('.stcm-cp-media');
         const imgEl = row?.querySelector('textarea');
         const others = readMediaRows(box, row);
-        const out = await aiWrite({
+        const chatId = box.dataset.chat;
+        const formId = box.dataset.fid;
+        const mid = row?.dataset.mid;
+        aiPendingForms.add(formId);
+        saveComposeForm(box);
+        let out;
+        try { out = await aiWrite({
             kind: 'post', mode: selMode, platformId: selPlatform, identity,
             instruction: box.querySelector('.stcm-cp-inst').value,
             draft: box.querySelector('.stcm-cp-body').value,
             feed: appending ? feed : { data: { board: box.querySelector('.stcm-cp-board')?.value ?? '' } },
             photo: { title: box.querySelector('.stcm-cp-title')?.value ?? '', current: imgEl?.value ?? '', kind: row?.dataset.type === 'video' ? 'video' : 'photo', others },
-        });
-        if (out?.image && imgEl && document.body.contains(imgEl)) {
-            imgEl.value = out.image;
-            syncComposeDraft(box);
+        }); } catch (e) { aiPendingForms.delete(formId); throw e; }
+        // into that row of the write form — open now or kept while you were elsewhere (a removed row gets nothing)
+        if (out?.image && updateComposeForm(chatId, formId, d => { const m = d.media.find(x => x.mid === mid); if (m) m.desc = out.image; })) {
             toastr.success(row?.dataset.type === 'video' ? 'AI가 영상 묘사를 채웠어요.' : 'AI가 사진 묘사를 채웠어요.', '', { timeOut: 1500 });
         }
+        aiPendingForms.delete(formId);   // only now: the answer is in (an empty form is let go below)
+        settleComposeForm(chatId, formId);
         return;
     }
     if (act === 'ai-write-post') {
@@ -5362,22 +5551,31 @@ async function onFeedClick(e) {
         const feed = getFeed(currentFeedId);
         const appending = feedMatchesSelection(feed);
         const bodyEl = box.querySelector('.stcm-cp-body');
-        const out = await aiWrite({
+        const chatId = box.dataset.chat;
+        const formId = box.dataset.fid;
+        const hasTitle = !!box.querySelector('.stcm-cp-title');
+        aiPendingForms.add(formId);   // kept while the AI writes, even if nothing is written yet
+        saveComposeForm(box);   // the instruction and what is written so far stay even if you leave now
+        let out;
+        try { out = await aiWrite({
             kind: 'post', mode: selMode, platformId: selPlatform, identity,
             instruction: box.querySelector('.stcm-cp-inst').value,
             draft: bodyEl.value,
             feed: appending ? feed : { data: { board: box.querySelector('.stcm-cp-board')?.value ?? '' } },
             topic: box.querySelector('.stcm-cp-inst').value.trim() ? null : pickPlayerTopic(),
-        });
-        if (out && document.body.contains(bodyEl)) {
-            const titleEl = box.querySelector('.stcm-cp-title');
-            if (titleEl && out.title && !titleEl.value.trim()) titleEl.value = out.title;
-            bodyEl.value = out.body;
-            const nickEl = box.querySelector('.stcm-cp-nick');
-            if (nickEl && out.nickname && !nickEl.value.trim()) nickEl.value = out.nickname;
-            syncComposeDraft(box);
-            toastr.success('AI가 쓴 글을 채웠어요. 고친 뒤 올리기를 누르세요.', '', { timeOut: 2000 });
+        }); } catch (e) { aiPendingForms.delete(formId); throw e; }
+        // into the write form it was asked from — open now, or kept while you were in another menu / the panel was closed
+        if (out && updateComposeForm(chatId, formId, d => {
+            if (hasTitle && out.title && !String(d.title ?? '').trim()) d.title = out.title;
+            d.body = out.body;
+            if (out.nickname && !String(d.identity?.nick ?? '').trim()) d.identity = { ...(d.identity ?? {}), nick: out.nickname };
+        })) {
+            toastr.success(document.querySelector(`#stcm_feed .stcm-compose-view[data-chat="${CSS.escape(String(chatId ?? ''))}"]`)
+                ? 'AI가 쓴 글을 채웠어요. 고친 뒤 올리기를 누르세요.'
+                : 'AI가 쓴 글을 글쓰기 창에 넣어 뒀어요. 글쓰기를 열면 보여요.', '', { timeOut: 2500 });
         }
+        aiPendingForms.delete(formId);   // only now: the answer is in (an empty form is let go below)
+        settleComposeForm(chatId, formId);
         return;
     }
     if (act === 'ai-write-comment') {
@@ -5390,20 +5588,29 @@ async function onFeedClick(e) {
         if (!feed) return;
         const bodyEl = box.querySelector('.stcm-cp-body');
         const anchor = feed.platform === 'fivech' ? (bodyEl.value.match(/^>>(\d+)/)?.[1] ?? null) : null;
+        captureDraft();   // what is written and the instruction stay even if you leave now
+        const cbox = composer;
         const out = await aiWrite({
             kind: composer?.replyTo != null ? 'reply' : 'comment', mode: feed.mode, platformId: feed.platform, identity,
             instruction: box.querySelector('.stcm-cp-inst').value,
             draft: anchor && bodyEl.value.trim() === `>>${anchor}` ? '' : bodyEl.value,
             feed, postIdx: pi, replyTo: composer?.replyTo ?? null, anchorN: anchor,
         });
-        // the composer may have been re-rendered while generating
-        const live = document.querySelector(`#stcm_feed .stcm-composer[data-feed="${CSS.escape(fid)}"][data-idx="${pi}"] .stcm-cp-body`);
+        // the composer may have been re-rendered while generating; a box closed and opened again is a new one
+        // (another cid): the old answer goes nowhere
+        const same = !!composer && composer.cid === cbox?.cid;
+        const live = same ? document.querySelector(`#stcm_feed .stcm-composer[data-feed="${CSS.escape(fid)}"][data-idx="${pi}"] .stcm-cp-body`) : null;
         if (out && live) {
             live.value = out.body;
             const nickEl = live.closest('.stcm-composer')?.querySelector('.stcm-cp-nick');
             if (nickEl && out.nickname && !nickEl.value.trim()) nickEl.value = out.nickname;
             if (composer) { composer.draft = { ...(composer.draft ?? {}), body: out.body }; syncCommentDraft(); }
             try { live.focus({ preventScroll: true }); } catch { /* ignore */ }
+        } else if (out && same) {
+            // the box isn't on screen (another menu, the panel closed): it is there when you come back
+            composer.draft = { ...(composer.draft ?? {}), body: out.body, ...(out.nickname && !String(composer.draft?.nick ?? '').trim() ? { nick: out.nickname } : {}) };
+            syncCommentDraft();
+            toastr.success('AI가 쓴 댓글을 댓글 창에 넣어 뒀어요.', '', { timeOut: 2500 });
         }
         return;
     }
@@ -5452,6 +5659,13 @@ async function onFeedClick(e) {
         }
         return;
     }
+    if (act === 'edit-post' || act === 'edit-item') {
+        captureDraft();
+        showEditItem(feedId, idx, act === 'edit-item' ? Number(el.dataset.ci) : null, act === 'edit-item' && el.dataset.ri != null ? Number(el.dataset.ri) : null);
+        return;
+    }
+    if (act === 'edit-cancel') { const t = editTarget; editTarget = null; showFeed(t?.feedId ?? currentFeedId, { keepScroll: true }); return; }
+    if (act === 'edit-save') { await saveEditItem(el.closest('.stcm-edit-view')); return; }
     if (act === 'del-post') {
         const { Popup, POPUP_RESULT } = ctx();
         const f = getFeed(feedId);
@@ -5499,6 +5713,22 @@ async function onFeedClick(e) {
         return;
     }
     if (act === 'cancel-post') {
+        // 취소: throw the form away (asked when something is written); "no" keeps it for later
+        const v = el.closest('.stcm-compose-view');
+        const d = v ? readComposeForm(v) : null;
+        const written = d && (d.title.trim() || d.body.trim() || d.inst.trim() || d.media.some(m => m.desc));
+        if (written) {
+            const { Popup, POPUP_RESULT } = ctx();
+            const ok = Popup?.show?.confirm
+                ? (await Popup.show.confirm('쓰던 글', '쓰던 내용을 버릴까요?<br><small>"아니요"를 누르면 그대로 보관해 두고, 다음에 글쓰기를 열면 다시 채워져요.</small>')) === POPUP_RESULT.AFFIRMATIVE
+                : confirm('쓰던 내용을 버릴까요? (취소를 누르면 보관해 둬요)');
+            if (ok) {
+                forgetComposeForm(v.dataset.chat);
+                if (v.dataset.draft) dropUnposted(v.dataset.chat, v.dataset.draft);   // a kept post thrown away too
+            }
+        } else if (v) {
+            forgetComposeForm(v.dataset.chat);
+        }
         showFeed(currentFeedId);
         return;
     }
@@ -6222,7 +6452,12 @@ function restoreSettingsHome() {
 
 /** Remember where the reader was in the current feed before switching views. */
 function leaveFeed() {
-    if (view === 'compose') syncComposeDraft(document.querySelector('#stcm_feed .stcm-compose-view'));   // last edits of a kept post
+    if (view === 'compose') {   // last edits: into the write-form memory and the kept post it came from
+        const v = document.querySelector('#stcm_feed .stcm-compose-view');
+        syncComposeDraft(v);
+        saveComposeForm(v);
+    }
+    if (view === 'feed') captureDraft();   // a half-written comment survives other menus
     restoreSettingsHome();
     const el = document.getElementById('stcm_feed');
     if (view === 'feed' && currentFeedId && el) feedScroll.set(currentFeedId, el.scrollTop);
@@ -6277,7 +6512,7 @@ function captureDraft() {
     const box = document.querySelector('#stcm_feed .stcm-composer');
     if (!box) return;
     const unpostedId = composer.draft?.unpostedId;
-    composer.draft = { body: box.querySelector('.stcm-cp-body')?.value ?? '', inst: box.querySelector('.stcm-cp-inst')?.value ?? '', react: box.querySelector('.stcm-cp-react')?.checked !== false, ...readIdentity(box), ...(unpostedId ? { unpostedId } : {}) };
+    composer.draft = { body: box.querySelector('.stcm-cp-body')?.value ?? '', inst: box.querySelector('.stcm-cp-inst')?.value ?? '', react: box.querySelector('.stcm-cp-react')?.checked !== false, media: readMediaRows(box, null, true), ...readIdentity(box), ...(unpostedId ? { unpostedId } : {}) };
     syncCommentDraft();
 }
 
@@ -6333,6 +6568,91 @@ function updatePinCount() {
     if (dot) dot.textContent = cnt ? String(cnt) : '';
 }
 
+// ---------------------------------------------------------------------------
+// 수정: change a post / comment / reply / res (generated ones too) — title, body, photos and videos
+// ---------------------------------------------------------------------------
+let editTarget = null;   // { feedId, post, item, kind: 'post' | 'comment', start }
+
+function showEditItem(feedId, postIdx, ci = null, ri = null) {
+    const feed = getFeed(feedId);
+    const post = feed?.data.posts[postIdx];
+    if (!post) return;
+    const item = ci == null ? post : (ri == null ? post.comments[ci] : post.comments[ci]?.replies[ri]);
+    if (!item) return;
+    const kind = ci == null ? 'post' : 'comment';
+    editTarget = { feedId, post, item, kind, start: workTarget() };
+    leaveFeed();
+    view = 'edit';
+    const pf = PLATFORMS[feed.platform];
+    const what = kind === 'post' ? postKindLabel(feed, post) : (pf?.chat ? '메시지' : feed.platform === 'fivech' ? '레스' : (ri == null ? '댓글' : '답글'));
+    const withTitle = kind === 'post' && (String(post.title ?? '').trim() || pf?.hasTitle || pf?.chat || pf?.thread);
+    const withMedia = kind === 'post' || commentMediaOn(feed, post) || postMedia(item).length > 0;
+    const bar = document.getElementById('stcm_feedbar');
+    const el = document.getElementById('stcm_feed');
+    bar.innerHTML = `<button id="stcm_back"><i class="fa-solid fa-arrow-left"></i> 돌아가기</button><span class="stcm-fb-info">${esc(what)} 수정 · <b>${esc(item.author || '익명')}</b></span>`;
+    el.innerHTML = `<div class="stcm-compose-view stcm-edit-view">
+        <p class="stcm-cp-hint">${item.isMe ? '내가 쓴' : 'AI가 만든'} ${esc(what)}을(를) 고쳐요. 글쓴이·좋아요·${kind === 'post' ? '댓글은' : '답글은'} 그대로예요. 고친 부분의 번역은 지워지니, 필요하면 다시 번역해 주세요.</p>
+        ${withTitle ? `<input class="stcm-cp-title" type="text" placeholder="${pf?.chat ? '채널 이름' : '제목'}">` : ''}
+        <textarea class="stcm-cp-body" rows="${kind === 'post' ? 8 : 4}" placeholder="본문"></textarea>
+        ${withMedia ? '<div class="stcm-cp-medialist"></div>' : ''}
+        <div class="stcm-cp-foot">
+            ${withMedia ? `<button data-act="cp-photo" class="stcm-cp-photo" title="사진 한 장 더 붙이기"><i class="fa-regular fa-image"></i> 사진</button>
+            <button data-act="cp-video" class="stcm-cp-photo" title="영상 하나 더 붙이기"><i class="fa-solid fa-film"></i> 영상</button>` : ''}
+            <button data-act="edit-cancel">취소</button>
+            <button class="primary" data-act="edit-save"><i class="fa-solid fa-floppy-disk"></i> 저장</button>
+        </div>
+    </div>`;
+    const t = el.querySelector('.stcm-cp-title');
+    if (t) t.value = post.title ?? '';
+    el.querySelector('.stcm-cp-body').value = item.body ?? '';
+    for (const m of postMedia(item)) addMediaRow(el, m.type, m.desc);
+    el.scrollTop = 0;
+    el.querySelector('.stcm-cp-body').focus();
+}
+
+/** Save the edit form: nothing waits before the change, and only the same copy / post / item is changed. */
+async function saveEditItem(view) {
+    const t = editTarget;
+    if (!t || !view) return;
+    const feed = getFeed(t.feedId);
+    const where = t.kind === 'post' ? [t.post] : [...t.post.comments, ...t.post.comments.flatMap(c => c.replies)];
+    if (!feed || !stillTarget(t.start, [feed], t.post) || !where.includes(t.item)) {
+        toastr.error('그 사이 채팅이나 피드가 바뀌었거나 글이 지워져서 저장하지 못했어요.', '커뮤니티');
+        return;
+    }
+    const titleEl = view.querySelector('.stcm-cp-title');
+    const title = titleEl ? titleEl.value.replace(/[\n\r]/g, ' ').trim().slice(0, 500) : null;
+    const body = view.querySelector('.stcm-cp-body').value.trim();
+    const media = view.querySelector('.stcm-cp-medialist') ? cleanMedia({ media: readMediaRows(view) }) : null;
+    if (!body && !(media?.length) && !title) { toastr.warning('내용을 입력해 주세요. 지우려면 삭제를 써 주세요.'); return; }
+    const o = t.item;
+    let changed = false;
+    if (title != null && title !== (t.post.title ?? '')) { t.post.title = title; delete t.post.title_tr; changed = true; }
+    if (body !== String(o.body ?? '').trim()) { o.body = body; delete o.body_tr; delete o.body_ko; changed = true; }
+    if (media) {
+        const before = postMedia(o);
+        const same = media.length === before.length && media.every((m, k) => m.type === before[k].type && m.desc === before[k].desc);
+        if (!same) {
+            // a photo / video left as it was keeps its translation
+            for (const m of media) {
+                const was = before.find(x => x.type === m.type && x.desc === m.desc && x.desc_tr);
+                if (was) m.desc_tr = was.desc_tr;
+            }
+            if (media.length) o.media = media; else delete o.media;
+            changed = true;
+        }
+    }
+    editTarget = null;
+    const idx = feed.data.posts.indexOf(t.post);
+    if (!changed) { showFeed(feed.id, { scrollToPost: idx }); return; }
+    await saveChatStore();   // the file write is scheduled before this waits
+    if (!stillTarget(t.start, [feed], t.post)) return;
+    const now = feed.data.posts.indexOf(t.post);
+    if (isPinned(feed.id, now)) refreshInjection();
+    showFeed(feed.id, { scrollToPost: now });
+    toastr.success('고쳤어요.', '', { timeOut: 1500 });
+}
+
 function showCompose() {
     if (!hasChat()) { toastr.warning('먼저 채팅을 열어주세요.'); return; }
     leaveFeed();
@@ -6351,17 +6671,24 @@ function showCompose() {
         // the board as it was when the post was kept (topic renames since then still apply; a topic made later doesn't)
         return feedMatchesSelection({ platform: x.platform, mode: x.mode, space: x.space ?? '', boardKey: x.boardKey ?? '', createdAt: Number(x.madeAt) || Date.now() });
     };
-    const d = u?.posts.find(fits) ?? null;
+    // what you were writing in this chat (left for another menu, the panel closed…) comes back first;
+    // otherwise a kept post that fits this board
+    const cur = composeDrafts.get(feedState.chatId) ?? null;
+    const curKept = cur?.unpostedId ? findUnposted(feedState.chatId, cur.unpostedId) : null;
+    const d = cur ? curKept : (u?.posts.find(fits) ?? null);
+    const fill = cur ?? d;
     const elsewhere = (u?.posts ?? []).filter(x => x !== d);
     const bar = document.getElementById('stcm_feedbar');
     const el = document.getElementById('stcm_feed');
     bar.innerHTML = `<button id="stcm_back"><i class="fa-solid fa-arrow-left"></i> 돌아가기</button><span class="stcm-fb-info">글쓰기 · <b>${esc(p.label)}</b> · ${esc(MODES[selMode].label)}</span>`;
-    el.innerHTML = `<div class="stcm-compose-view"${d ? ` data-draft="${esc(d.id)}"` : ''}>
+    // one id per piece of writing: an AI answer only goes back into the very form it was asked from
+    const formId = cur?.formId || `f${Date.now().toString(36)}${randomId(5)}`;
+    el.innerHTML = `<div class="stcm-compose-view" data-chat="${esc(feedState.chatId ?? '')}" data-fid="${esc(formId)}"${d ? ` data-draft="${esc(d.id)}"` : ''}>
         ${d ? `<p class="stcm-cp-hint stcm-unposted-hint">올리지 못했던 글을 다시 채웠어요. 올리면 보관 목록에서 빠져요 · <a class="stcm-link" data-act="unposted-drop" data-draft="${esc(d.id)}">보관 목록에서 버리기</a></p>` : ''}
         <p class="stcm-cp-hint">${appending
             ? `지금 보고 있는 <b>${esc(feed.data.board || p.label)}</b> 피드에 글이 올라가요.`
             : '선택한 커뮤니티에 새 피드를 만들고 글을 올려요. (위에서 모드·커뮤니티를 바꿀 수 있어요)'}</p>
-        ${identityControls(d?.identity)}
+        ${identityControls(fill?.identity)}
         ${appending || currentSpace(selPlatform) ? '' : `<input class="stcm-cp-board" type="text" placeholder="게시판 / 갤러리 / 서브레딧 / 해시태그 이름 (선택)">`}
         ${p.hasTitle || p.chat ? `<input class="stcm-cp-title" type="text" placeholder="${p.chat ? '채널 이름 (예: 잡담) — 새 채널이 생기고 첫 메시지가 올라가요' : (p.thread ? '스레드 제목' : '제목')}">` : ''}
         ${TD_SKINS[selPlatform] ? `<select class="stcm-cp-cat">${tdCats(selPlatform).filter(c => c !== '전체').map(c => `<option value="${esc(c)}" ${feed && tdState(feed.id).cat === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>` : ''}
@@ -6380,27 +6707,34 @@ function showCompose() {
         </div>
     </div>`;
     el.scrollTop = 0;
-    if (d) {
+    const form = el.querySelector('.stcm-compose-view');
+    if (fill) {
         const t = el.querySelector('.stcm-cp-title');
-        if (t) t.value = d.title ?? '';
-        el.querySelector('.stcm-cp-body').value = d.body ?? '';
+        if (t) t.value = fill.title ?? '';
+        el.querySelector('.stcm-cp-body').value = fill.body ?? '';
         const b = el.querySelector('.stcm-cp-board');
-        if (b) b.value = d.board ?? '';
+        if (b) b.value = fill.board ?? '';
         const cat = el.querySelector('.stcm-cp-cat');
-        if (cat && d.category && [...cat.options].some(o => o.value === d.category)) cat.value = d.category;
-        el.querySelector('.stcm-cp-react').checked = d.react !== false;
-        for (const m of cleanMedia(d)) addMediaRow(el, m.type, m.desc);
-        // edits go into the kept record too (typing, picks, the photo toggle, AI writing)
-        const view = el.querySelector('.stcm-compose-view');
-        const sync = () => syncComposeDraft(view);
-        view.addEventListener('input', sync);
-        view.addEventListener('change', sync);
-        view.addEventListener('click', () => setTimeout(sync));
+        if (cat && fill.category && [...cat.options].some(o => o.value === fill.category)) cat.value = fill.category;
+        el.querySelector('.stcm-cp-react').checked = fill.react !== false;
+        el.querySelector('.stcm-cp-inst').value = fill.inst ?? '';
+        // rows not filled in yet come back too (an AI description may still be on its way to them)
+        for (const m of (Array.isArray(fill.media) ? fill.media : cleanMedia(fill))) addMediaRow(el, m.type, m.desc ?? '', m.mid);
+    }
+    // every change is kept: in this chat's write-form memory, and in the kept record it came from (if any)
+    const sync = () => { syncComposeDraft(form); saveComposeForm(form); };
+    form.addEventListener('input', sync);
+    form.addEventListener('change', sync);
+    form.addEventListener('click', () => setTimeout(sync));
+    if (cur) {
+        if (elsewhere.length) toastr.info(`쓰던 글을 그대로 채워 뒀어요. (이 채팅에 올리지 못한 글 ${elsewhere.length}개가 더 있어요)`, '', { timeOut: 3500 });
+    } else if (d) {
+        saveComposeForm(form);
         toastr.info(`올리지 못했던 글을 다시 채워 뒀어요.${elsewhere.length ? ` (못 올린 글 ${elsewhere.length}개가 더 있어요)` : ''}`, '', { timeOut: 3500 });
     } else if (elsewhere.length) {
         const names = [...new Set(elsewhere.map(draftWhere))].join(', ');
         const x = elsewhere[0];
-        toastr.info(`이 채팅에 올리지 못한 글이 있어요: ${esc(names)}. 그곳을 골라 글쓰기를 열면 다시 채워져요. (눌러서 전체 복사)`, '', { timeOut: 8000, onclick: () => copyText([x.title, x.body].filter(Boolean).join('\n\n')) });
+        toastr.info(`이 채팅에 올리지 못한 글이 있어요: ${esc(names)}. 그곳을 골라 글쓰기를 열면 다시 채워져요. (눌러서 전체 복사)`, '', { timeOut: 8000, onclick: () => copyText(draftText(x)) });
     }
     el.querySelector(p.hasTitle ? '.stcm-cp-title' : '.stcm-cp-body')?.focus();
 }
@@ -6511,6 +6845,8 @@ const intOr = (v, d = 0) => (Number.isFinite(Number(v)) ? Math.max(0, Math.floor
 
 function importItem(o, chatLen = Infinity) {
     const item = normItem(o);
+    const media = cleanMedia(o);   // photos / videos on a res or comment you wrote
+    if (media.length) item.media = media;
     if (Number.isInteger(o?.at) && o.at >= 0) item.at = Math.min(o.at, Math.max(0, chatLen - 1));
     else if (Number.isInteger(o?.atMax) && o.atMax >= 0) item.atMax = Math.min(o.atMax, Math.max(0, chatLen - 1));
     if (o?.isMe === true) {
@@ -7384,12 +7720,18 @@ function openPanel(feedId) {
         saveChatStore();
     }
     updateBadge();
+    // closed in the middle of writing a post (and it is still kept): back to the write form
+    const backToWrite = !feedId && reopenCompose && composeDrafts.has(feedState.chatId);
+    reopenCompose = false;
     if (hasChat() && !feedState.ready) {
         showLoadingFeed();
-        ensureFeedsReady().then(() => { if (isOpen() && view === 'feed') showFeed(feedId); });
+        ensureFeedsReady().then(() => {
+            if (!isOpen() || view !== 'feed') return;
+            if (backToWrite && composeDrafts.has(feedState.chatId)) showCompose(); else showFeed(feedId);
+        });
         return;
     }
-    showFeed(feedId);
+    if (backToWrite) showCompose(); else showFeed(feedId);
 }
 
 /**
@@ -7436,8 +7778,11 @@ function hideOverlay() {
     } catch { /* ignore */ }
 }
 
+let reopenCompose = false;   // the panel was closed while writing a post: open it there again
+
 function closePanel() {
     captureDraft();
+    reopenCompose = view === 'compose';
     leaveFeed();
     hideOverlay();
 }
@@ -7544,7 +7889,14 @@ function addSettingsPanel() {
             <option value="on">쓰게 하기 (조연 한두 명이 직접 등장)</option>
             <option value="off">쓰지 않게 하기 (이름 없는 일반 이용자만)</option>
           </select>
-          <label class="checkbox_label"><input id="stcm_set_nomention" type="checkbox"><span>인물 언급 금지 <small>(캐릭터·유저·주변 인물을 글과 댓글에서 아예 언급하지 않아요. 이름·생김새·별명으로 돌려 말하는 것도 금지. 작품 반응 모드에선 작품 전반·팬덤 이야기, 세계관 속 모드에선 그 세계의 일상만 올라와요. 켜면 위의 NPC 설정은 쓰지 않아요)</small></span></label>
+          <label>언급 범위 <small>(글과 댓글에서 이야기 속 인물을 누구까지 언급할지. 이름·생김새·별명으로 돌려 말하는 것도 막아요. "모두" 말고 다른 걸 고르면 위의 NPC 설정은 쓰지 않고 주변 인물도 나오지 않아요)</small>
+            <select id="stcm_set_mention" class="text_pole">
+              <option value="all">모두 언급 (제한 없음)</option>
+              <option value="char">캐릭터만 언급 (유저·주변 인물은 언급 안 함)</option>
+              <option value="user">유저만 언급 (캐릭터·주변 인물은 언급 안 함)</option>
+              <option value="none">아무도 언급 안 함 (인물 언급 금지 — 작품 전반·팬덤 이야기, 그 세계의 일상만)</option>
+            </select>
+          </label>
           <label>내가 쓸 때 닉네임 칸을 비우면
             <select id="stcm_set_nickmode" class="text_pole">
               <option value="random">커뮤니티에 어울리는 랜덤 닉네임 (바로)</option>
@@ -7769,7 +8121,7 @@ function addSettingsPanel() {
     bind('stcm_set_mode', 'defaultMode');
     bind('stcm_set_npc', 'npcPosts');
     bind('stcm_set_maxfeeds', 'maxFeeds');
-    bind('stcm_set_nomention', 'noMention', 'checked');
+    bind('stcm_set_mention', 'mentionScope');
     bind('stcm_set_nickmode', 'nickMode');
     bind('stcm_set_minreason', 'minReasoning', 'checked');
     bind('stcm_set_trwhen', 'translateWhen');
