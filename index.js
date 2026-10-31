@@ -70,6 +70,7 @@ const defaultSettings = Object.freeze({
     threadCap: 1000,             // max posts per thread on capped platforms (2ch, Reddit)
     theme: 'theme',              // light | dark | theme (follow SillyTavern theme)
     compactUi: false,
+    fullTitles: true,            // long post titles (and their translations) wrap onto more lines instead of being cut with …
     secOpen: { conn: true },
     maxFeeds: 0,                 // feeds kept per chat (0 = no limit); pinned / watched feeds are never dropped     // settings sections left open (key → true)
     fullscreen: false,           // panel fills the whole window (PC; phones are always full)            // 간략한 화면: community/space/board in one picker, some header buttons in ⋯
@@ -3242,6 +3243,14 @@ function ttl(p) {
     if (!(p?.title_tr && trOn(p))) return p?.title ?? '';
     return getSettings().trDisplay === 'both' ? `${p.title} — ${p.title_tr}` : p.title_tr;
 }
+
+/** Post title as HTML: with "원문 위 · 번역문 아래" the translation goes on its own line under the original. */
+function ttlHtml(p, fallback = '') {
+    if (p?.title_tr && trOn(p) && getSettings().trDisplay === 'both') {
+        return `${esc(p.title)}<span class="stcm-title-tr">${esc(p.title_tr)}</span>`;
+    }
+    return esc(ttl(p) || fallback);
+}
 let composer = null;   // { cid, feedId, postIdx, replyTo, place, draft } — cid: this comment box's own id
 function newComposerId() { return `c${Date.now().toString(36)}${randomId(5)}`; }
 
@@ -3858,7 +3867,7 @@ function postSummaryHtml(feed, p, i) {
     const pf = feed.platform;
     const n = p.comments.reduce((a, c) => a + 1 + c.replies.length, 0);
     const titled = !!String(p.title ?? '').trim() && pf !== 'twitter';
-    const title = titled ? ttl(p) : truncate((trOn(p) && p.body_tr) || p.body, 90);
+    const title = titled ? ttlHtml(p) : esc(truncate((trOn(p) && p.body_tr) || p.body, 90));
     let tag = '';
     if (pf === 'naver' || pf === 'blind' || pf === 'everytime') tag = p.tags?.[0] || '';
     if (pf === 'reddit') tag = p.tags?.[0] || '';
@@ -3872,7 +3881,7 @@ function postSummaryHtml(feed, p, i) {
     const extra = pf === 'fivech' || pf === 'tieba' ? '' : (Number(p.likes) ? ` · ♥ ${num(p.likes)}` : '');
     return `<div class="stcm-psum" data-act="post-toggle" data-feed="${esc(feed.id)}" data-idx="${i}" role="button" tabindex="0" aria-expanded="${isPostOpen(feed, i) ? 'true' : 'false'}">
         ${tag ? `<span class="tag">${esc(tag)}</span>` : ''}
-        <span class="tt">${p.isMe ? '<i class="fa-solid fa-pen-nib mine"></i> ' : ''}${!titled && pf === 'twitter' ? `<b>${esc(who)}</b> ` : ''}${esc(title)}</span>
+        <span class="tt">${p.isMe ? '<i class="fa-solid fa-pen-nib mine"></i> ' : ''}${!titled && pf === 'twitter' ? `<b>${esc(who)}</b> ` : ''}${title}</span>
         <span class="cnt">${cnt}</span>
         <span class="mt">${titled || pf !== 'twitter' ? `${esc(who)}${who ? ' · ' : ''}` : ''}${esc(postTime(feed, i))}${extra}</span>
         <i class="fa-solid fa-chevron-down chev"></i>
@@ -3964,7 +3973,7 @@ function tdBoard(feed) {
             <div class="stcm-td-row" data-act="td-toggle" data-feed="${fid}" data-idx="${i}">
                 <span class="no">${base + (no.get(i) ?? i + 1)}</span>
                 <span class="cat">${esc(cat)}</span>
-                <span class="tt">${p.isMe ? '<i class="fa-solid fa-pen-nib stcm-td-mine"></i>' : ''}${esc(ttl(p) || truncate(p.body, 40))}${n ? ` <em>[${n}]</em>` : ''}</span>
+                <span class="tt">${p.isMe ? '<i class="fa-solid fa-pen-nib stcm-td-mine"></i>' : ''}${ttlHtml(p, truncate(p.body, 40))}${n ? ` <em>[${n}]</em>` : ''}</span>
                 <span class="au">${esc(p.author || anon)}</span>
                 <span class="tm">${esc(bt.time(i))}</span>
                 <span class="vw">${num(p.views, 'ko')}</span>
@@ -3973,7 +3982,7 @@ function tdBoard(feed) {
             <div class="stcm-td-detail">
                 <div class="stcm-td-dhead">
                     <span class="stcm-td-badge">${esc(cat)}</span>
-                    <h3>${esc(ttl(p))}</h3>
+                    <h3>${ttlHtml(p)}</h3>
                     <div class="stcm-td-meta">${who(p)}<span>${esc(bt.time(i))}</span><span>조회 ${num(p.views, 'ko')}</span><span>${skinCfg.heart ? '♡' : '추천'} ${num(p.likes)}</span><span>댓글 ${n}</span></div>
                 </div>
                 <div class="stcm-body">${txt(p, feed.platform)}</div>${imgBox(p)}
@@ -3995,7 +4004,7 @@ function tdBoard(feed) {
     const bestPost = best[bi];
     const banner = best.length ? `<div class="stcm-td-best">
             <span class="lbl"><i class="fa-solid fa-star"></i> 개념글</span>
-            <a class="tt" data-act="td-open" data-feed="${fid}" data-idx="${bestPost.i}">${esc(ttl(bestPost.p) || truncate(bestPost.p.body, 40))}${tdCount(bestPost.p) ? ` <em>[${tdCount(bestPost.p)}]</em>` : ''}</a>
+            <a class="tt" data-act="td-open" data-feed="${fid}" data-idx="${bestPost.i}">${ttlHtml(bestPost.p, truncate(bestPost.p.body, 40))}${tdCount(bestPost.p) ? ` <em>[${tdCount(bestPost.p)}]</em>` : ''}</a>
             <span class="pager"><button data-act="td-best" data-feed="${fid}" data-dir="-1" aria-label="이전"><i class="fa-solid fa-chevron-left"></i></button>${bi + 1}/${best.length}<button data-act="td-best" data-feed="${fid}" data-dir="1" aria-label="다음"><i class="fa-solid fa-chevron-right"></i></button></span>
         </div>` : '';
     return `<div class="stcm-skin stcm-tdgall stcm-td-${feed.platform}">
@@ -4037,7 +4046,7 @@ const renderers = {
             ${newestFirst(feed, (p, i) => `
             <article class="stcm-n-post" data-post="${i}">
                 <div class="stcm-n-board">${esc(p.tags?.[0] || '자유게시판')}</div>
-                <h3>${esc(ttl(p))}</h3>
+                <h3>${ttlHtml(p)}</h3>
                 <div class="stcm-n-meta">${avatar(p.author)}<b>${esc(p.author)}</b>${meBadge(p)}<span>${esc(postTime(feed, i))}</span><span>조회 ${num(p.views, 'ko')}</span></div>
                 <div class="stcm-body">${txt(p, 'naver')}</div>${imgBox(p)}
                 <div class="stcm-n-foot"><span><i class="fa-regular fa-heart"></i> 좋아요 ${num(p.likes, 'ko')}</span><span><i class="fa-regular fa-comment"></i> 댓글 ${p.comments.reduce((a, c) => a + 1 + c.replies.length, 0)}</span></div>
@@ -4060,7 +4069,7 @@ const renderers = {
             <div class="stcm-dc-top">${esc(d.board || '갤러리')}</div>
             ${newestFirst(feed, (p, i) => `
             <article class="stcm-dc-post" data-post="${i}">
-                <h3>${esc(ttl(p))} <span class="stcm-dc-cnt">[${p.comments.reduce((a, c) => a + 1 + c.replies.length, 0)}]</span></h3>
+                <h3>${ttlHtml(p)} <span class="stcm-dc-cnt">[${p.comments.reduce((a, c) => a + 1 + c.replies.length, 0)}]</span></h3>
                 <div class="stcm-dc-meta"><span>${who(p)}</span><span>${esc(postTime(feed, i))}</span><span>조회 ${num(p.views)}</span><span>추천 ${num(p.likes)}</span></div>
                 <div class="stcm-body">${txt(p, 'dcinside')}</div>${imgBox(p)}
                 <div class="stcm-dc-rec"><span class="up">개추 ${num(p.likes)}</span><span class="down">비추 ${Math.floor((Number(p.likes) || 0) / 7)}</span></div>
@@ -4092,7 +4101,7 @@ const renderers = {
             ${newestFirst(feed, (p, i) => `
             <article class="stcm-r-post" data-post="${i}">
                 <div class="stcm-r-meta"><b>${esc(sub)}</b> · Posted by ${esc(uname(p))}${meBadge(p)} · ${esc(postTime(feed, i))}</div>
-                <h3>${esc(ttl(p))}${p.tags?.[0] ? ` <span class="stcm-flair">${esc(p.tags[0])}</span>` : ''}</h3>
+                <h3>${ttlHtml(p)}${p.tags?.[0] ? ` <span class="stcm-flair">${esc(p.tags[0])}</span>` : ''}</h3>
                 <div class="stcm-body">${txt(p, 'reddit')}</div>${imgBox(p)}
                 <div class="stcm-r-act"><span class="vote"><i class="fa-solid fa-arrow-up"></i> ${num(p.likes)} <i class="fa-solid fa-arrow-down"></i></span><span><i class="fa-regular fa-comment"></i> ${p.comments.reduce((a, c) => a + 1 + c.replies.length, 0)} Comments</span></div>
                 <div class="stcm-r-comments">${p.comments.map((c, ci) => comment(c, i, ci, null)).join('')}</div>
@@ -4151,7 +4160,7 @@ const renderers = {
                     });
                 });
                 return `<article class="stcm-5-thread" data-post="${i}">
-                    <h3>${esc(ttl(p))} <small>(${n})</small></h3>
+                    <h3>${ttlHtml(p)} <small>(${n})</small></h3>
                     ${all.join('')}
                     ${postFooter(feed, i)}
                 </article>`;
@@ -4166,7 +4175,7 @@ const renderers = {
             ${newestFirst(feed, (p, i) => `
             <article class="stcm-w-post" data-post="${i}">
                 <div class="stcm-w-head">${avatar(p.author)}<div><b>${esc(p.author)}</b>${meBadge(p)}<small>${esc(postTime(feed, i))} ${esc(uiWords('weibo', feed.lang)?.via ?? '来自 微博客户端')}</small></div></div>
-                ${p.title ? `<h3>${esc(ttl(p))}</h3>` : ''}
+                ${p.title ? `<h3>${ttlHtml(p)}</h3>` : ''}
                 <div class="stcm-body">${txt(p, 'weibo')}</div>${imgBox(p)}
                 <div class="stcm-w-act"><span><i class="fa-solid fa-share"></i> ${num(p.shares, 'zh')}</span><span><i class="fa-regular fa-comment"></i> ${num(p.comments.length, 'zh')}</span><span><i class="fa-regular fa-thumbs-up"></i> ${num(p.likes, 'zh')}</span></div>
                 <div class="stcm-w-comments">
@@ -4237,7 +4246,7 @@ const renderers = {
                 const n = p.comments.reduce((a, cm) => a + 1 + cm.replies.length, 0);
                 return `<article class="stcm-bl-post" data-post="${i}">
                 <div class="stcm-bl-ch">${esc(p.tags?.[0] || '블라블라')}</div>
-                <h3>${esc(ttl(p))}</h3>
+                <h3>${ttlHtml(p)}</h3>
                 <div class="stcm-bl-meta">${who(p)}<span class="tm">${esc(postTime(feed, i))}</span></div>
                 <div class="stcm-body">${txt(p, 'blind')}</div>${imgBox(p)}
                 <div class="stcm-bl-foot"><span><i class="fa-regular fa-eye"></i> ${num(p.views, 'ko')}</span><span><i class="fa-regular fa-thumbs-up"></i> ${num(p.likes, 'ko')}</span><span><i class="fa-regular fa-comment"></i> ${n}</span></div>
@@ -4265,7 +4274,7 @@ const renderers = {
                 return `<article class="stcm-et-post" data-post="${i}">
                 <div class="stcm-et-board">${esc(p.tags?.[0] || '자유게시판')}${hot ? ' <span class="hot">HOT</span>' : ''}</div>
                 <div class="stcm-et-head"><span class="stcm-et-pic"><i class="fa-solid fa-user"></i></span><div><b>${esc(p.author || '익명')}</b>${meBadge(p)}<small>${esc(postTime(feed, i))}</small></div></div>
-                <h3>${esc(ttl(p))}</h3>
+                <h3>${ttlHtml(p)}</h3>
                 <div class="stcm-body">${txt(p, 'everytime')}</div>${imgBox(p)}
                 <div class="stcm-et-foot"><span class="like"><i class="fa-regular fa-thumbs-up"></i> ${num(p.likes, 'ko')}</span><span class="cmt"><i class="fa-regular fa-comment"></i> ${n}</span><span class="scrap"><i class="fa-regular fa-star"></i> ${num(p.shares, 'ko')}</span></div>
                 <div class="stcm-et-comments">
@@ -4290,7 +4299,7 @@ const renderers = {
             ${newestFirst(feed, (p, i) => {
                 let floor = 1;
                 return `<article class="stcm-tb-thread" data-post="${i}">
-                <h3>${esc(ttl(p))}</h3>
+                <h3>${ttlHtml(p)}</h3>
                 <div class="stcm-tb-floor op">
                     <div class="stcm-tb-user">${avatar(p.author)}<b>${esc(p.author)}</b><span class="lz">${esc(w.lz)}</span>${meBadge(p)}</div>
                     <div class="stcm-body">${txt(p, 'tieba')}</div>${imgBox(p)}
@@ -4891,6 +4900,11 @@ function isFolded() {
 /** 간략한 화면: community / space / board live in a bottom sheet, rarely used header buttons in ⋯.
  *  The real controls are moved (not copied), so every listener keeps working. */
 const MENU_BTNS = ['stcm_btn_history', 'stcm_btn_pins', 'stcm_btn_wi', 'stcm_btn_theme', 'stcm_btn_fold'];
+/** 긴 제목 다 보이기: titles in board lists wrap instead of ending in "…". */
+function applyFullTitles() {
+    document.getElementById('stcm_overlay')?.classList.toggle('stcm-fulltitle', getSettings().fullTitles !== false);
+}
+
 function applyCompact() {
     const ov = document.getElementById('stcm_overlay');
     if (!ov) return;
@@ -7713,6 +7727,7 @@ function openPanel(feedId) {
     applyTheme();
     applyFold();
     applyCompact();
+    applyFullTitles();
     applyFullscreen();
     showOverlay();
     if (store && store.unread) {
@@ -7831,6 +7846,7 @@ function addSettingsPanel() {
             <option value="light">라이트</option>
             <option value="dark">나이트</option>
           </select>
+          <label class="checkbox_label" for="stcm_set_fulltitle"><input type="checkbox" id="stcm_set_fulltitle"> <span>긴 제목 다 보이기 <small>(글 목록의 제목이 길면 "…"로 자르지 않고 두세 줄로 다 보여요. 번역을 "원문 위 · 번역문 아래"로 볼 때 제목 번역도 끝까지 보여요. 끄면 예전 표시 방식으로 돌아가요 — 넓은 화면은 한 줄, 휴대폰 화면은 두 줄까지 보이고 나머지는 "…"로 줄여요. 제목 번역은 켜고 끄는 것과 상관없이 원문 아래 줄에 따로 나와요)</small></span></label>
           <label class="checkbox_label" for="stcm_set_compact"><input type="checkbox" id="stcm_set_compact"> <span>간략한 화면 <small>(커뮤니티·카페·판을 한 칸으로 모아 누르면 고르는 창이 열리고, 지난 피드·반영·월드 인포·테마는 ⋯ 메뉴로, 언어·배경은 작게)</small></span></label>
             </div>
           </details>
@@ -8116,6 +8132,8 @@ function addSettingsPanel() {
     bind('stcm_set_cap', 'threadCap');
     bind('stcm_set_theme', 'theme');
     bind('stcm_set_compact', 'compactUi', 'checked');
+    bind('stcm_set_fulltitle', 'fullTitles', 'checked');
+    document.getElementById('stcm_set_fulltitle')?.addEventListener('change', applyFullTitles);
     document.getElementById('stcm_set_compact')?.addEventListener('change', applyCompact);
     document.getElementById('stcm_set_theme')?.addEventListener('change', applyTheme);
     bind('stcm_set_mode', 'defaultMode');
