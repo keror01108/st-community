@@ -28,6 +28,7 @@ const defaultSettings = Object.freeze({
     tailEnabled: false,          // 맨 밑 프롬프트: one more message at the very end of every request
     tailRole: 'user',            // 'user' | 'assistant'
     npcPosts: 'auto',
+    metaNoNegative: false,       // 작품 반응 모드: no dislike / criticism in generated posts and comments
     mentionScope: 'all',         // 언급 범위: all | char (only {{char}}) | user (only {{user}}) | none (nobody from the story)
     customSpaces: [],            // [{ id, platform, name, desc, locale: { mode: inherit|story|country|custom, country, custom } }]
     spaceSelected: {},           // platform → space id ('' = 기본)
@@ -108,7 +109,8 @@ const PLATFORMS = {
     dcinside: { name: 'DCInside', brand: false, label: '디시인사이드', icon: 'fa-ghost', lang: 'Korean', anon: 'ㅇㅇ', now: '방금', thread: false, hasTitle: true },
     reddit: { name: 'Reddit', brand: true, label: 'Reddit', icon: 'fa-reddit-alien', lang: 'English', anon: 'throwaway', now: 'just now', thread: false, hasTitle: true, capped: true },
     twitter: { name: 'X (Twitter)', brand: true, label: 'X (트위터)', icon: 'fa-x-twitter', lang: 'the language most natural for the story setting and its fandom (if unclear, Korean)', anon: 'user', now: 'now', thread: false, hasTitle: false },
-    fivech: { name: '2channel / 5channel', brand: false, label: '2ch / 5ch', icon: 'fa-hashtag', lang: 'Japanese', anon: '名無しさん', now: null, thread: true, hasTitle: true, capped: true, flat: true },
+    fivech: { name: '2channel / 5channel', brand: false, label: '2ch / 5ch', icon: 'fa-hashtag', lang: 'Japanese', anon: '名無しさん', now: null, thread: true, hasTitle: true, capped: true, flat: true, res: true },
+    fourchan: { name: '4chan', brand: false, label: '4chan', icon: 'fa-clover', lang: 'English', anon: 'Anonymous', now: null, thread: true, hasTitle: true, capped: true, flat: true, res: true },
     weibo: { name: 'Sina Weibo', brand: true, label: '웨이보', icon: 'fa-weibo', lang: 'Simplified Chinese', anon: '微博用户', now: '刚刚', thread: false, hasTitle: false },
     discord: { name: 'Discord', brand: true, label: '디스코드', icon: 'fa-discord', lang: 'the language most natural for the story setting and its fandom (if unclear, Korean)', anon: 'user', now: '오늘', thread: false, hasTitle: false, flat: true, chat: true },
     tdgall: { name: '투디갤 (tdgall.com)', brand: false, label: '투디갤', icon: 'fa-snowflake', lang: 'Korean', anon: 'ㅇㅇ', now: '방금', thread: false, hasTitle: true },
@@ -152,8 +154,8 @@ Treat the story's setting as a real world in which {{platform}} (or its in-world
 {{topics}}`,
 
     thread_next: `The thread shown in <thread> has reached the {{cap}}-post limit and is now closed. Write ONE follow-up thread (part {{part}}) on the same board.
-- Its title follows the platform's convention for continuation threads (2ch: the same title with "Part{{part}}" or "★{{part}}"; Reddit: the same title with "Part {{part}}", "[Continued]" or "Megathread #{{part}}").
-- Its opening post mentions the previous thread naturally (2ch: a "前スレ" line and maybe a short recap or template; Reddit: "Previous thread:" and a short recap).
+- Its title follows the platform's convention for continuation threads (2ch: the same title with "Part{{part}}" or "★{{part}}"; 4chan: the same general subject with the next number, e.g. "/xyz/ General #{{part}}"; Reddit: the same title with "Part {{part}}", "[Continued]" or "Megathread #{{part}}").
+- Its opening post mentions the previous thread naturally (2ch: a "前スレ" line and maybe a short recap or template; 4chan: a "Previous thread: >>…" line, often with a short template or news; Reddit: "Previous thread:" and a short recap).
 - It has {{count}} comments in which the regulars carry the conversation on from where the previous thread stopped; new posters may join.
 Output exactly one post.`,
 
@@ -189,9 +191,11 @@ Output ONLY a JSON object, no code fences: {"title": "post title, or empty when 
     language_foreign: `This is a {{language}}-localized version of {{platform}}, whose users normally write in {{native}}. The platform guide's example words, slang and emoji tags are written in {{native}} — never copy them; express the same nuance with natural {{language}} (emoji tags too, e.g. [눈물] or [tears] instead of [泪]). Do not borrow slang that belongs to {{language}}-speaking sites either (for Korean: 원덬, 덬, 글쓴덬, 갤러, 념글, 개추, ㅇㅇ and similar terms from Korean communities). Write the way a skilled translator would localize these posts, so it still reads as {{platform}} culture.`,
 
     npc_on: `Named side characters (NPCs) from the story — friends, family, classmates, coworkers, rivals and other people who appear in the story or the world information, but not {{char}} or {{user}} — DO use this community. Let one or two of them post or comment as themselves under fitting handles, in their own voice, knowing only what they would know. They may talk about {{char}}/{{user}} from their own point of view.`,
-    only_char: `STRICT — ONLY {{char}}: posts and comments may mention and discuss {{char}} (what {{char}} did, said or seems like), but must not mention, name, describe, quote, impersonate or allude to {{user}} or any other character or person from the story or the world information — not by name, nickname, title, appearance, role or pronoun — and none of them posts or comments. Where the story involves {{user}} or others, talk about {{char}} alone and leave the other people out completely. This overrides every rule above that asks for anyone else.`,
-    only_user: `STRICT — ONLY {{user}}: posts and comments may mention and discuss {{user}} (what {{user}} did, said or seems like), but must not mention, name, describe, quote, impersonate or allude to {{char}} or any other character or person from the story or the world information — not by name, nickname, title, appearance, role or pronoun — and none of them posts or comments. Where the story involves {{char}} or others, talk about {{user}} alone and leave the other people out completely. This overrides every rule above that asks for anyone else.`,
-    no_mention: `STRICT — NO STORY PEOPLE: do not mention, name, describe, quote, impersonate or allude to {{char}}, {{user}}, or any other character or person from the story or the world information — not by name, nickname, title, appearance, role or pronoun — and none of them posts or comments. No post or comment is about them or about what they did. This overrides every rule above that asks for them. Instead write ordinary community content for this platform, mode and topic: in the reader mode, talk about the work only in general terms without its characters (updates, pacing, art or writing style, the fandom, unrelated chatter); in the in-world mode, everyday life, the setting, places, trends and happenings that involve no story characters.`,
+    stats_update: `ALSO add "stats" to the JSON object: the post's and comments' numbers after these new comments, as {"post": {"views": 0, "likes": 0, "dislikes": 0}, "comments": {"c0": 0, "c2r1": 0}}. Start from the current numbers shown in <thread> — (views · likes · dislikes) after the post, (likes N) after a comment, and a reply's id after "↳ #" — and raise them to fit the attention and reception the thread is getting: views grow with every new comment, likes rise for well-received posts and comments (posts and comments by the player too), dislikes (downvotes / 비추) rise only where the platform has them and readers turn against the post. Never lower a number. In "comments" list only the existing comments whose likes change, by their id; leave out the new comments (their likes go in their own "likes").`,
+    meta_positive: `STRICT — NO NEGATIVE REACTIONS: every post and comment about the work is positive or neutral. No dislike, criticism or complaints (about the plot, pacing, characters, writing, art or the author), no hate, mockery or sarcastic jabs at the work or its characters, no "I'm dropping this", no flame wars or fans attacking each other. This overrides every other instruction in this request — the task, the platform style, topics and extra instructions — that asks for dissent, critical voices, complaints or arguments, including the community's usual harsh or trolling tone. Keep the variety with other feelings: excitement, screaming, theories and predictions, character analysis, favorite lines, shipping, jokes and memes, questions, fan art and fanfic talk, worry or sadness FOR a character, impatience for the next update. Friendly, good-natured differences of opinion about predictions or ships are fine.`,
+    only_char: `STRICT — ONLY {{char}}: posts and comments may mention and discuss {{char}} (what {{char}} did, said or seems like), but must not mention, name, describe, quote, impersonate or allude to {{user}} or any other character or person from the story or the world information — not by name, nickname, title, appearance, role or pronoun — and none of them posts or comments. Where the story involves {{user}} or others, talk about {{char}} alone and leave the other people out completely. This overrides every other instruction in this request that asks for anyone else.`,
+    only_user: `STRICT — ONLY {{user}}: posts and comments may mention and discuss {{user}} (what {{user}} did, said or seems like), but must not mention, name, describe, quote, impersonate or allude to {{char}} or any other character or person from the story or the world information — not by name, nickname, title, appearance, role or pronoun — and none of them posts or comments. Where the story involves {{char}} or others, talk about {{user}} alone and leave the other people out completely. This overrides every other instruction in this request that asks for anyone else.`,
+    no_mention: `STRICT — NO STORY PEOPLE: do not mention, name, describe, quote, impersonate or allude to {{char}}, {{user}}, or any other character or person from the story or the world information — not by name, nickname, title, appearance, role or pronoun — and none of them posts or comments. No post or comment is about them or about what they did. This overrides every other instruction in this request that asks for them. Instead write ordinary community content for this platform, mode and topic: in the reader mode, talk about the work only in general terms without its characters (updates, pacing, art or writing style, the fandom, unrelated chatter); in the in-world mode, everyday life, the setting, places, trends and happenings that involve no story characters.`,
     npc_off: `Named side characters (NPCs) from the story — anyone who appears in the story or the world information besides {{char}} and {{user}} — do NOT post or comment themselves. Every poster is an ordinary member with no name in the story; story characters may only be mentioned, rumored about or described by others.`,
     community_space: `COMMUNITY SPACE (made by the user): this happens in "{{space}}" on {{platform}}. About it: {{about}}
 Set "board" to "{{space}}". Its members are the kind of people who would join it, and its culture, in-jokes and usual topics color every post and comment. Any chosen topics still decide each post's subject — seen through this community (e.g. a dating-advice post written by members of a game community).`,
@@ -199,8 +203,8 @@ Set "board" to "{{space}}". Its members are the kind of people who would join it
     setting_custom: `COMMUNITY SETTING (given by the user): {{setting}}
 Follow it for who the users are and where and when they live, even where it differs from the story's own setting.`,
     reasoning_min: `Answer right away. Do not think out loud, do not write a reasoning, analysis or <think> section, and do not plan step by step before answering — output only what is asked for.`,
-    translate_separate: `Translate the "text" of every item into natural {{translation}}. Keep the tone, slang, emoji, line breaks (\n) and formatting such as >>12 anchors, #hashtags#, [emoji] tags and @mentions. Keep personal names as they are, or transliterate them only when that is how {{translation}} speakers would write them. If a text is already in {{translation}}, return "" for it. Reply with JSON only, in this exact shape: {"items":[{"id":0,"text":"..."}]}`,
-    translation: `ALSO fill "body_tr" for every post and comment with a natural {{translation}} translation that keeps the tone and slang. If the original is already in {{translation}}, leave "body_tr" empty. Likewise fill "title_tr" with the translated post title (empty when the post has no title or the title is already in {{translation}}), and each "desc_tr" in "media" with the translated photo / video description (empty when it is already in {{translation}}).`,
+    translate_separate: `Translate the "text" of every item into natural {{translation}}. Keep the tone, slang, emoji, line breaks (\n) and formatting such as >>12 anchors, #hashtags#, [emoji] tags, @mentions and [[media:N]] marks (exactly as they are, at the same places). Keep personal names as they are, or transliterate them only when that is how {{translation}} speakers would write them. If a text is already in {{translation}}, return "" for it. Reply with JSON only, in this exact shape: {"items":[{"id":0,"text":"..."}]}`,
+    translation: `ALSO fill "body_tr" for every post and comment with a natural {{translation}} translation that keeps the tone and slang. If the original is already in {{translation}}, leave "body_tr" empty. Keep any [[media:N]] marks of "body" exactly as they are, at the same places in "body_tr". Likewise fill "title_tr" with the translated post title (empty when the post has no title or the title is already in {{translation}}), and each "desc_tr" in "media" with the translated photo / video description (empty when it is already in {{translation}}).`,
 
     inject_authored: `[Online posts that story characters wrote themselves. Each name before "(posting as ...)" is the story character who actually wrote that post or comment on that community, and they remember doing it. Other lines are replies from other users, which those characters may have read. Let this shape the characters' knowledge, mood and dialogue when relevant (they may mention it, check the reactions, regret it, or be confronted about it by someone who saw it).]`,
 
@@ -221,7 +225,7 @@ Follow it for who the users are and where and when they live, even where it diff
       "body_tr": "",
       "media": [ { "type": "photo", "desc": "", "desc_tr": "" } ],
       "time": "relative time as shown on the platform, written in the output language",
-      "likes": 0, "views": 0, "shares": 0,
+      "likes": 0, "dislikes": 0, "views": 0, "shares": 0,
       "tags": ["optional flair / category / hashtag"],
       "comments": [
         {
@@ -232,9 +236,9 @@ Follow it for who the users are and where and when they live, even where it diff
     }
   ]
 }
-Numbers must be plain integers. Escape double quotes inside strings. Every poster must feel like a distinct person with their own voice.
+Numbers must be plain integers ("dislikes" counts downvotes / 비추; keep it 0 on platforms that have none). Escape double quotes inside strings. Every poster must feel like a distinct person with their own voice.
 List the posts from oldest to newest: the last post in "posts" is the most recent one, and the "time" values fit that order.
-"media" lists the photos, screenshots and videos attached to a post, in order. "type" is "photo" or "video"; "desc" describes what that photo or video shows in one or two short sentences in the output language, without brackets (e.g. a selfie, food, a street or scenery shot, a screenshot of a chat or article, fan art, merch, an evidence photo; for a video: what happens in the clip — a short fancam, a vlog moment, a funny clip, CCTV or dashcam footage). A post may have several (a photo dump, before/after shots, a few clips). Use an empty list when the post has no picture or video — add them where they suit the community and the post, not on every post. The body may refer to them ("사진 보셈", "pic related", "영상 ㄱㄱ").`,
+"media" lists the photos, screenshots and videos attached to a post, in order. To show one in the middle of the post (between paragraphs, the way people put pictures inside a post), write the mark [[media:N]] on its own line in "body" at that place — N is its number in "media", counting from 1 — and put the same marks at the same places in "body_tr"; media without a mark are shown at the end of the post. "type" is "photo" or "video"; "desc" describes what that photo or video shows in one or two short sentences in the output language, without brackets (e.g. a selfie, food, a street or scenery shot, a screenshot of a chat or article, fan art, merch, an evidence photo; for a video: what happens in the clip — a short fancam, a vlog moment, a funny clip, CCTV or dashcam footage). A post may have several (a photo dump, before/after shots, a few clips). Use an empty list when the post has no picture or video — add them where they suit the community and the post, not on every post. The body may refer to them ("사진 보셈", "pic related", "영상 ㄱㄱ").`,
 
     format_comments: `OUTPUT FORMAT: Return ONLY a JSON object, with no code fences and no commentary, matching:
 {
@@ -249,6 +253,7 @@ List the posts from oldest to newest: the last post in "posts" is the most recen
     guide_reddit: `Reddit. Board is a subreddit name (e.g. "r/NovelNameFans"). Usernames like u/throwaway_8812, u/SleepyOtter. Posts have a title, body (may include "EDIT:" lines), score (upvotes). Comments are threaded with replies; top comments are witty, analytical, or pun threads. Use Reddit culture: "this", "OP", "TIL", "/s", flairs in tags.`,
     guide_twitter: `X (Twitter). Set "board" to a trending hashtag or topic. Each post is a short tweet (under 280 characters), with display name and @handle, no title. Use hashtags, emoji, fandom slang, screaming caps, "RT if...", short threads. Metrics: likes, retweets (shares), views. Comments are replies to the tweet.`,
     guide_fivech: `2channel / 5channel (Japanese anonymous textboard). Each post object is one THREAD: "title" is the thread title (e.g. 【悲報】..., 【朗報】..., ○○について語るスレ Part3), "body" is the opener (>>1). Comments are the following replies in order (>>2, >>3...); the "replies" field must stay empty and "reply_to" must be -1 — reply with anchors like ">>1" or ">>5" in the body instead. Author is usually "名無しさん" (or a board-specific default name); "handle" is a random 8-character ID like "aB3dE9fG". Use 草, w, ワロタ, ガチ, kaomoji, light AA. Tone: cynical, joking, chaotic.`,
+    guide_fourchan: `4chan (English anonymous imageboard). Set "board" to one board written as "/abbr/ - Name" that fits the story and the mode (e.g. "/a/ - Anime & Manga", "/v/ - Video Games", "/vg/ - Video Game Generals", "/tv/ - Television & Film", "/lit/ - Literature", "/co/ - Comics & Cartoons", "/x/ - Paranormal"; in the in-world mode a board of that world). Each post object is one THREAD: "title" is the optional subject (often empty; long-running topics are "generals" like "/xyz/ General #212"), "body" is the opening post, which almost always has an image — describe it in "media". Comments are the following posts in order; the "replies" field must stay empty and "reply_to" must be -1 — reply by quoting in the body with ">>N", where N is the post's place in the thread (>>1 is the OP, >>2 the first reply, and so on); the site shows these as real post numbers. A reply sometimes attaches an image too (a reaction image, a screenshot, an edit): give that comment its own "media" list, in the same shape as a post's. "author" is "Anonymous" (only rarely a name); leave "handle" empty. Use greentext — lines starting with ">" (">be me", ">mfw", quoting a line to mock or answer it) — and imageboard slang: OP, anon, kek, lmao, based, cope, ITT, sauce?, this, /thread, bump, checked, lurk moar. Tone: terse, ironic, irreverent; shitposting and running jokes mixed with real discussion and arguments; mostly lowercase, no emoji. "time" like "11/23/26(Mon)14:05:33". No slurs, hate speech, doxxing or harassment.`,
     guide_weibo: `Sina Weibo. Set "board" to a super-topic or trending topic (超话 / 热搜). Posts by bloggers with display names (e.g. 吃瓜群众小王), no title, using #话题# hashtags (with # on both sides), emoji like [doge] [允悲] [泪], words like 绝了, 磕到了, 破防了, 吃瓜, yyds. Metrics: likes, comments, reposts (shares). Comments may have replies.`,
     guide_discord: `Discord server. Set "board" to the server name (a fan server in reader mode, a local / guild / school / work server in the in-world mode). Each post object is one CHANNEL: "title" is the channel name without "#" (e.g. 잡담, 정보, 스포일러, 짤방, 공지, 오프라인), "body" is the first message of the shown chat log and "author" its sender. "comments" are the following chat messages in order — short, casual, fast, several messages in a row from the same person are normal; "replies" stays empty. Use "reply_to" to point at an earlier message only when someone uses Discord's reply. Usernames look like Discord display names; emoji, :custom_emoji:, @mentions, lowercase, typos, "ㅋㅋ", stickers described in brackets. "time" like "오늘 오후 3:12".`,
     guide_tdgall: `투디갤 (tdgall.com), a Korean anonymous community for 2D works — anime, manga, light novels, subculture/mobile games, webtoons — that split off from DCInside. Everyone posts anonymously: set "author" to "ㅇㅇ" and "handle" to a random 4-character code of letters/digits (e.g. "k7Qa"); a person keeps the same code inside one post. Put the board in tags[0]: one of 투디, 웹툰, 소설, 게임, AI, 괴담, 남극. Tone: casual banmal, fast fandom slang and chosung abbreviations (ㅋㅋ, ㅠㅠ, ㄹㅇ, ㄱㅊ), title prefixes such as ㅃ (off-topic chatter), ㅂㅎ (dislike post — replies agree rather than argue), ㅅㅍ (spoiler), ㅂㅇ (translation). Community words: 펭도리 (asking for a source or character name), 소주 (claiming a character as one's spouse), 자표, 갤메이저/갤마이너, 유입 (newcomer, treated warily). Typical posts: short reactions, questions, rants about creators or pacing, shipping, fan theories, recommendation requests. No real-person photos, doxxing or slurs.`,
@@ -285,6 +290,8 @@ const PROMPT_LABELS = {
     setting_custom: '배경: 직접 입력했을 때',
     npc_on: '주변 인물(NPC): 직접 글 쓰기',
     npc_off: '주변 인물(NPC): 글 쓰지 않기',
+    stats_update: '반응 생성 때 조회수·추천 수 갱신 지시',
+    meta_positive: '작품 반응 모드: 불호 반응 금지',
     only_char: '언급 범위: 캐릭터만',
     only_user: '언급 범위: 유저만',
     no_mention: '언급 범위: 아무도 언급 안 함 (인물 언급 금지)',
@@ -298,6 +305,7 @@ const PROMPT_LABELS = {
     guide_reddit: '스타일: Reddit',
     guide_twitter: '스타일: X (트위터)',
     guide_fivech: '스타일: 2ch / 5ch',
+    guide_fourchan: '스타일: 4chan',
     guide_weibo: '스타일: 웨이보',
     guide_blind: '스타일: 블라인드',
     guide_everytime: '스타일: 에브리타임',
@@ -1098,12 +1106,14 @@ function num(n, style) {
 function nowLabel(platformId, langName = resolvedLanguage()) {
     const p = PLATFORMS[platformId];
     const w = uiWords(platformId, langName);
-    if (w && platformId !== 'fivech') return w.now;
+    if (w && !p.res) return w.now;
     if (p.now) return p.now;
-    // 2ch-style timestamp
     const d = new Date();
-    const wd = '日月火水木金土'[d.getDay()];
     const z = (x) => String(x).padStart(2, '0');
+    // 4chan: 11/23/26(Mon)14:05:33
+    if (platformId === 'fourchan') return `${z(d.getMonth() + 1)}/${z(d.getDate())}/${z(d.getFullYear() % 100)}(${'Sun Mon Tue Wed Thu Fri Sat'.split(' ')[d.getDay()]})${z(d.getHours())}:${z(d.getMinutes())}:${z(d.getSeconds())}`;
+    // 2ch-style timestamp
+    const wd = '日月火水木金土'[d.getDay()];
     return `${d.getFullYear()}/${z(d.getMonth() + 1)}/${z(d.getDate())}(${wd}) ${z(d.getHours())}:${z(d.getMinutes())}:${z(d.getSeconds())}`;
 }
 
@@ -1117,7 +1127,9 @@ function randomId(len = 8) {
 /** Escape, then add light platform-specific highlighting. */
 function fmt(text, platform) {
     let html = esc(text);
-    if (platform === 'fivech') {
+    // 4chan greentext: a line starting with ">" (not a >>N quote)
+    if (platform === 'fourchan') html = html.replace(/(^|\n)(&gt;(?!&gt;\d)[^\n]*)/g, '$1<span class="stcm-green">$2</span>');
+    if (PLATFORMS[platform]?.res) {
         html = html.replace(/&gt;&gt;(\d+)/g, '<span class="stcm-anchor">&gt;&gt;$1</span>');
     }
     if (platform === 'weibo') {
@@ -1149,7 +1161,7 @@ function resolvedTranslation() {
 }
 
 // The language each community is written in by default (Discord / X follow the story)
-const NATIVE_LANG = { naver: 'ko', dcinside: 'ko', tdgall: 'ko', kkangtong: 'ko', blind: 'ko', everytime: 'ko', reddit: 'en', fivech: 'ja', weibo: 'zh', tieba: 'zh' };
+const NATIVE_LANG = { naver: 'ko', dcinside: 'ko', tdgall: 'ko', kkangtong: 'ko', blind: 'ko', everytime: 'ko', reddit: 'en', fivech: 'ja', fourchan: 'en', weibo: 'zh', tieba: 'zh' };
 const LANG_LABEL = { ko: 'Korean', en: 'English', ja: 'Japanese', zh: 'Chinese' };
 
 function langCode(name) {
@@ -1172,10 +1184,10 @@ function uiLang(platformId, langName) {
 
 // Fixed UI words of the Chinese / Japanese skins when the feed is written in another language
 const UI_WORDS = {
-    ko: { via: '웨이보 앱', bar: ' 티에바', lz: '글쓴이', floor: (n) => `${n}층`, name: '이름:', now: '방금', anon: { fivech: '이름 없음', weibo: '웨이보 유저', tieba: '익명 유저', reddit: 'throwaway' }, over: (n) => `이 스레드는 ${n}을 넘었어요.<br>새 스레드를 세워 주세요.` },
-    en: { via: 'via Weibo app', bar: ' Bar', lz: 'OP', floor: (n) => `#${n}`, name: 'Name:', now: 'just now', anon: { fivech: 'Anonymous', weibo: 'Weibo user', tieba: 'Anonymous user', reddit: 'throwaway' }, over: (n) => `This thread has passed ${n} posts.<br>Please start a new thread.` },
-    ja: { via: 'Weiboアプリから', bar: 'バー', lz: 'スレ主', floor: (n) => `${n}階`, name: '名前：', now: 'たった今', anon: { fivech: '名無しさん', weibo: 'Weiboユーザー', tieba: '匿名ユーザー', reddit: 'throwaway' }, over: (n) => `このスレッドは${n}を超えました。<br>新しいスレッドを立ててください。` },
-    zh: { via: '来自 微博客户端', bar: '吧', lz: '楼主', floor: (n) => `${n}楼`, name: '名字：', now: '刚刚', anon: { fivech: '无名氏', weibo: '微博用户', tieba: '匿名用户', reddit: 'throwaway' }, over: (n) => `本帖已超过${n}楼。<br>请开新帖。` },
+    ko: { via: '웨이보 앱', bar: ' 티에바', lz: '글쓴이', floor: (n) => `${n}층`, name: '이름:', now: '방금', anon: { fivech: '이름 없음', fourchan: '익명', weibo: '웨이보 유저', tieba: '익명 유저', reddit: 'throwaway' }, over: (n) => `이 스레드는 ${n}을 넘었어요.<br>새 스레드를 세워 주세요.` },
+    en: { via: 'via Weibo app', bar: ' Bar', lz: 'OP', floor: (n) => `#${n}`, name: 'Name:', now: 'just now', anon: { fivech: 'Anonymous', fourchan: 'Anonymous', weibo: 'Weibo user', tieba: 'Anonymous user', reddit: 'throwaway' }, over: (n) => `This thread has passed ${n} posts.<br>Please start a new thread.` },
+    ja: { via: 'Weiboアプリから', bar: 'バー', lz: 'スレ主', floor: (n) => `${n}階`, name: '名前：', now: 'たった今', anon: { fivech: '名無しさん', fourchan: '名無し', weibo: 'Weiboユーザー', tieba: '匿名ユーザー', reddit: 'throwaway' }, over: (n) => `このスレッドは${n}を超えました。<br>新しいスレッドを立ててください。` },
+    zh: { via: '来自 微博客户端', bar: '吧', lz: '楼主', floor: (n) => `${n}楼`, name: '名字：', now: '刚刚', anon: { fivech: '无名氏', fourchan: '匿名', weibo: '微博用户', tieba: '匿名用户', reddit: 'throwaway' }, over: (n) => `本帖已超过${n}楼。<br>请开新帖。` },
 };
 
 /** UI words for a feed (or for the current language setting when no feed yet). */
@@ -1390,9 +1402,11 @@ function commonBlocks(mode, platformId, lang = resolvedLanguage(), spaceId = cur
     const vars = baseVars(platformId);
     const npc = npcRule(mode, vars);
     const scene = sceneText(platformId, spaceId);
+    // 작품 반응 모드 · 불호 반응 금지: only positive / neutral reactions in what is generated
+    const positive = mode !== 'world' && getSettings().metaNoNegative ? fillTpl(getPrompt('meta_positive'), vars) : '';
     return {
         system: fillTpl(getPrompt('system'), vars),
-        task: fillTpl(getPrompt(mode === 'world' ? 'mode_world' : 'mode_meta'), vars) + (npc ? `\n${npc}` : ''),
+        task: fillTpl(getPrompt(mode === 'world' ? 'mode_world' : 'mode_meta'), vars) + (npc ? `\n${npc}` : '') + (positive ? `\n${positive}` : ''),
         taskBase: fillTpl(getPrompt(mode === 'world' ? 'mode_world' : 'mode_meta'), vars),   // without the NPC rule (the player writes)
         style: fillTpl(getPrompt(`guide_${platformId}`), vars) + (scene ? `\n\n${scene}` : ''),
         language: languageInstruction(platformId, lang),
@@ -1516,8 +1530,8 @@ function buildCrossRefBlock(platformId, mode, excludePost = null) {
         for (let pi = posts.length - 1; pi >= 0 && items.length < limit; pi--) {
             const p = posts[pi];
             if (p === excludePost) continue;
-            const lines = [`- ${p.title ? `"${truncate(p.title, 80)}" — ` : ''}${authorLabel(p)}: ${truncate(p.body, 220)}`];
-            for (const c of p.comments.slice(-2)) lines.push(`    ↳ ${authorLabel(c)}: ${truncate(c.body, 100)}`);
+            const lines = [`- ${p.title ? `"${truncate(p.title, 80)}" — ` : ''}${authorLabel(p)}: ${truncate(promptBody(p), 220)}`];
+            for (const c of p.comments.slice(-2)) lines.push(`    ↳ ${authorLabel(c)}: ${truncate(promptBody(c), 100)}`);
             if (feeds[fi].data.board) lines[0] += `  [${truncate(feeds[fi].data.board, 40)}]`;
             items.push(lines.join('\n'));
         }
@@ -1567,7 +1581,44 @@ function whoLine(o) {
 
 /** The post's photos / videos for prompts: commenters can react to what they show. */
 function photoLine(post) {
-    return postMedia(post).filter(m => m.desc.trim()).map(m => `\n[Attached ${m.type === 'video' ? 'video' : 'photo'}: ${truncate(m.desc.trim(), 400)}]`).join('');
+    return unplacedMedia(post).map(m => `\n[Attached ${m.type === 'video' ? 'video' : 'photo'}: ${truncate(m.desc.trim(), 400)}]`).join('');
+}
+
+/** Boards that show view / like counts (not 2ch / 4chan threads, Discord channels or DMs). */
+function statsOn(feed, post) {
+    return !!feed && !PLATFORMS[feed.platform]?.res && !PLATFORMS[feed.platform]?.chat && post?.kind !== 'dm';
+}
+
+/** After new comments: the post's views / likes / 비추 and comments' likes as the model gave them — only ever up,
+ *  and within reason — or, when it gave none, a small rise that fits the number of new comments. */
+function applyThreadStats(feed, post, stats, shown, shownReplies, added) {
+    if (!statsOn(feed, post) || added <= 0) return;
+    const raise = (o, key, v, cur = Number(o[key]) || 0) => {
+        const n = Number(v);
+        if (!Number.isFinite(n)) return false;
+        const want = Math.round(n);
+        if (want > cur && want <= cur * 20 + 100000) { o[key] = want; return true; }
+        return want >= cur;   // "no change" is an answer too
+    };
+    const ps = stats?.post && typeof stats.post === 'object' ? stats.post : null;
+    const gotViews = ps ? raise(post, 'views', ps.views) : false;
+    const gotLikes = ps ? raise(post, 'likes', ps.likes) : false;
+    if (ps && ps.dislikes != null) raise(post, 'dislikes', ps.dislikes, dislikesOf(post, feed.platform));
+    // nothing usable from the model: a bit more attention for every new comment
+    const rnd = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
+    if (!gotViews) post.views = (Number(post.views) || 0) + added * rnd(4, 14) + rnd(0, 9);
+    if (!gotLikes) post.likes = (Number(post.likes) || 0) + Math.round(added * rnd(2, 10) / 10);
+    const cs = stats?.comments;
+    if (cs && typeof cs === 'object') {
+        // the comment / reply each id meant when the prompt was made — only if it is still on the post
+        const alive = new Set(post.comments.flatMap(c => [c, ...c.replies]));
+        for (const [key, v] of Object.entries(cs).slice(0, 300)) {
+            const m = /^c?(\d+)(?:\s*r(\d+))?$/i.exec(String(key).trim());
+            if (!m) continue;
+            const item = m[2] == null ? shown[Number(m[1])] : shownReplies[Number(m[1])]?.[Number(m[2])];
+            if (item && alive.has(item)) raise(item, 'likes', typeof v === 'object' ? v?.likes : v);
+        }
+    }
 }
 
 /** Serialize one post and its comments for the continuation prompt. */
@@ -1577,12 +1628,12 @@ function serializeThread(feed, postIdx) {
     const lines = [];
     if (feed.data.board) lines.push(`Board: ${feed.data.board}`);
 
-    if (feed.platform === 'fivech') {
+    if (PLATFORMS[feed.platform]?.res) {   // 2ch / 4chan: numbered posts, quoted with >>N
         let n = 1;
-        const items = [`>>${n} ${whoLine(post)}${playerMark(post, userName)}\nThread title: ${post.title}\n${post.body}${photoLine(post)}`];
+        const items = [`>>${n} ${whoLine(post)}${playerMark(post, userName)}\n${post.title ? `Thread title: ${post.title}\n` : ''}${promptBody(post)}${photoLine(post)}`];
         for (const c of post.comments) {
-            items.push(`>>${++n} ${whoLine(c)}${playerMark(c, userName)}\n${c.body}${photoLine(c)}`);
-            for (const r of c.replies) items.push(`>>${++n} ${whoLine(r)}${playerMark(r, userName)}\n${r.body}${photoLine(r)}`);
+            items.push(`>>${++n} ${whoLine(c)}${playerMark(c, userName)}\n${promptBody(c)}${photoLine(c)}`);
+            for (const r of c.replies) items.push(`>>${++n} ${whoLine(r)}${playerMark(r, userName)}\n${promptBody(r)}${photoLine(r)}`);
         }
         const head = items[0];
         const tail = items.slice(1).slice(-MAX_THREAD_ITEMS_IN_PROMPT);
@@ -1596,7 +1647,7 @@ function serializeThread(feed, postIdx) {
         if (post.kind === 'dm') lines.push(`Private Discord DM between ${dmSideEn(post.dm?.me)} and ${dmSideEn(post.dm?.partner)}.`);
         else {
             lines.push(`Channel: #${String(post.title || 'general').replace(/^#\s*/, '')}`);
-            if (post.body || post.author) lines.push(`[first] ${whoLine(post)}${playerMark(post, userName)}: ${post.body}${photoLine(post)}`);
+            if (post.body || post.author) lines.push(`[first] ${whoLine(post)}${playerMark(post, userName)}: ${promptBody(post)}${photoLine(post)}`);
         }
         const start = Math.max(0, post.comments.length - MAX_THREAD_ITEMS_IN_PROMPT);
         if (start > 0) lines.push('(… older messages omitted …)');
@@ -1609,13 +1660,14 @@ function serializeThread(feed, postIdx) {
         return lines.join('\n');
     }
 
-    lines.push(`[POST] ${whoLine(post)}${playerMark(post, userName)}${post.title ? `\nTitle: ${post.title}` : ''}\n${post.body}${photoLine(post)}`);
+    const counts = statsOn(feed, post);
+    lines.push(`[POST] ${whoLine(post)}${playerMark(post, userName)}${counts ? ` (views ${toInt(post.views)} · likes ${toInt(post.likes)} · dislikes ${dislikesOf(post, feed.platform)})` : ''}${post.title ? `\nTitle: ${post.title}` : ''}\n${promptBody(post)}${photoLine(post)}`);
     const start = Math.max(0, post.comments.length - MAX_THREAD_ITEMS_IN_PROMPT);
     if (start > 0) lines.push('(… older comments omitted …)');
     post.comments.slice(start).forEach((c, k) => {
         const i = start + k;
-        lines.push(`[c${i}] ${whoLine(c)}${playerMark(c, userName)}: ${c.body}${photoLine(c)}`);
-        for (const r of c.replies) lines.push(`    ↳ ${whoLine(r)}${playerMark(r, userName)}: ${r.body}${photoLine(r)}`);
+        lines.push(`[c${i}] ${whoLine(c)}${playerMark(c, userName)}${counts ? ` (likes ${toInt(c.likes)})` : ''}: ${promptBody(c)}${photoLine(c)}`);
+        c.replies.forEach((r, ri) => lines.push(`    ↳ ${counts ? `#c${i}r${ri} ` : ''}${whoLine(r)}${playerMark(r, userName)}${counts ? ` (likes ${toInt(r.likes)})` : ''}: ${promptBody(r)}${photoLine(r)}`));
     });
     return lines.join('\n');
 }
@@ -1639,6 +1691,7 @@ async function buildContinuePrompt({ feed, postIdx, count, playerJustPosted }) {
     if (postIdx < 0) throw new Error('그 사이 글이 지워졌어요');
     const post = postRef;
     const shown = post.comments.slice();   // what the [cN] numbers below point at
+    const shownReplies = shown.map(c => c.replies.slice());   // and the #cNrM ones (a reply deleted meanwhile moves the rest up)
     const pl = threadHasPlayer(post);
 
     const playerNotes = [];
@@ -1660,9 +1713,10 @@ async function buildContinuePrompt({ feed, postIdx, count, playerJustPosted }) {
         `<language>\n${b.language}\n</language>`,
         b.extra ? `<extra_instructions>\n${b.extra}\n</extra_instructions>` : '',
         getPrompt('format_comments'),
+        statsOn(feed, post) ? fillTpl(getPrompt('stats_update'), b.vars) : '',
     ].filter(Boolean).join('\n\n');
 
-    return { system: b.system, user, shown };
+    return { system: b.system, user, shown, shownReplies };
 }
 
 // ---------------------------------------------------------------------------
@@ -1842,6 +1896,7 @@ function normItem(o) {
         body_tr: String(o.body_tr ?? o.body_ko ?? ''),
         time: String(o.time ?? '').slice(0, 100),
         likes: toInt(o.likes),
+        ...(o.dislikes != null && Number.isFinite(Number(o.dislikes)) ? { dislikes: toInt(o.dislikes) } : {}),
     };
 }
 
@@ -1857,6 +1912,7 @@ function normPost(p) {
         tags: Array.isArray(p?.tags) ? p.tags.slice(0, 10).map(t => String(t).slice(0, 60)) : [],
         comments: Array.isArray(p?.comments) ? p.comments.map((cm, ci) => ({
             ...normItem(cm),
+            ...itemMedia(cm),   // 4chan replies may come with a reaction image
             replies: Array.isArray(cm?.replies) ? cm.replies.map(normItem) : [],
             // chat-style platforms (Discord) show which earlier message was replied to
             ...(Number.isInteger(cm?.reply_to) && cm.reply_to >= 0 && cm.reply_to < ci ? { ref: cm.reply_to } : {}),
@@ -1891,7 +1947,10 @@ function parseComments(raw) {
     }
     const list = Array.isArray(data.comments) ? data.comments : (Array.isArray(data) ? data : null);
     if (!list) throw new Error('comments 배열이 없어요');
-    return list.slice(0, 200).map(c => ({ ...normItem(c), reply_to: replyNumber(c?.reply_to) }));
+    const out = list.slice(0, 200).map(c => ({ ...normItem(c), ...itemMedia(c), reply_to: replyNumber(c?.reply_to) }));
+    // the post's / comments' new numbers (조회수·추천…), when the model gave them
+    Object.defineProperty(out, 'stats', { value: data && typeof data.stats === 'object' && !Array.isArray(data.stats) ? data.stats : null });
+    return out;
 }
 
 /** reply_to from the model: a whole number (or a digit string) ≥ 0; anything else (null, "", true…) = a new comment. */
@@ -2397,7 +2456,7 @@ async function generateMoreComments(feedId, postIdx, { playerJustPosted = false,
     return runJob(label, background, async ({ signal, stillSameChat }) => {
         // the model answers "reply_to" with the comment numbers it was shown; `shown` is which comment each was,
         // taken when the prompt was written, so a comment deleted before or after can't shift a reply
-        const { system, user, shown } = await buildContinuePrompt({ feed, postIdx: feed.data.posts.indexOf(postRef), count, playerJustPosted });
+        const { system, user, shown, shownReplies } = await buildContinuePrompt({ feed, postIdx: feed.data.posts.indexOf(postRef), count, playerJustPosted });
         const raw = await callModel(system, user, signal);
         if (!stillSameChat()) return null;
         const list = parseOrThrow(parseComments, raw);
@@ -2409,6 +2468,7 @@ async function generateMoreComments(feedId, postIdx, { playerJustPosted = false,
         const flat = !!PLATFORMS[feed.platform]?.flat;
         const chat = !!PLATFORMS[feed.platform]?.chat;
         const at = msgNow();
+        const before = commentTotal(post);
         for (const c of list) {
             if (isThreadFull(feed, post)) break;
             const { reply_to, ...item } = c;
@@ -2423,6 +2483,7 @@ async function generateMoreComments(feedId, postIdx, { playerJustPosted = false,
                 post.comments.push({ ...item, replies: [] });
             }
         }
+        applyThreadStats(feed, post, list.stats, shown, shownReplies, commentTotal(post) - before);
         postRef.autoAt = Date.now();
         if (background && !isOpen()) { const st = getChatStore(); st.unread = (st.unread || 0) + 1; updateBadge(); }
         await saveChatStore();
@@ -2456,7 +2517,7 @@ function playerItem(platformId, { as, nick, charName, body, title }, langName = 
 // Nicknames: an empty box gets a community-style name; the same identity keeps its name inside one post
 // ---------------------------------------------------------------------------
 // Communities where everyone is anonymous by design: the platform default (ㅇㅇ, 名無しさん, 익명…) is the right name
-const ANON_PLATFORMS = new Set(['dcinside', 'tdgall', 'kkangtong', 'fivech', 'everytime']);
+const ANON_PLATFORMS = new Set(['dcinside', 'tdgall', 'kkangtong', 'fivech', 'fourchan', 'everytime']);
 const NICK_WORDS = {
     ko: {
         a: ['달달한', '졸린', '행복한', '반짝이는', '수줍은', '바삭한', '포근한', '말랑한', '심심한', '용감한', '느긋한', '새벽의', '작은', '푸른', '노란', '배고픈', '조용한', '까칠한', '엉뚱한', '따뜻한'],
@@ -2754,7 +2815,7 @@ function syncComposeDraft(view) {
     Object.assign(d, {
         title: view.querySelector('.stcm-cp-title')?.value ?? d.title,
         body: view.querySelector('.stcm-cp-body')?.value ?? d.body,
-        media: readMediaRows(view),
+        media: readMediaRows(view, null, true),
         board: view.querySelector('.stcm-cp-board')?.value ?? d.board,
         category: view.querySelector('.stcm-cp-cat')?.value ?? d.category,
         react: view.querySelector('.stcm-cp-react')?.checked ?? d.react,
@@ -2765,7 +2826,8 @@ function syncCommentDraft() {
     const d = composer?.draft?.unpostedId ? findUnpostedAny(composer.draft.unpostedId) : null;
     if (!d) return;
     d.body = composer.draft.body ?? d.body;
-    if (Array.isArray(composer.draft.media)) d.media = cleanMedia({ media: composer.draft.media });
+    // the rows as they are in the box, empty ones too: the text's [[media:N]] numbers count them
+    if (Array.isArray(composer.draft.media)) d.media = composer.draft.media.map(m => ({ type: m.type === 'video' ? 'video' : 'photo', desc: String(m.desc ?? ''), ...(m.mid ? { mid: m.mid } : {}) }));
     if (composer.draft.react != null) d.react = composer.draft.react;
     if (composer.draft.as) d.identity = { as: composer.draft.as, nick: composer.draft.nick ?? '', charName: composer.draft.charName ?? '' };
     // the comment it answers (or none) as it is now
@@ -2940,11 +3002,20 @@ async function submitPlayerCommentNow({ feedId, postIdx, replyTo, body, identity
 }
 
 async function deleteItem(feedId, postIdx, ci, ri) {
+    if (!removeItemNow(feedId, postIdx, ci, ri)) return;
+    await saveChatStore();
+    if (ci == null) { showFeed(feedId, { keepScroll: true }); return; }
+    updatePost(feedId, postIdx);
+    if (isPinned(feedId, postIdx)) refreshInjection();
+}
+
+/** Take a post / comment / reply out of the list now (pins, comment box, Discord replies… follow). No saving. */
+function removeItemNow(feedId, postIdx, ci, ri) {
     const feed = getFeed(feedId);
     const post = feed?.data.posts[postIdx];
-    if (!post) return;
+    if (!post) return false;
     const target = ci == null ? post : (ri == null ? post.comments[ci] : post.comments[ci]?.replies[ri]);
-    if (!target) return;   // generated posts / comments can be deleted as well as your own
+    if (!target) return false;   // generated posts / comments can be deleted as well as your own
     if (ci == null) {
         // Delete the whole post (generated or your own); drop pins pointing at it and shift later ones
         feed.data.posts.splice(postIdx, 1);
@@ -2991,10 +3062,105 @@ async function deleteItem(feedId, postIdx, ci, ri) {
     }
     // a box placed under a specific comment / res may now sit on the wrong one: move it to the end
     if (ci != null && composer?.feedId === feedId && composer.postIdx === postIdx && !['end', 'op'].includes(composer.place ?? 'end')) composer.place = 'end';
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// 선택 삭제: tick several posts / comments / replies on the board and delete them in one go
+// ---------------------------------------------------------------------------
+let pickMode = null;   // { feedId, picked: Set of the post / comment / reply objects ticked }
+
+/** What a tick box points at: "3" (post 3), "3.1" (its comment 1), "3.1.0" (that comment's reply 0). */
+function pickTarget(feed, key) {
+    const [i, ...rest] = String(key).split('.');
+    return itemAtPath(feed?.data.posts[Number(i)], rest.length ? rest.join('.') : 'op');
+}
+
+/** The bar on top while picking. */
+function pickBarHtml() {
+    const n = pickMode?.picked.size ?? 0;
+    return `<div class="stcm-pickbar" id="stcm_pickbar"><span class="cnt"><b>${n}</b>개 선택</span>
+        <button data-act="pick-all" title="지금 화면에 보이는 글을 모두 고르기">글 모두</button>
+        <button data-act="pick-none">선택 해제</button>
+        <button class="danger" data-act="pick-delete" ${n ? '' : 'disabled'}><i class="fa-solid fa-trash-can"></i> 선택 삭제</button>
+        <button data-act="pick-cancel">끝내기</button></div>`;
+}
+
+function updatePickBar() {
+    const bar = document.getElementById('stcm_pickbar');
+    if (!bar) return;
+    const n = pickMode?.picked.size ?? 0;
+    bar.querySelector('.cnt').innerHTML = `<b>${n}</b>개 선택`;
+    const del = bar.querySelector('[data-act="pick-delete"]');
+    if (del) del.disabled = !n;
+}
+
+/** Tick boxes on every post and comment drawn under root (or root itself). */
+function decoratePicks(root, feed) {
+    if (!root || !pickMode || pickMode.feedId !== feed?.id) return;
+    const box = (key, cls, label) => {
+        const o = pickTarget(feed, key);
+        if (!o) return null;
+        const l = document.createElement('label');
+        l.className = `stcm-pickbox ${cls}`;
+        l.title = label;
+        l.innerHTML = `<input type="checkbox" data-act="pick" data-pick="${esc(key)}"${pickMode.picked.has(o) ? ' checked' : ''}><span>${label}</span>`;
+        return l;
+    };
+    const mark = (el, key) => el.classList.toggle('stcm-picked', pickMode.picked.has(pickTarget(feed, key)));
+    const all = (sel) => [...(root.matches?.(sel) ? [root] : []), ...root.querySelectorAll(sel)];
+    for (const art of all('[data-post]')) {
+        const l = box(art.dataset.post, 'post', '글 선택');
+        if (l && !art.querySelector(':scope > .stcm-pickbox')) art.prepend(l);
+        mark(art, art.dataset.post);
+    }
+    for (const el of all('[data-k]')) {
+        if (!/^\d+\.\d+(\.\d+)?$/.test(el.dataset.k)) continue;   // the post's own line (".op"), action rows…
+        const l = box(el.dataset.k, 'item', '선택');
+        if (l && !el.querySelector(':scope > .stcm-pickbox')) el.prepend(l);
+        mark(el, el.dataset.k);
+    }
+}
+
+/** Delete everything ticked: replies, comments, then posts (a post takes its comments with it). */
+async function deletePicked() {
+    const feed = pickMode ? getFeed(pickMode.feedId) : null;
+    if (!feed) { pickMode = null; return; }
+    const picked = pickMode.picked;
+    const posts = feed.data.posts.filter(p => picked.has(p));
+    const inPosts = new Set(posts);
+    let comments = 0;
+    for (const p of feed.data.posts) {
+        if (inPosts.has(p)) continue;
+        for (const c of p.comments) {
+            if (picked.has(c)) { comments++; continue; }
+            comments += c.replies.filter(r => picked.has(r)).length;
+        }
+    }
+    if (!posts.length && !comments) { toastr.info('고른 게 없어요.'); return; }
+    const kind = postKindLabel(feed, posts[0]);
+    const what = [posts.length ? `${kind} ${posts.length}개` : '', comments ? `${PLATFORMS[feed.platform]?.res ? '레스' : '댓글'} ${comments}개` : ''].filter(Boolean).join(', ');
+    const { Popup, POPUP_RESULT } = ctx();
+    const ok = Popup?.show?.confirm
+        ? (await Popup.show.confirm('선택 삭제', `${esc(what)}를 지울까요?${posts.length ? `<br><small>${esc(kind)}을(를) 지우면 달린 댓글도 함께 지워지고, 본 채팅 반영에서도 빠져요.</small>` : ''}`)) === POPUP_RESULT.AFFIRMATIVE
+        : confirm(`${what}를 지울까요?`);
+    if (!ok || !pickMode || getFeed(feed.id) !== feed) return;
+    // by the objects themselves: what was ticked is what goes, wherever it is now
+    for (let pi = feed.data.posts.length - 1; pi >= 0; pi--) {
+        const p = feed.data.posts[pi];
+        if (picked.has(p)) continue;
+        for (let ci = p.comments.length - 1; ci >= 0; ci--) {
+            const c = p.comments[ci];
+            if (picked.has(c)) { removeItemNow(feed.id, pi, ci, null); continue; }
+            for (let ri = c.replies.length - 1; ri >= 0; ri--) if (picked.has(c.replies[ri])) removeItemNow(feed.id, pi, ci, ri);
+        }
+    }
+    for (let pi = feed.data.posts.length - 1; pi >= 0; pi--) if (picked.has(feed.data.posts[pi])) removeItemNow(feed.id, pi, null, null);
+    pickMode = null;
+    refreshInjection();
     await saveChatStore();
-    if (ci == null) { showFeed(feedId, { keepScroll: true }); return; }
-    updatePost(feedId, postIdx);
-    if (isPinned(feedId, postIdx)) refreshInjection();
+    showFeed(feed.id, { keepScroll: true });
+    toastr.success(`${what}를 지웠어요.`, '', { timeOut: 2000 });
 }
 
 // ---------------------------------------------------------------------------
@@ -3030,7 +3196,7 @@ async function aiWrite({ kind, mode, platformId, identity, instruction, draft, f
         const dmPost = feed && postIdx != null && feed.data.posts[postIdx]?.kind === 'dm';
         const kindLabel = dmPost || kind === 'dm' ? 'direct message'
             : PLATFORMS[platformId]?.chat ? 'chat message'
-            : ({ post: platformId === 'fivech' ? 'thread (title + opening post)' : 'post', comment: 'comment', reply: 'reply' }[kind] ?? kind);
+            : ({ post: PLATFORMS[platformId]?.res ? 'thread (title + opening post)' : 'post', comment: 'comment', reply: 'reply' }[kind] ?? kind);
         const parts = [
             `<story_context>\n${storyText}\n</story_context>`,
             `<task>\n${b.taskBase}\n</task>`,
@@ -3041,7 +3207,7 @@ async function aiWrite({ kind, mode, platformId, identity, instruction, draft, f
         if (feed && postIdx != null) {
             parts.push(`<thread>\n${serializeThread(feed, postIdx)}\n</thread>`);
             const target = replyTo != null ? feed.data.posts[postIdx].comments[replyTo] : null;
-            if (target) parts.push(`<reply_target>\nThe new text replies to this comment by ${target.author || 'anon'}: ${truncate(target.body, 400)}\n</reply_target>`);
+            if (target) parts.push(`<reply_target>\nThe new text replies to this comment by ${target.author || 'anon'}: ${truncate(promptBody(target), 400)}\n</reply_target>`);
             if (anchorN) parts.push(`<reply_target>\nThe new post replies to >>${anchorN}; start with that anchor.\n</reply_target>`);
         } else if (feed?.data?.board) {
             parts.push(`<board>\nThe post goes on: ${feed.data.board}\n</board>`);
@@ -3054,9 +3220,10 @@ async function aiWrite({ kind, mode, platformId, identity, instruction, draft, f
         if (b.extra) parts.push(`<extra_instructions>\n${b.extra}\n</extra_instructions>`);
         if (photo) {
             // only the picture: what this author's photo / screenshot shows
-            const what = photo.target === 'comment' ? (platformId === 'fivech' ? 'new res (reply post in the thread)' : 'new comment') : 'post';
+            const res = !!PLATFORMS[platformId]?.res;
+            const what = photo.target === 'comment' ? (res ? 'new res (reply post in the thread)' : 'new comment') : 'post';
             parts.push(photo.target === 'comment'
-                ? `<new_${platformId === 'fivech' ? 'res' : 'comment'}>\nThe ${what} being written in the thread above:\n${draft?.trim() || '(no text yet)'}\n</new_${platformId === 'fivech' ? 'res' : 'comment'}>`
+                ? `<new_${res ? 'res' : 'comment'}>\nThe ${what} being written in the thread above:\n${draft?.trim() || '(no text yet)'}\n</new_${res ? 'res' : 'comment'}>`
                 : `<post>\n${photo.title?.trim() ? `Title: ${photo.title.trim()}\n` : ''}${draft?.trim() || '(no text yet)'}\n</post>`);
             const video = photo.kind === 'video';
             const others = (photo.others ?? []).filter(m => m.desc?.trim());
@@ -3123,8 +3290,8 @@ function postHasStoryAuthor(post) {
 function postToPinText(post) {
     const lines = [];
     const head = post.title ? `"${post.title}" — ` : '';
-    const att = (o, n) => postMedia(o).filter(m => m.desc.trim()).map(m => ` [${m.type === 'video' ? 'video' : 'photo'}: ${truncate(m.desc.trim(), n)}]`).join('');
-    lines.push(`${head}${authorLabel(post)}: ${truncate(post.body, 500)}${att(post, 200)}`);
+    const att = (o, n) => unplacedMedia(o).map(m => ` [${m.type === 'video' ? 'video' : 'photo'}: ${truncate(m.desc.trim(), n)}]`).join('');
+    lines.push(`${head}${authorLabel(post)}: ${truncate(promptBody(post), 500)}${att(post, 200)}`);
     const comments = post.comments ?? [];
     const keep = new Set([0, 1, 2, comments.length - 1]);
     comments.forEach((c, i) => {
@@ -3139,11 +3306,11 @@ function postToPinText(post) {
     comments.forEach((c, i) => {
         if (!keep.has(i)) { skipped = true; return; }
         if (skipped) { lines.push('  ↳ …'); skipped = false; }
-        lines.push(`  ↳ ${authorLabel(c)}: ${truncate(c.body, storyAuthor(c) ? 400 : 150)}${att(c, 150)}`);
+        lines.push(`  ↳ ${authorLabel(c)}: ${truncate(promptBody(c), storyAuthor(c) ? 400 : 150)}${att(c, 150)}`);
         const rs = c.replies.filter(r => storyAuthor(r));
         const others = c.replies.filter(r => !storyAuthor(r)).slice(0, storyAuthor(c) ? 3 : 1);
         for (const r of c.replies) {
-            if (rs.includes(r) || others.includes(r)) lines.push(`      ↳ ${authorLabel(r)}: ${truncate(r.body, storyAuthor(r) ? 400 : 120)}${att(r, 120)}`);
+            if (rs.includes(r) || others.includes(r)) lines.push(`      ↳ ${authorLabel(r)}: ${truncate(promptBody(r), storyAuthor(r) ? 400 : 120)}${att(r, 120)}`);
         }
     });
     return lines.join('\n');
@@ -3256,16 +3423,20 @@ function newComposerId() { return `c${Date.now().toString(36)}${randomId(5)}`; }
 
 /** A post's attached photos / videos, shown as their descriptions: [사진 내용], ▶ [영상 내용]. */
 function imgBox(o) {
-    const list = postMedia(o).filter(m => m.desc.trim());
+    // the ones the text already shows in place are not repeated here
+    const list = unplacedMedia(o, inlineText(o));
     if (!list.length) return '';
-    const showTr = trOn(o);
+    const trNow = trOn(o);
+    return list.map(m => mediaItemHtml(m, trNow)).join('');
+}
+
+/** One photo / video, as its description box. */
+function mediaItemHtml(m, trNow) {
     const both = getSettings().trDisplay === 'both';
-    return list.map(m => {
-        const tr = String(m.desc_tr ?? '').trim();
-        const on = !!tr && showTr;
-        const video = m.type === 'video';
-        return `<div class="stcm-img${video ? ' video' : ''}"><i class="fa-${video ? 'solid fa-film' : 'regular fa-image'}"></i><span>${video ? '▶ ' : ''}[${esc(on && !both ? tr : m.desc)}]${on && both ? `<span class="stcm-tr-below">[${esc(tr)}]</span>` : ''}</span></div>`;
-    }).join('');
+    const tr = String(m.desc_tr ?? '').trim();
+    const on = !!tr && trNow;
+    const video = m.type === 'video';
+    return `<div class="stcm-img${video ? ' video' : ''}"><i class="fa-${video ? 'solid fa-film' : 'regular fa-image'}"></i><span>${video ? '▶ ' : ''}[${esc(on && !both ? tr : m.desc)}]${on && both ? `<span class="stcm-tr-below">[${esc(tr)}]</span>` : ''}</span></div>`;
 }
 
 /** 사진·영상: a post's list of attached media ({ type: 'photo' | 'video', desc, desc_tr }).
@@ -3304,29 +3475,65 @@ function cleanMedia(p) {
     return out;
 }
 
-/** 2ch reses and Reddit comments you write can carry photos / videos too (not in a DM). */
-const COMMENT_MEDIA = new Set(['fivech', 'reddit']);
+/** A generated comment's own photos / videos, when the model gave some ({} otherwise). */
+function itemMedia(o) {
+    const media = cleanMedia(o);
+    return media.length ? { media } : {};
+}
+
+/** 2ch / 4chan reses and Reddit comments you write can carry photos / videos too (not in a DM). */
+const COMMENT_MEDIA = new Set(['fivech', 'fourchan', 'reddit']);
 function commentMediaOn(feed, post) {
     return COMMENT_MEDIA.has(feed?.platform) && post?.kind !== 'dm';
 }
 
 /** One photo / video row of a write form / comment box, as HTML. mid: the row's own id (kept when the box is
  *  drawn again), so an AI description that comes back later goes into that very row — or nowhere if it was removed. */
-function mediaRowHtml(type, desc = '', mid = '') {
+function mediaRowHtml(type, desc = '', mid = '', n = '') {
     const video = type === 'video';
     const id = /^[a-zA-Z0-9]{1,20}$/.test(String(mid)) ? mid : `m${Date.now().toString(36)}${randomId(5)}`;
-    return `<div class="stcm-cp-media" data-type="${video ? 'video' : 'photo'}" data-mid="${id}"><div class="stcm-cp-media-head"><i class="fa-${video ? 'solid fa-film' : 'regular fa-image'}"></i> <b>${video ? '영상' : '사진'}</b>
+    return `<div class="stcm-cp-media" data-type="${video ? 'video' : 'photo'}" data-mid="${id}"><div class="stcm-cp-media-head"><i class="fa-${video ? 'solid fa-film' : 'regular fa-image'}"></i> <b>${video ? '영상' : '사진'} <span class="n">${esc(n)}</span></b>
+            <button data-act="cp-media-put" title="본문의 커서 자리에 이 ${video ? '영상' : '사진'}을 넣어요 ([[media:번호]] 표시가 들어가고, 그 자리에 보여요)"><i class="fa-solid fa-arrow-turn-down"></i> 본문에 넣기</button>
             <button data-act="ai-photo" title="글과 고른 신분에 맞춰 AI가 ${video ? '영상' : '사진'} 묘사를 써 줘요"><i class="fa-solid fa-wand-magic-sparkles"></i> AI로 묘사</button>
             <button data-act="cp-media-del" title="이 ${video ? '영상' : '사진'} 빼기"><i class="fa-solid fa-xmark"></i></button></div>
         <textarea rows="2" maxlength="1000" placeholder="${video ? '영상 묘사 — 예: 축제 불꽃놀이를 찍은 짧은 영상. 터질 때마다 사람들 환호성' : '사진 묘사 — 예: 축제 야시장 사진. 사람들 사이로 등불이 줄지어 걸려 있음'}">${esc(desc)}</textarea></div>`;
 }
 
+const MEDIA_HINT = '<small class="stcm-cp-mediahint">칸의 <b>본문에 넣기</b>를 누르면 본문 커서 자리에 <code>[[media:번호]]</code>가 들어가고, 그 자리에 사진·영상이 보여요. 넣지 않은 건 글 맨 아래에 나와요.</small>';
+
 /** Add a photo / video row to a write form or comment box. */
 function addMediaRow(root, type, desc = '', mid = '') {
     const list = root.querySelector('.stcm-cp-medialist');
     if (!list) return null;
-    list.insertAdjacentHTML('beforeend', mediaRowHtml(type, desc, mid));
+    list.insertAdjacentHTML('beforeend', mediaRowHtml(type, desc, mid, list.querySelectorAll('.stcm-cp-media').length + 1));
     return list.lastElementChild;
+}
+
+/** Rows are numbered 1, 2, … in order: that number is what [[media:N]] in the text points at. */
+function numberMediaRows(root) {
+    root?.querySelectorAll('.stcm-cp-media').forEach((r, k) => { const n = r.querySelector('.stcm-cp-media-head .n'); if (n) n.textContent = String(k + 1); });
+}
+
+/** Marks in a text after media row k (0-based) is removed: its own marks go, later numbers move down by one. */
+function shiftMediaMarks(text, k) {
+    return String(text ?? '').replace(MEDIA_MARK_LINE, (all, n) => {
+        const i = Number(n) - 1;
+        if (i === k) return '';
+        return all.replace(/\d{1,2}(?=\s*\]\]$)/, String(i > k ? i : i + 1));
+    });
+}
+
+/** A form's media and text ready to save: empty rows dropped and the marks renumbered to match. */
+function packFormMedia(root, body) {
+    const rows = readMediaRows(root, null, true);
+    const keep = [];
+    const to = new Map();   // old number → new number
+    rows.forEach((m, k) => { if (m.desc && keep.length < MEDIA_MAX) { to.set(k, keep.length); keep.push({ type: m.type, desc: m.desc }); } });
+    const text = String(body ?? '').replace(MEDIA_MARK_LINE, (all, n) => {
+        const j = to.get(Number(n) - 1);
+        return j == null ? '' : `${all.startsWith('\n') ? '\n' : ''}[[media:${j + 1}]]`;
+    });
+    return { media: keep, body: text };
 }
 
 /** The write form being filled in, per chat (until it is posted or thrown away, or the page is closed):
@@ -3575,7 +3782,7 @@ function computeBoardTimes(feed) {
     return { order, time };
 }
 
-/** A written date ("2020-01-01", "2026/10/26(月) 12:34:56", "10.26", "10월 26일", "10月26日") → minutes before anchor. */
+/** A written date ("2020-01-01", "2026/10/26(月) 12:34:56", "10/26/26(Mon)12:34:56", "10.26", "10월 26일", "10月26日") → minutes before anchor. */
 function parseDate(raw, anchor) {
     const s = String(raw ?? '').trim();
     const now = new Date(anchor);
@@ -3584,6 +3791,7 @@ function parseDate(raw, anchor) {
     let d;
     let m;
     if ((m = /^(\d{4})\s*[-./年]\s*(\d{1,2})\s*[-./月]\s*(\d{1,2})/.exec(s))) [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+    else if ((m = /^(\d{1,2})\/(\d{1,2})\/(\d{2})\(/.exec(s))) [mo, d, y] = [Number(m[1]), Number(m[2]), 2000 + Number(m[3])];   // 4chan: 11/23/26(Mon)
     else if ((m = /^(\d{1,2})\s*(?:[./]|월|月)\s*(\d{1,2})\s*(?:일|日)?\.?(?:\s|$|\()/.exec(`${s} `))) [mo, d] = [Number(m[1]), Number(m[2])];
     else return null;
     if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
@@ -3662,11 +3870,126 @@ function newestFirst(feed, fn) {
 /** Set while one post is re-drawn (a new comment, a translation…): the renderers then build only that post. */
 let renderOnly = null;
 
+/** 추천·좋아요 (dir 'up') or 비추·downvote ('down') that you press yourself — once per post / comment. */
+function voteBtn(feed, i, path, o, dir, inner, { cls = '', title = '' } = {}) {
+    const mine = o?.voted === dir;
+    const done = !!o?.voted;
+    const label = title || (dir === 'down' ? '비추천' : '추천');
+    const shown = mine ? inner.replace(/fa-regular/g, 'fa-solid') : inner;   // a filled heart / thumb once pressed
+    return `<button type="button" class="stcm-vote${cls ? ` ${cls}` : ''}${mine ? ' on' : ''}${done && !mine ? ' off' : ''}" data-act="vote" data-feed="${esc(feed.id)}" data-idx="${i}" data-path="${esc(path)}" data-dir="${dir}" title="${esc(done ? `${label} (이미 눌렀어요)` : label)}" aria-pressed="${mine ? 'true' : 'false'}">${shown}</button>`;
+}
+
+/** 비추 count: stored, or for older DC posts the number that used to be shown. */
+function dislikesOf(o, platform) {
+    if (Number.isFinite(Number(o?.dislikes)) && o?.dislikes != null) return toInt(o.dislikes);
+    return platform === 'dcinside' ? Math.floor((Number(o?.likes) || 0) / 7) : 0;
+}
+
+/** DC 추천 상자: 추천 수 · 개념 · 비추 · 비추 수. */
+function dcRecBox(feed, i, p) {
+    return `<div class="stcm-dc-rec">
+        <div class="cnt up"><b>${num(p.likes)}</b></div>
+        ${voteBtn(feed, i, 'op', p, 'up', '<i class="fa-solid fa-star"></i><span>개념</span>', { cls: 'up', title: '개념 추천' })}
+        ${voteBtn(feed, i, 'op', p, 'down', '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6.5 2h7v7.5H18L10 18 2 9.5h4.5z" fill="currentColor"/></svg><span>비추</span>', { cls: 'down', title: '비추' })}
+        <div class="cnt down"><b>${num(dislikesOf(p, 'dcinside'))}</b></div>
+    </div>`;
+}
+
+/** Reddit ↑ score ↓ (score = upvotes − downvotes). */
+function redditVote(feed, i, path, o) {
+    const score = Math.max(0, (Number(o.likes) || 0) - (Number(o.dislikes) || 0));
+    return `${voteBtn(feed, i, path, o, 'up', '<i class="fa-solid fa-arrow-up"></i>', { title: 'Upvote' })} ${num(score)} ${voteBtn(feed, i, path, o, 'down', '<i class="fa-solid fa-arrow-down"></i>', { title: 'Downvote' })}`;
+}
+
+/** The post / comment a vote button points at: 'op', 'ci' or 'ci.ri'. */
+function itemAtPath(post, path) {
+    if (!post) return null;
+    if (path === 'op') return post;
+    const [ci, ri] = String(path).split('.').map(Number);
+    const c = Number.isInteger(ci) ? (post.comments[ci] ?? null) : null;
+    return ri == null || Number.isNaN(ri) ? c : (c?.replies[ri] ?? null);
+}
+
+/** 4chan post numbers of one thread (No. of the OP, then of each post in order): fixed per board and thread, rising
+ *  with newer threads and gaps between posts, as on a busy site. */
+function chanNumbers(feed, i, count) {
+    const hash = (str) => { let x = 2166136261; for (const ch of str) x = Math.imul(x ^ ch.codePointAt(0), 16777619) >>> 0; return x; };
+    let h = hash(`${feed.id}:${i}`);
+    const step = () => (h = (Math.imul(h, 1103515245) + 12345) >>> 0);
+    let no = 400000000 + (hash(feed.id) % 300000000) + i * 40000 + (step() % 30000);
+    const out = [];
+    for (let k = 0; k < count; k++) {
+        out.push(no);
+        no += 1 + (step() % 23);
+    }
+    return out;
+}
+
 function txt(o, platform) {
     const tr = o.body_tr || o.body_ko;
-    if (!(trOn(o) && tr && String(tr).trim())) return fmt(o.body, platform);
-    if (getSettings().trDisplay === 'both') return `${fmt(o.body, platform)}<span class="stcm-tr-below">${fmt(tr, platform)}</span>`;
-    return fmt(tr, platform);
+    // photos / videos go where the text has a [[media:N]] mark (the rest under the text, see imgBox)
+    if (!(trOn(o) && tr && String(tr).trim())) return fmtMedia(o.body, platform, o);
+    if (getSettings().trDisplay === 'both') return `${fmtMedia(o.body, platform, o)}<span class="stcm-tr-below">${fmt(stripMediaMarks(tr), platform)}</span>`;
+    return fmtMedia(tr, platform, o);
+}
+
+// ---------------------------------------------------------------------------
+// 사진·영상 in the middle of a text: a [[media:N]] mark (N = its number in the post's media list, from 1)
+// stands where that photo / video goes. Media without a mark are shown under the text as before.
+// ---------------------------------------------------------------------------
+const MEDIA_MARK = /\[\[\s*(?:media|photo|image|img|video|vid|pic|사진|영상|写真|動画|图片|视频)\s*[:：#]?\s*(\d{1,2})\s*\]\]/gi;
+const MEDIA_MARK_LINE = new RegExp(`\\n?${MEDIA_MARK.source}`, 'gi');   // a mark with the line break before it
+
+/** Media numbers (0-based) a text puts in place. */
+function mediaMarks(text) {
+    const out = new Set();
+    for (const m of String(text ?? '').matchAll(MEDIA_MARK)) out.add(Number(m[1]) - 1);
+    return out;
+}
+
+function stripMediaMarks(text) {
+    return String(text ?? '').replace(new RegExp(`\\n?${MEDIA_MARK.source}\\n?`, 'gi'), '\n').replace(/^\n+|\n+$/g, '');
+}
+
+/** The text that is drawn with its media in place (the translation when only the translation is shown). */
+function inlineText(o) {
+    const tr = o?.body_tr || o?.body_ko;
+    if (trOn(o) && tr && String(tr).trim() && getSettings().trDisplay !== 'both') return tr;
+    return o?.body ?? '';
+}
+
+/** Text → HTML with each [[media:N]] mark replaced by that photo / video (a mark with no such media is dropped). */
+function fmtMedia(text, platform, o) {
+    const s = String(text ?? '');
+    const media = postMedia(o);
+    if (!s.match(MEDIA_MARK)) return fmt(s, platform);
+    const trNow = trOn(o);
+    let html = '';
+    let last = 0;
+    for (const m of s.matchAll(MEDIA_MARK)) {
+        // the line breaks right around a mark belong to the mark (it sits on its own line)
+        html += fmt(s.slice(last, m.index).replace(/\n$/, ''), platform);
+        const item = media[Number(m[1]) - 1];
+        if (item && item.desc.trim()) html += mediaItemHtml(item, trNow);
+        last = m.index + m[0].length;
+        if (s[last] === '\n') last++;
+    }
+    return html + fmt(s.slice(last), platform);
+}
+
+/** A text for prompts: each mark becomes "[photo: …]" where it stands. */
+function promptBody(o) {
+    const media = postMedia(o);
+    return String(o?.body ?? '').replace(MEDIA_MARK, (all, n) => {
+        const m = media[Number(n) - 1];
+        return m && m.desc.trim() ? `[${m.type === 'video' ? 'video' : 'photo'}: ${truncate(m.desc.trim(), 400)}]` : '';
+    });
+}
+
+/** Media of an item that its text doesn't place (shown / listed after the text). */
+function unplacedMedia(o, text = o?.body) {
+    const used = mediaMarks(text);
+    return postMedia(o).filter((m, k) => m.desc.trim() && !used.has(k));
 }
 
 function avatar(name, cls = '') {
@@ -3686,13 +4009,13 @@ function postKindLabel(feed, post) {
     if (post?.kind === 'dm') return 'DM';
     const pf = PLATFORMS[feed?.platform];
     if (pf?.chat) return '채널';
-    if (feed?.platform === 'fivech') return '스레';
+    if (PLATFORMS[feed?.platform]?.res) return '스레';
     return '글';
 }
 
 function itemLinks(feed, i, ci, ri, o, n = null) {
     const links = [];
-    if (ri == null && feed.platform !== 'fivech') {
+    if (ri == null && !PLATFORMS[feed.platform]?.res) {
         links.push(`<a class="stcm-link" data-act="reply" data-feed="${esc(feed.id)}" data-idx="${i}" data-ci="${ci}">답글</a>`);
     }
     if (feed.platform === 'fivech') {
@@ -3755,7 +4078,7 @@ function threadNav(feed, i) {
     const closed = isThreadFull(feed, post)
         ? (feed.platform === 'fivech'
             ? `<div class="stcm-5-res stcm-closed"><div class="stcm-5-head"><span class="n">${threadCap('fivech') + 1}</span> ${esc((uiWords('fivech', feed.lang) ?? UI_WORDS.ja).name)}<span class="name">${threadCap('fivech') + 1}</span> <span class="id">Over ${threadCap('fivech')} Thread</span></div><div class="stcm-body">${(uiWords('fivech', feed.lang) ?? UI_WORDS.ja).over(threadCap('fivech'))}</div></div>`
-            : `<div class="stcm-closed-banner"><i class="fa-solid fa-lock"></i> This thread has reached the comment limit and is locked.</div>`)
+            : `<div class="stcm-closed-banner"><i class="fa-solid fa-lock"></i> ${feed.platform === 'fourchan' ? 'Thread archived. You cannot reply anymore.' : 'This thread has reached the comment limit and is locked.'}</div>`)
         : '';
     return closed + (links.length ? `<div class="stcm-thread-nav">${links.join('')}</div>` : '');
 }
@@ -3776,6 +4099,7 @@ function nickHint(platformId) {
     if (platformId === 'kkangtong') return '닉네임 (비우면 깡 · 댓글은 깡N)';
     if (platformId === 'dcinside' || TD_SKINS[platformId]) return '닉네임 (비우면 ㅇㅇ)';
     if (platformId === 'fivech') return '닉네임 (비우면 名無しさん)';
+    if (platformId === 'fourchan') return '닉네임 (비우면 Anonymous)';
     return getSettings().nickMode === 'ai' ? '닉네임 (비우면 AI가 어울리는 이름)' : '닉네임 (비우면 랜덤 닉네임)';
 }
 
@@ -3821,7 +4145,7 @@ function composerSlot(feed, i) {
     const thread = PLATFORMS[feed.platform].thread;
     const chat = PLATFORMS[feed.platform].chat;
     const isDm = post.kind === 'dm';
-    const ph = isDm ? `@${dmPartnerLabel(post)}에게 메시지 보내기` : chat ? `#${String(post.title || '일반').replace(/^#\s*/, '')}에 메시지 보내기` : (thread ? '레스 내용 (>>번호 로 앵커)' : '댓글 내용');
+    const ph = isDm ? `@${dmPartnerLabel(post)}에게 메시지 보내기` : chat ? `#${String(post.title || '일반').replace(/^#\s*/, '')}에 메시지 보내기` : (feed.platform === 'fourchan' ? '레스 내용 (>>순번으로 인용 · 화면엔 No.로 보여요)' : thread ? '레스 내용 (>>번호 로 앵커)' : '댓글 내용');
     // In a DM the sender is fixed: the side that started it
     const ident = isDm ? `<div class="stcm-cp-target">보내는 사람: <b>${esc(dmSideName(post.dm?.me))}</b> → <b>${esc(dmPartnerLabel(post))}</b></div>` : identityControls(composer.draft, post);
     const kept = composer.draft?.unpostedId && findUnposted(feedState.chatId, composer.draft.unpostedId);
@@ -3831,7 +4155,7 @@ function composerSlot(feed, i) {
         ${ident}
         ${target ? `<div class="stcm-cp-target">↳ <b>${esc(target.author)}</b>님에게 ${chat ? '답장' : '답글'} <a class="stcm-link" data-act="reply-cancel">취소</a></div>` : ''}
         <textarea class="stcm-cp-body" rows="3" placeholder="${esc(ph)}">${esc(composer.draft?.body ?? '')}</textarea>
-        ${withMedia ? `<div class="stcm-cp-medialist">${(composer.draft?.media ?? []).map(m => mediaRowHtml(m.type, m.desc, m.mid)).join('')}</div>` : ''}
+        ${withMedia ? `<div class="stcm-cp-medialist">${(composer.draft?.media ?? []).map((m, k) => mediaRowHtml(m.type, m.desc, m.mid, k + 1)).join('')}</div>${MEDIA_HINT}` : ''}
         <div class="stcm-cp-ai">
             <input class="stcm-cp-inst" type="text" maxlength="500" value="${esc(composer.draft?.inst ?? '')}" placeholder="AI에게 지시 (선택) — 비우면 알아서">
             <button data-act="ai-write-comment" title="고른 신분으로 AI가 써 줘요. 칸에 글이 있으면 그걸 다듬어요."><i class="fa-solid fa-wand-magic-sparkles"></i> AI로 쓰기</button>
@@ -3865,20 +4189,21 @@ function isPostOpen(feed, i) {
 
 function postSummaryHtml(feed, p, i) {
     const pf = feed.platform;
-    const n = p.comments.reduce((a, c) => a + 1 + c.replies.length, 0);
+    const n = commentTotal(p);
     const titled = !!String(p.title ?? '').trim() && pf !== 'twitter';
-    const title = titled ? ttlHtml(p) : esc(truncate((trOn(p) && p.body_tr) || p.body, 90));
+    const title = titled ? ttlHtml(p) : esc(truncate(stripMediaMarks((trOn(p) && p.body_tr) || p.body), 90));
     let tag = '';
     if (pf === 'naver' || pf === 'blind' || pf === 'everytime') tag = p.tags?.[0] || '';
     if (pf === 'reddit') tag = p.tags?.[0] || '';
     const cnt = pf === 'fivech' ? `(${n + 1})`
+        : pf === 'fourchan' ? `R: ${n}`
         : pf === 'reddit' ? `${n} comments`
         : (pf === 'twitter' || pf === 'weibo') ? `<i class="fa-regular fa-comment"></i> ${n}`
         : pf === 'tieba' ? `${n}`
         : `[${n}]`;
     const who = pf === 'reddit' ? `u/${String(p.handle || p.author || 'anon').replace(/^u\//, '')}`
         : pf === 'twitter' ? `${p.author || ''}` : (p.author || '');
-    const extra = pf === 'fivech' || pf === 'tieba' ? '' : (Number(p.likes) ? ` · ♥ ${num(p.likes)}` : '');
+    const extra = PLATFORMS[pf]?.res || pf === 'tieba' ? '' : (Number(p.likes) ? ` · ♥ ${num(p.likes)}` : '');
     return `<div class="stcm-psum" data-act="post-toggle" data-feed="${esc(feed.id)}" data-idx="${i}" role="button" tabindex="0" aria-expanded="${isPostOpen(feed, i) ? 'true' : 'false'}">
         ${tag ? `<span class="tag">${esc(tag)}</span>` : ''}
         <span class="tt">${p.isMe ? '<i class="fa-solid fa-pen-nib mine"></i> ' : ''}${!titled && pf === 'twitter' ? `<b>${esc(who)}</b> ` : ''}${title}</span>
@@ -3967,13 +4292,13 @@ function tdBoard(feed) {
     const hiddenOld = pagedOut(feed);   // behind 과거 글 더보기: not drawn
     const rows = order.filter(({ i }) => (renderOnly != null ? i === renderOnly : !hiddenOld.has(i))).map(({ p, i }) => {
         const cat = tdCatOf(p, feed.platform);
-        const n = tdCount(p);
+        const n = commentTotal(p);
         const open = openPosts.has(`${feed.id}:${i}`) || (composer && composer.feedId === feed.id && composer.postIdx === i);
         return `<article class="stcm-td-post ${open ? 'open' : ''} ${tdVisible(feed, p) ? '' : 'stcm-hide'}" data-post="${i}">
             <div class="stcm-td-row" data-act="td-toggle" data-feed="${fid}" data-idx="${i}">
                 <span class="no">${base + (no.get(i) ?? i + 1)}</span>
                 <span class="cat">${esc(cat)}</span>
-                <span class="tt">${p.isMe ? '<i class="fa-solid fa-pen-nib stcm-td-mine"></i>' : ''}${ttlHtml(p, truncate(p.body, 40))}${n ? ` <em>[${n}]</em>` : ''}</span>
+                <span class="tt">${p.isMe ? '<i class="fa-solid fa-pen-nib stcm-td-mine"></i>' : ''}${ttlHtml(p, truncate(stripMediaMarks(p.body), 40))}${n ? ` <em>[${n}]</em>` : ''}</span>
                 <span class="au">${esc(p.author || anon)}</span>
                 <span class="tm">${esc(bt.time(i))}</span>
                 <span class="vw">${num(p.views, 'ko')}</span>
@@ -3987,8 +4312,8 @@ function tdBoard(feed) {
                 </div>
                 <div class="stcm-body">${txt(p, feed.platform)}</div>${imgBox(p)}
                 <div class="stcm-td-rec">${skinCfg.heart
-                    ? `<span class="heart"><i class="fa-regular fa-heart"></i> ${num(p.likes)}</span>`   // 깡통: one heart button
-                    : `<span class="star"><i class="fa-solid fa-star"></i> 추천 <b>${num(p.likes)}</b></span>`}</div>
+                    ? voteBtn(feed, i, 'op', p, 'up', `<i class="fa-regular fa-heart"></i> ${num(p.likes)}`, { cls: 'heart', title: '하트' })   // 깡통: one heart button
+                    : voteBtn(feed, i, 'op', p, 'up', `<i class="fa-solid fa-star"></i> 추천 <b>${num(p.likes)}</b>`, { cls: 'star' })}</div>
                 <div class="stcm-td-comments">
                 ${p.comments.length ? `<div class="stcm-td-ctitle">댓글 <b>${n}</b></div>` : ''}
                 ${p.comments.map((c, ci) => `
@@ -4004,7 +4329,7 @@ function tdBoard(feed) {
     const bestPost = best[bi];
     const banner = best.length ? `<div class="stcm-td-best">
             <span class="lbl"><i class="fa-solid fa-star"></i> 개념글</span>
-            <a class="tt" data-act="td-open" data-feed="${fid}" data-idx="${bestPost.i}">${ttlHtml(bestPost.p, truncate(bestPost.p.body, 40))}${tdCount(bestPost.p) ? ` <em>[${tdCount(bestPost.p)}]</em>` : ''}</a>
+            <a class="tt" data-act="td-open" data-feed="${fid}" data-idx="${bestPost.i}">${ttlHtml(bestPost.p, truncate(stripMediaMarks(bestPost.p.body), 40))}${commentTotal(bestPost.p) ? ` <em>[${commentTotal(bestPost.p)}]</em>` : ''}</a>
             <span class="pager"><button data-act="td-best" data-feed="${fid}" data-dir="-1" aria-label="이전"><i class="fa-solid fa-chevron-left"></i></button>${bi + 1}/${best.length}<button data-act="td-best" data-feed="${fid}" data-dir="1" aria-label="다음"><i class="fa-solid fa-chevron-right"></i></button></span>
         </div>` : '';
     return `<div class="stcm-skin stcm-tdgall stcm-td-${feed.platform}">
@@ -4049,7 +4374,7 @@ const renderers = {
                 <h3>${ttlHtml(p)}</h3>
                 <div class="stcm-n-meta">${avatar(p.author)}<b>${esc(p.author)}</b>${meBadge(p)}<span>${esc(postTime(feed, i))}</span><span>조회 ${num(p.views, 'ko')}</span></div>
                 <div class="stcm-body">${txt(p, 'naver')}</div>${imgBox(p)}
-                <div class="stcm-n-foot"><span><i class="fa-regular fa-heart"></i> 좋아요 ${num(p.likes, 'ko')}</span><span><i class="fa-regular fa-comment"></i> 댓글 ${p.comments.reduce((a, c) => a + 1 + c.replies.length, 0)}</span></div>
+                <div class="stcm-n-foot">${voteBtn(feed, i, 'op', p, 'up', `<i class="fa-regular fa-heart"></i> 좋아요 ${num(p.likes, 'ko')}`, { title: '좋아요' })}<span><i class="fa-regular fa-comment"></i> 댓글 ${commentTotal(p)}</span></div>
                 <div class="stcm-n-comments">
                 ${p.comments.map((c, ci) => `
                     <div class="stcm-n-c" data-k="${i}.${ci}">${avatar(c.author, 'sm')}<div><b>${esc(c.author)}</b>${meBadge(c)}<div class="stcm-body">${txt(c, 'naver')}</div><small>${esc(c.time)}</small>${itemLinks(feed, i, ci, null, c)}</div></div>
@@ -4069,10 +4394,10 @@ const renderers = {
             <div class="stcm-dc-top">${esc(d.board || '갤러리')}</div>
             ${newestFirst(feed, (p, i) => `
             <article class="stcm-dc-post" data-post="${i}">
-                <h3>${ttlHtml(p)} <span class="stcm-dc-cnt">[${p.comments.reduce((a, c) => a + 1 + c.replies.length, 0)}]</span></h3>
+                <h3>${ttlHtml(p)} <span class="stcm-dc-cnt">[${commentTotal(p)}]</span></h3>
                 <div class="stcm-dc-meta"><span>${who(p)}</span><span>${esc(postTime(feed, i))}</span><span>조회 ${num(p.views)}</span><span>추천 ${num(p.likes)}</span></div>
                 <div class="stcm-body">${txt(p, 'dcinside')}</div>${imgBox(p)}
-                <div class="stcm-dc-rec"><span class="up">개추 ${num(p.likes)}</span><span class="down">비추 ${Math.floor((Number(p.likes) || 0) / 7)}</span></div>
+                ${dcRecBox(feed, i, p)}
                 <div class="stcm-dc-comments">
                 ${p.comments.map((c, ci) => `
                     <div class="stcm-dc-c" data-k="${i}.${ci}"><div class="nick">${who(c)}</div><div class="stcm-body">${txt(c, 'dcinside')}${itemLinks(feed, i, ci, null, c)}</div><div class="time">${esc(c.time)}</div></div>
@@ -4093,7 +4418,7 @@ const renderers = {
             <div class="stcm-r-c" style="--depth:${ri == null ? 0 : 1}" data-k="${i}.${ci}${ri == null ? '' : '.' + ri}">
                 <div class="stcm-r-cmeta">${avatar(c.handle || c.author, 'sm')}<b>${esc(uname(c))}</b>${meBadge(c)}<span>· ${esc(c.time)}</span></div>
                 <div class="stcm-body">${txt(c, 'reddit')}</div>${imgBox(c)}
-                <div class="stcm-r-cact"><i class="fa-solid fa-arrow-up"></i> ${num(c.likes)} <i class="fa-solid fa-arrow-down"></i>${itemLinks(feed, i, ci, ri, c)}</div>
+                <div class="stcm-r-cact">${redditVote(feed, i, ri == null ? `${ci}` : `${ci}.${ri}`, c)}${itemLinks(feed, i, ci, ri, c)}</div>
                 ${ri == null ? (c.replies ?? []).map((r, rj) => comment(r, i, ci, rj)).join('') + slotAt(feed, i, `c${ci}`) : ''}
             </div>`;
         return `<div class="stcm-skin stcm-reddit">
@@ -4103,7 +4428,7 @@ const renderers = {
                 <div class="stcm-r-meta"><b>${esc(sub)}</b> · Posted by ${esc(uname(p))}${meBadge(p)} · ${esc(postTime(feed, i))}</div>
                 <h3>${ttlHtml(p)}${p.tags?.[0] ? ` <span class="stcm-flair">${esc(p.tags[0])}</span>` : ''}</h3>
                 <div class="stcm-body">${txt(p, 'reddit')}</div>${imgBox(p)}
-                <div class="stcm-r-act"><span class="vote"><i class="fa-solid fa-arrow-up"></i> ${num(p.likes)} <i class="fa-solid fa-arrow-down"></i></span><span><i class="fa-regular fa-comment"></i> ${p.comments.reduce((a, c) => a + 1 + c.replies.length, 0)} Comments</span></div>
+                <div class="stcm-r-act"><span class="vote">${redditVote(feed, i, 'op', p)}</span><span><i class="fa-regular fa-comment"></i> ${commentTotal(p)} Comments</span></div>
                 <div class="stcm-r-comments">${p.comments.map((c, ci) => comment(c, i, ci, null)).join('')}</div>
                 ${postFooter(feed, i)}
             </article>`).join('')}
@@ -4122,7 +4447,7 @@ const renderers = {
                     <div class="stcm-t-act">
                         <span><i class="fa-regular fa-comment"></i> ${num(replyCount)}</span>
                         <span><i class="fa-solid fa-retweet"></i> ${num(o.shares)}</span>
-                        <span><i class="fa-regular fa-heart"></i> ${num(o.likes)}</span>
+                        ${voteBtn(feed, Number(key.split('.')[0]), key.split('.').slice(1).join('.'), o, 'up', `<i class="fa-regular fa-heart"></i> ${num(o.likes)}`, { title: '마음에 들어요' })}
                         ${o.views ? `<span><i class="fa-solid fa-chart-simple"></i> ${num(o.views)}</span>` : ''}
                     </div>
                     ${links}
@@ -4168,6 +4493,40 @@ const renderers = {
         </div>`;
     },
 
+    fourchan(feed) {
+        const d = feed.data;
+        const anon = uiWords('fourchan', feed.lang)?.anon?.fourchan ?? PLATFORMS.fourchan.anon;
+        const fid = esc(feed.id);
+        return `<div class="stcm-skin stcm-4chan">
+            <div class="stcm-4-top">${esc(d.board || '/b/ - Random')}</div>
+            ${newestFirst(feed, (p, i) => {
+                // the OP, then every post in order: the text quotes them 2ch-style (>>1 = OP), drawn with their No.
+                const items = [{ o: p, ci: null, ri: null }];
+                p.comments.forEach((c, ci) => {
+                    items.push({ o: c, ci, ri: null });
+                    c.replies.forEach((r, ri) => items.push({ o: r, ci, ri }));
+                });
+                const nos = chanNumbers(feed, i, items.length);
+                const quotes = (html) => html.replace(/<span class="stcm-anchor">&gt;&gt;(\d+)<\/span>/g, (all, n) => (
+                    nos[n - 1] ? `<span class="stcm-anchor">&gt;&gt;${nos[n - 1]}${n === '1' ? ' (OP)' : ''}</span>` : all));
+                const one = ({ o, ci, ri }, k) => {
+                    const op = ci == null;
+                    const place = op ? 'op' : (ri == null ? `c${ci}` : `r${ci}.${ri}`);
+                    const head = `<div class="stcm-4-head">${op && p.title ? `<span class="subj">${ttlHtml(p)}</span> ` : ''}<span class="name">${esc(o.author || anon)}</span>${meBadge(o)} <span class="date">${esc(op ? postTime(feed, i) : o.time)}</span> <a class="no" data-act="anchor" data-feed="${fid}" data-idx="${i}" data-n="${k + 1}" data-place="${place}" title="이 글을 인용해서 레스 쓰기">No.${nos[k]}</a></div>`;
+                    const inner = `${head}${imgBox(o)}<div class="stcm-body">${quotes(txt(o, 'fourchan'))}</div>${op ? '' : itemLinks(feed, i, ci, ri, o)}`;
+                    return (op
+                        ? `<div class="stcm-4-op" data-k="${i}.op">${inner}</div>`
+                        : `<div class="stcm-4-row" data-k="${i}.${ci}${ri == null ? '' : `.${ri}`}"><span class="arr">&gt;&gt;</span><div class="stcm-4-reply">${inner}</div></div>`)
+                        + slotAt(feed, i, place);
+                };
+                return `<article class="stcm-4-thread" data-post="${i}">
+                    ${items.map(one).join('')}
+                    ${postFooter(feed, i)}
+                </article>`;
+            }).join('')}
+        </div>`;
+    },
+
     weibo(feed) {
         const d = feed.data;
         return `<div class="stcm-skin stcm-weibo">
@@ -4177,10 +4536,10 @@ const renderers = {
                 <div class="stcm-w-head">${avatar(p.author)}<div><b>${esc(p.author)}</b>${meBadge(p)}<small>${esc(postTime(feed, i))} ${esc(uiWords('weibo', feed.lang)?.via ?? '来自 微博客户端')}</small></div></div>
                 ${p.title ? `<h3>${ttlHtml(p)}</h3>` : ''}
                 <div class="stcm-body">${txt(p, 'weibo')}</div>${imgBox(p)}
-                <div class="stcm-w-act"><span><i class="fa-solid fa-share"></i> ${num(p.shares, 'zh')}</span><span><i class="fa-regular fa-comment"></i> ${num(p.comments.length, 'zh')}</span><span><i class="fa-regular fa-thumbs-up"></i> ${num(p.likes, 'zh')}</span></div>
+                <div class="stcm-w-act"><span><i class="fa-solid fa-share"></i> ${num(p.shares, 'zh')}</span><span><i class="fa-regular fa-comment"></i> ${num(p.comments.length, 'zh')}</span>${voteBtn(feed, i, 'op', p, 'up', `<i class="fa-regular fa-thumbs-up"></i> ${num(p.likes, 'zh')}`, { title: '赞' })}</div>
                 <div class="stcm-w-comments">
                 ${p.comments.map((c, ci) => `
-                    <div class="stcm-w-c" data-k="${i}.${ci}">${avatar(c.author, 'sm')}<div><b>${esc(c.author)}</b>${meBadge(c)}：<span class="stcm-body">${txt(c, 'weibo')}</span><small>${esc(c.time)} <i class="fa-regular fa-thumbs-up"></i> ${num(c.likes, 'zh')}</small>${itemLinks(feed, i, ci, null, c)}
+                    <div class="stcm-w-c" data-k="${i}.${ci}">${avatar(c.author, 'sm')}<div><b>${esc(c.author)}</b>${meBadge(c)}：<span class="stcm-body">${txt(c, 'weibo')}</span><small>${esc(c.time)} ${voteBtn(feed, i, `${ci}`, c, 'up', `<i class="fa-regular fa-thumbs-up"></i> ${num(c.likes, 'zh')}`, { title: '赞' })}</small>${itemLinks(feed, i, ci, null, c)}
                     ${c.replies.length ? `<div class="stcm-w-replies">${c.replies.map((r, ri) => `<div data-k="${i}.${ci}.${ri}"><b>${esc(r.author)}</b>${meBadge(r)}：${txt(r, 'weibo')}${itemLinks(feed, i, ci, ri, r)}</div>`).join('')}</div>` : ''}
                     ${slotAt(feed, i, `c${ci}`)}
                     </div></div>`).join('')}
@@ -4243,17 +4602,17 @@ const renderers = {
         return `<div class="stcm-skin stcm-blind">
             <div class="stcm-bl-top"><i class="fa-solid fa-user-secret"></i> 블라인드${d.board && !/^블라인드$/i.test(String(d.board).trim()) ? ` <span>· ${esc(d.board)}</span>` : ''}</div>
             ${newestFirst(feed, (p, i) => {
-                const n = p.comments.reduce((a, cm) => a + 1 + cm.replies.length, 0);
+                const n = commentTotal(p);
                 return `<article class="stcm-bl-post" data-post="${i}">
                 <div class="stcm-bl-ch">${esc(p.tags?.[0] || '블라블라')}</div>
                 <h3>${ttlHtml(p)}</h3>
                 <div class="stcm-bl-meta">${who(p)}<span class="tm">${esc(postTime(feed, i))}</span></div>
                 <div class="stcm-body">${txt(p, 'blind')}</div>${imgBox(p)}
-                <div class="stcm-bl-foot"><span><i class="fa-regular fa-eye"></i> ${num(p.views, 'ko')}</span><span><i class="fa-regular fa-thumbs-up"></i> ${num(p.likes, 'ko')}</span><span><i class="fa-regular fa-comment"></i> ${n}</span></div>
+                <div class="stcm-bl-foot"><span><i class="fa-regular fa-eye"></i> ${num(p.views, 'ko')}</span>${voteBtn(feed, i, 'op', p, 'up', `<i class="fa-regular fa-thumbs-up"></i> ${num(p.likes, 'ko')}`, { title: '좋아요' })}<span><i class="fa-regular fa-comment"></i> ${n}</span></div>
                 <div class="stcm-bl-comments">
                 ${p.comments.map((cm, ci) => `
-                    <div class="stcm-bl-c" data-k="${i}.${ci}"><div class="h">${who(cm, p)}<span class="tm">${esc(cm.time)}</span></div><div class="stcm-body">${txt(cm, 'blind')}</div><div class="f"><span><i class="fa-regular fa-thumbs-up"></i> ${num(cm.likes, 'ko')}</span>${itemLinks(feed, i, ci, null, cm)}</div></div>
-                    ${cm.replies.map((r, ri) => `<div class="stcm-bl-c reply" data-k="${i}.${ci}.${ri}"><div class="h"><i class="fa-solid fa-turn-up fa-rotate-90"></i> ${who(r, p)}<span class="tm">${esc(r.time)}</span></div><div class="stcm-body">${txt(r, 'blind')}</div><div class="f"><span><i class="fa-regular fa-thumbs-up"></i> ${num(r.likes, 'ko')}</span>${itemLinks(feed, i, ci, ri, r)}</div></div>`).join('')}
+                    <div class="stcm-bl-c" data-k="${i}.${ci}"><div class="h">${who(cm, p)}<span class="tm">${esc(cm.time)}</span></div><div class="stcm-body">${txt(cm, 'blind')}</div><div class="f">${voteBtn(feed, i, `${ci}`, cm, 'up', `<i class="fa-regular fa-thumbs-up"></i> ${num(cm.likes, 'ko')}`, { title: '좋아요' })}${itemLinks(feed, i, ci, null, cm)}</div></div>
+                    ${cm.replies.map((r, ri) => `<div class="stcm-bl-c reply" data-k="${i}.${ci}.${ri}"><div class="h"><i class="fa-solid fa-turn-up fa-rotate-90"></i> ${who(r, p)}<span class="tm">${esc(r.time)}</span></div><div class="stcm-body">${txt(r, 'blind')}</div><div class="f">${voteBtn(feed, i, `${ci}.${ri}`, r, 'up', `<i class="fa-regular fa-thumbs-up"></i> ${num(r.likes, 'ko')}`, { title: '좋아요' })}${itemLinks(feed, i, ci, ri, r)}</div></div>`).join('')}
                     ${slotAt(feed, i, `c${ci}`)}
                 `).join('')}
                 </div>
@@ -4269,17 +4628,17 @@ const renderers = {
         return `<div class="stcm-skin stcm-everytime">
             <div class="stcm-et-top"><i class="fa-solid fa-graduation-cap"></i> ${esc(d.board || '에브리타임')}</div>
             ${newestFirst(feed, (p, i) => {
-                const n = p.comments.reduce((a, cm) => a + 1 + cm.replies.length, 0);
+                const n = commentTotal(p);
                 const hot = (Number(p.likes) || 0) >= 10;
                 return `<article class="stcm-et-post" data-post="${i}">
                 <div class="stcm-et-board">${esc(p.tags?.[0] || '자유게시판')}${hot ? ' <span class="hot">HOT</span>' : ''}</div>
                 <div class="stcm-et-head"><span class="stcm-et-pic"><i class="fa-solid fa-user"></i></span><div><b>${esc(p.author || '익명')}</b>${meBadge(p)}<small>${esc(postTime(feed, i))}</small></div></div>
                 <h3>${ttlHtml(p)}</h3>
                 <div class="stcm-body">${txt(p, 'everytime')}</div>${imgBox(p)}
-                <div class="stcm-et-foot"><span class="like"><i class="fa-regular fa-thumbs-up"></i> ${num(p.likes, 'ko')}</span><span class="cmt"><i class="fa-regular fa-comment"></i> ${n}</span><span class="scrap"><i class="fa-regular fa-star"></i> ${num(p.shares, 'ko')}</span></div>
+                <div class="stcm-et-foot">${voteBtn(feed, i, 'op', p, 'up', `<i class="fa-regular fa-thumbs-up"></i> ${num(p.likes, 'ko')}`, { cls: 'like', title: '공감' })}<span class="cmt"><i class="fa-regular fa-comment"></i> ${n}</span><span class="scrap"><i class="fa-regular fa-star"></i> ${num(p.shares, 'ko')}</span></div>
                 <div class="stcm-et-comments">
                 ${p.comments.map((cm, ci) => `
-                    <div class="stcm-et-c" data-k="${i}.${ci}"><div class="h"><span class="stcm-et-pic sm"><i class="fa-solid fa-user"></i></span><b class="${nameCls(cm)}">${esc(cm.author || '익명')}</b>${meBadge(cm)}<span class="lk">${Number(cm.likes) ? `<i class="fa-regular fa-thumbs-up"></i> ${num(cm.likes, 'ko')}` : ''}</span></div><div class="stcm-body">${txt(cm, 'everytime')}</div><small>${esc(cm.time)}</small>${itemLinks(feed, i, ci, null, cm)}
+                    <div class="stcm-et-c" data-k="${i}.${ci}"><div class="h"><span class="stcm-et-pic sm"><i class="fa-solid fa-user"></i></span><b class="${nameCls(cm)}">${esc(cm.author || '익명')}</b>${meBadge(cm)}<span class="lk">${voteBtn(feed, i, `${ci}`, cm, 'up', `<i class="fa-regular fa-thumbs-up"></i>${Number(cm.likes) ? ` ${num(cm.likes, 'ko')}` : ''}`, { title: '공감' })}</span></div><div class="stcm-body">${txt(cm, 'everytime')}</div><small>${esc(cm.time)}</small>${itemLinks(feed, i, ci, null, cm)}
                     ${cm.replies.length ? `<div class="stcm-et-replies">${cm.replies.map((r, ri) => `<div class="stcm-et-c reply" data-k="${i}.${ci}.${ri}"><div class="h"><i class="fa-solid fa-turn-up fa-rotate-90"></i><b class="${nameCls(r)}">${esc(r.author || '익명')}</b>${meBadge(r)}</div><div class="stcm-body">${txt(r, 'everytime')}</div><small>${esc(r.time)}</small>${itemLinks(feed, i, ci, ri, r)}</div>`).join('')}</div>` : ''}
                     ${slotAt(feed, i, `c${ci}`)}
                     </div>`).join('')}
@@ -4410,7 +4769,8 @@ function tdApply(feedId) {
     skin.querySelectorAll('[data-act="td-filter"]').forEach(b => b.classList.toggle('active', b.dataset.filter === st.filter));
 }
 
-function tdCount(p) {
+/** Comments and replies under a post, all counted. */
+function commentTotal(p) {
     return p.comments.reduce((a, c) => a + 1 + c.replies.length, 0);
 }
 
@@ -4950,7 +5310,7 @@ function closeMoreMenu() {
     return true;
 }
 
-const PF_COLOR = { naver: '#03c75a', dcinside: '#3b4890', tdgall: '#3d6ea8', kkangtong: '#d98a1c', blind: '#e0352b', everytime: '#c62917', reddit: '#ff4500', twitter: '', fivech: '#b5452f', weibo: '#e6162d', discord: '#5865f2', tieba: '#3388ff' };
+const PF_COLOR = { naver: '#03c75a', dcinside: '#3b4890', tdgall: '#3d6ea8', kkangtong: '#d98a1c', blind: '#e0352b', everytime: '#c62917', reddit: '#ff4500', twitter: '', fivech: '#b5452f', fourchan: '#117743', weibo: '#e6162d', discord: '#5865f2', tieba: '#3388ff' };
 /** The one-line picker: "☕ 네이버 카페 › 별의 노래 게임 카페 ▾". */
 function updatePicker() {
     const b = document.getElementById('stcm_btn_pick');
@@ -5414,10 +5774,9 @@ async function onFeedClick(e) {
             feedId: box.dataset.feed,
             postIdx: Number(box.dataset.idx),
             replyTo: composer?.replyTo ?? null,
-            body: box.querySelector('.stcm-cp-body').value,
+            ...packFormMedia(box, box.querySelector('.stcm-cp-body').value),
             identity: readIdentity(box),
             react: box.querySelector('.stcm-cp-react').checked,
-            media: readMediaRows(box),
             draftId: composer?.draft?.unpostedId ?? '',
         });
         return;
@@ -5463,8 +5822,33 @@ async function onFeedClick(e) {
     }
     if (act === 'cp-media-del') {
         const box = el.closest('.stcm-compose-view, .stcm-composer');
-        el.closest('.stcm-cp-media')?.remove();
+        const row = el.closest('.stcm-cp-media');
+        const k = [...(box?.querySelectorAll('.stcm-cp-media') ?? [])].indexOf(row);
+        row?.remove();
+        // the text's marks keep pointing at the same photos / videos
+        const ta = box?.querySelector('.stcm-cp-body');
+        if (ta && k >= 0) ta.value = shiftMediaMarks(ta.value, k);
+        numberMediaRows(box);
         syncComposeDraft(box);
+        if (box?.matches('.stcm-compose-view')) saveComposeForm(box);
+        return;
+    }
+    if (act === 'cp-media-put') {
+        // put this photo / video at the cursor in the text: a [[media:N]] mark on its own line
+        const box = el.closest('.stcm-compose-view, .stcm-composer');
+        const row = el.closest('.stcm-cp-media');
+        const k = [...(box?.querySelectorAll('.stcm-cp-media') ?? [])].indexOf(row);
+        const ta = box?.querySelector('.stcm-cp-body');
+        if (!ta || k < 0) return;
+        if (mediaMarks(ta.value).has(k)) { toastr.info(`${k + 1}번은 이미 본문에 들어가 있어요. 옮기려면 본문의 [[media:${k + 1}]]를 지우고 다시 넣어 주세요.`); return; }
+        const at = Math.min(ta.selectionStart ?? ta.value.length, ta.value.length);
+        const before = ta.value.slice(0, at);
+        const after = ta.value.slice(at);
+        const mark = `${before && !before.endsWith('\n') ? '\n' : ''}[[media:${k + 1}]]${after.startsWith('\n') || !after ? '' : '\n'}`;
+        ta.value = before + mark + after;
+        ta.focus();
+        ta.selectionStart = ta.selectionEnd = (before + mark).length;
+        ta.dispatchEvent(new Event('input', { bubbles: true }));   // kept forms save it
         return;
     }
     if (act === 'ai-photo' && el.closest('.stcm-edit-view')) {
@@ -5601,7 +5985,7 @@ async function onFeedClick(e) {
         const feed = getFeed(fid);
         if (!feed) return;
         const bodyEl = box.querySelector('.stcm-cp-body');
-        const anchor = feed.platform === 'fivech' ? (bodyEl.value.match(/^>>(\d+)/)?.[1] ?? null) : null;
+        const anchor = PLATFORMS[feed.platform]?.res ? (bodyEl.value.match(/^>>(\d+)/)?.[1] ?? null) : null;
         captureDraft();   // what is written and the instruction stay even if you leave now
         const cbox = composer;
         const out = await aiWrite({
@@ -5673,6 +6057,53 @@ async function onFeedClick(e) {
         }
         return;
     }
+    if (act === 'pick-mode') {
+        pickMode = pickMode ? null : { feedId: currentFeedId, picked: new Set() };
+        captureDraft();
+        showFeed(currentFeedId, { keepScroll: true });
+        return;
+    }
+    if (act === 'pick') {
+        const f = pickMode ? getFeed(pickMode.feedId) : null;
+        const o = f ? pickTarget(f, el.dataset.pick) : null;
+        if (!o) return;
+        if (el.checked) pickMode.picked.add(o); else pickMode.picked.delete(o);
+        el.closest('[data-post], [data-k]')?.classList.toggle('stcm-picked', el.checked);
+        updatePickBar();
+        return;
+    }
+    if (act === 'pick-all' || act === 'pick-none') {
+        if (!pickMode) return;
+        const on = act === 'pick-all';
+        document.querySelectorAll('#stcm_feed input[data-act="pick"]').forEach(cb => {
+            if (on && (!/^\d+$/.test(cb.dataset.pick) || cb.closest('.stcm-hide'))) return;   // 글 모두: the posts on screen only (not ones a category / filter / search hides)
+            const o = pickTarget(getFeed(pickMode.feedId), cb.dataset.pick);
+            if (!o) return;
+            cb.checked = on;
+            if (on) pickMode.picked.add(o); else pickMode.picked.delete(o);
+            cb.closest('[data-post], [data-k]')?.classList.toggle('stcm-picked', on);
+        });
+        updatePickBar();
+        return;
+    }
+    if (act === 'pick-cancel') { pickMode = null; showFeed(currentFeedId, { keepScroll: true }); return; }
+    if (act === 'pick-delete') { await deletePicked(); return; }
+    if (act === 'vote') {
+        // press 추천 / 비추 / 좋아요 once: the count goes up by one and stays with the post / comment
+        const f = getFeed(feedId);
+        const post = f?.data.posts[idx];
+        const item = itemAtPath(post, el.dataset.path);
+        if (!item) return;
+        if (item.voted) { toastr.info('이미 눌렀어요. 한 번만 누를 수 있어요.', '', { timeOut: 1800 }); return; }
+        const dir = el.dataset.dir === 'down' ? 'down' : 'up';
+        if (dir === 'down') item.dislikes = dislikesOf(item, f.platform) + 1;
+        else item.likes = (Number(item.likes) || 0) + 1;
+        item.voted = dir;
+        captureDraft();
+        updatePost(feedId, idx);
+        await saveChatStore();
+        return;
+    }
     if (act === 'edit-post' || act === 'edit-item') {
         captureDraft();
         showEditItem(feedId, idx, act === 'edit-item' ? Number(el.dataset.ci) : null, act === 'edit-item' && el.dataset.ri != null ? Number(el.dataset.ri) : null);
@@ -5686,7 +6117,7 @@ async function onFeedClick(e) {
         const post = f?.data.posts[idx];
         if (!post) return;
         const kind = postKindLabel(f, post);
-        const name = post.kind === 'dm' ? dmPartnerLabel(post) : (post.title || truncate(post.body, 30));
+        const name = post.kind === 'dm' ? dmPartnerLabel(post) : (post.title || truncate(stripMediaMarks(post.body), 30));
         const what = kind === 'DM' ? `이 DM 대화(${name})를 모두` : kind === '채널' ? `#${name} 채널과 메시지를 모두` : `"${name}" ${kind === '스레' ? '스레와 레스를' : '글과 댓글을'} 모두`;
         const ok = Popup?.show?.confirm
             ? (await Popup.show.confirm(`${kind} 삭제`, esc(`${what} 지울까요?`) + (isPinned(feedId, idx) ? '<br><small>본 채팅에 반영 중인 내용도 함께 빠져요.</small>' : ''))) === POPUP_RESULT.AFFIRMATIVE
@@ -5702,7 +6133,7 @@ async function onFeedClick(e) {
         const item = ri == null ? post?.comments[ci] : post?.comments[ci]?.replies[ri];
         if (!item) return;
         const pf = PLATFORMS[f.platform];
-        const kind = pf?.chat ? '메시지' : f.platform === 'fivech' ? '레스' : (ri == null ? '댓글' : '답글');
+        const kind = pf?.chat ? '메시지' : pf?.res ? '레스' : (ri == null ? '댓글' : '답글');
         const obj = { 댓글: '댓글을', 답글: '답글을', 레스: '레스를', 메시지: '메시지를' }[kind];
         const extra = ri == null && item.replies?.length && !pf?.flat ? `<br><small>달린 답글 ${item.replies.length}개도 함께 지워져요.</small>` : '';
         const { Popup, POPUP_RESULT } = ctx();
@@ -5716,10 +6147,9 @@ async function onFeedClick(e) {
         const box = el.closest('.stcm-compose-view');
         await submitPlayerPost({
             title: box.querySelector('.stcm-cp-title')?.value ?? '',
-            body: box.querySelector('.stcm-cp-body').value,
+            ...packFormMedia(box, box.querySelector('.stcm-cp-body').value),
             board: box.querySelector('.stcm-cp-board')?.value ?? '',
             category: box.querySelector('.stcm-cp-cat')?.value ?? '',
-            media: readMediaRows(box),
             identity: readIdentity(box),
             react: box.querySelector('.stcm-cp-react').checked,
             draftId: box.dataset.draft ?? '',
@@ -5832,7 +6262,7 @@ function renderTopicChips() {
 // ---------------------------------------------------------------------------
 // Community background (per chat) and spaces the user creates (a game cafe, a school gallery…)
 // ---------------------------------------------------------------------------
-const SPACE_UNIT = { naver: '카페', dcinside: '갤러리', tdgall: '갤', kkangtong: '게시판', reddit: '서브레딧', twitter: '커뮤니티', fivech: '板', weibo: '超话', tieba: '吧', discord: '서버', blind: '라운지', everytime: '학교' };
+const SPACE_UNIT = { naver: '카페', dcinside: '갤러리', tdgall: '갤', kkangtong: '게시판', reddit: '서브레딧', twitter: '커뮤니티', fivech: '板', fourchan: '보드', weibo: '超话', tieba: '吧', discord: '서버', blind: '라운지', everytime: '학교' };
 
 function spaceUnit(platformId) { return SPACE_UNIT[platformId] ?? '게시판'; }
 function customSpaces() { return getSettings().customSpaces; }
@@ -6018,7 +6448,7 @@ function showSpaceEditor() {
 }
 
 function spacePlaceholder(pid) {
-    return { naver: '별의 노래 공식 팬카페', dcinside: '별의 노래 갤러리', reddit: 'r/StarSongGame', fivech: 'ゲーム板', discord: '별의 노래 길드 서버', blind: '게임업계 라운지', everytime: '한빛대학교', weibo: '星之歌超话', tieba: '星之歌吧', twitter: '별의 노래 유저 모임', tdgall: '별의 노래 갤', kkangtong: '별의 노래 봇 연구소' }[pid] ?? '게임 카페';
+    return { naver: '별의 노래 공식 팬카페', dcinside: '별의 노래 갤러리', reddit: 'r/StarSongGame', fivech: 'ゲーム板', fourchan: '/vg/ - Video Game Generals', discord: '별의 노래 길드 서버', blind: '게임업계 라운지', everytime: '한빛대학교', weibo: '星之歌超话', tieba: '星之歌吧', twitter: '별의 노래 유저 모임', tdgall: '별의 노래 갤', kkangtong: '별의 노래 봇 연구소' }[pid] ?? '게임 카페';
 }
 
 async function onSpaceAction(el) {
@@ -6363,6 +6793,7 @@ function showFeed(feedId, opts = {}) {
         return;
     }
     currentFeedId = feed.id;
+    if (pickMode && pickMode.feedId !== feed.id) pickMode = null;   // ticks belong to one board
     // a renamed cafe / gallery: its feeds show the new name (in every chat, as they are opened)
     const spNow = spaceById(feedSpace(feed));
     if (spNow && feed.data.board !== spNow.name) { feed.data.board = spNow.name; scheduleFeedWrite(); }
@@ -6370,6 +6801,7 @@ function showFeed(feedId, opts = {}) {
     const when = new Date(feed.updatedAt || feed.createdAt).toLocaleString();
     bar.innerHTML = `<span class="stcm-fb-info"><b>${esc(PLATFORMS[feed.platform]?.label)}</b> · ${esc(MODES[feed.mode]?.label)} · #${feedLastAt(feed)} 시점 · ${esc(when)}${currentBoardKey() !== null ? ` · ${esc(boardName(feedBoardKey(feed), feed.platform))}` : (feed.topics?.length ? ` · 주제: ${esc(feed.topics.join(', '))}` : '')}${feed.topic ? ` · “${esc(truncate(feed.topic, 30))}”` : ''}</span>
         ${foldable(feed) && feed.data.posts.length ? '<button id="stcm_fold_all" data-act="fold-all"></button>' : ''}
+        ${feed.data.posts.length ? `<button id="stcm_pick_toggle" data-act="pick-mode" class="${pickMode ? 'on' : ''}" title="여러 글·댓글을 골라서 한꺼번에 지우기"><i class="fa-regular fa-square-check"></i> 선택</button>` : ''}
         ${hasTr ? `<button id="stcm_tr_toggle" class="${showTr ? 'on' : ''}" title="${showTr ? '원문 보기' : '번역 보기'}"><i class="fa-solid fa-language"></i> 번역</button>` : ''}`;
     updateFoldAllButton(feed);
     const render = hasKey(renderers, feed.platform) ? renderers[feed.platform] : renderers.naver;
@@ -6380,12 +6812,14 @@ function showFeed(feedId, opts = {}) {
         else if (opts.scrollToPost == null) opts = { ...opts, scrollToPost: back };
     }
     if (opts.scrollToPost != null) revealPost(feed, opts.scrollToPost);
-    el.innerHTML = unpostedNotice(feed) + render(feed) + `
+    el.innerHTML = (pickMode ? pickBarHtml() : '') + unpostedNotice(feed) + render(feed) + `
         <div class="stcm-older stcm-hide"><button data-act="older-posts" data-feed="${esc(feed.id)}"></button></div>
         <div class="stcm-more-posts"><button data-act="more-posts" data-feed="${esc(feed.id)}"><i class="fa-solid fa-plus"></i> ${PLATFORMS[feed.platform]?.chat ? '이 서버에 채널 더 만들기' : '이 게시판에 글 더 불러오기'}</button></div>`;
 
     applyFolding(feed, el);
     applyPaging(feed, el);
+    el.classList.toggle('stcm-picking', !!pickMode);
+    decoratePicks(el, feed);
     if (opts.scrollToPost != null) {
         scrollToPostSmooth(opts.scrollToPost, false);
     } else if (opts.keepScroll && sameView) {
@@ -6558,6 +6992,7 @@ function updatePost(feedId, idx, opts = {}) {
     const scroll = feedEl.scrollTop;
     const anchor = captureAnchor(feedEl);
     old.replaceWith(fresh);
+    decoratePicks(fresh, feed);
     updateFoldAllButton(feed);
     feedEl.scrollTop = scroll;
     // Elements before the replaced post keep their index, so this pins the view in place
@@ -6598,7 +7033,7 @@ function showEditItem(feedId, postIdx, ci = null, ri = null) {
     leaveFeed();
     view = 'edit';
     const pf = PLATFORMS[feed.platform];
-    const what = kind === 'post' ? postKindLabel(feed, post) : (pf?.chat ? '메시지' : feed.platform === 'fivech' ? '레스' : (ri == null ? '댓글' : '답글'));
+    const what = kind === 'post' ? postKindLabel(feed, post) : (pf?.chat ? '메시지' : pf?.res ? '레스' : (ri == null ? '댓글' : '답글'));
     const withTitle = kind === 'post' && (String(post.title ?? '').trim() || pf?.hasTitle || pf?.chat || pf?.thread);
     const withMedia = kind === 'post' || commentMediaOn(feed, post) || postMedia(item).length > 0;
     const bar = document.getElementById('stcm_feedbar');
@@ -6608,7 +7043,7 @@ function showEditItem(feedId, postIdx, ci = null, ri = null) {
         <p class="stcm-cp-hint">${item.isMe ? '내가 쓴' : 'AI가 만든'} ${esc(what)}을(를) 고쳐요. 글쓴이·좋아요·${kind === 'post' ? '댓글은' : '답글은'} 그대로예요. 고친 부분의 번역은 지워지니, 필요하면 다시 번역해 주세요.</p>
         ${withTitle ? `<input class="stcm-cp-title" type="text" placeholder="${pf?.chat ? '채널 이름' : '제목'}">` : ''}
         <textarea class="stcm-cp-body" rows="${kind === 'post' ? 8 : 4}" placeholder="본문"></textarea>
-        ${withMedia ? '<div class="stcm-cp-medialist"></div>' : ''}
+        ${withMedia ? `<div class="stcm-cp-medialist"></div>${MEDIA_HINT}` : ''}
         <div class="stcm-cp-foot">
             ${withMedia ? `<button data-act="cp-photo" class="stcm-cp-photo" title="사진 한 장 더 붙이기"><i class="fa-regular fa-image"></i> 사진</button>
             <button data-act="cp-video" class="stcm-cp-photo" title="영상 하나 더 붙이기"><i class="fa-solid fa-film"></i> 영상</button>` : ''}
@@ -6636,8 +7071,9 @@ async function saveEditItem(view) {
     }
     const titleEl = view.querySelector('.stcm-cp-title');
     const title = titleEl ? titleEl.value.replace(/[\n\r]/g, ' ').trim().slice(0, 500) : null;
-    const body = view.querySelector('.stcm-cp-body').value.trim();
-    const media = view.querySelector('.stcm-cp-medialist') ? cleanMedia({ media: readMediaRows(view) }) : null;
+    const packed = packFormMedia(view, view.querySelector('.stcm-cp-body').value);
+    const body = packed.body.trim();
+    const media = view.querySelector('.stcm-cp-medialist') ? cleanMedia({ media: packed.media }) : null;
     if (!body && !(media?.length) && !title) { toastr.warning('내용을 입력해 주세요. 지우려면 삭제를 써 주세요.'); return; }
     const o = t.item;
     let changed = false;
@@ -6707,7 +7143,7 @@ function showCompose() {
         ${p.hasTitle || p.chat ? `<input class="stcm-cp-title" type="text" placeholder="${p.chat ? '채널 이름 (예: 잡담) — 새 채널이 생기고 첫 메시지가 올라가요' : (p.thread ? '스레드 제목' : '제목')}">` : ''}
         ${TD_SKINS[selPlatform] ? `<select class="stcm-cp-cat">${tdCats(selPlatform).filter(c => c !== '전체').map(c => `<option value="${esc(c)}" ${feed && tdState(feed.id).cat === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>` : ''}
         <textarea class="stcm-cp-body" rows="7" placeholder="${p.thread ? '>>1 본문' : '본문'}"></textarea>
-        <div class="stcm-cp-medialist"></div>
+        <div class="stcm-cp-medialist"></div>${MEDIA_HINT}
         <div class="stcm-cp-ai">
             <input class="stcm-cp-inst" type="text" maxlength="500" placeholder="AI에게 지시 (선택) — 비우면 고른 글 주제에 맞게">
             <button data-act="ai-write-post" title="고른 신분으로 AI가 제목과 본문을 써 줘요. 본문 칸에 글이 있으면 그걸 다듬어요."><i class="fa-solid fa-wand-magic-sparkles"></i> AI로 쓰기</button>
@@ -6861,6 +7297,7 @@ function importItem(o, chatLen = Infinity) {
     const item = normItem(o);
     const media = cleanMedia(o);   // photos / videos on a res or comment you wrote
     if (media.length) item.media = media;
+    if (o?.voted === 'up' || o?.voted === 'down') item.voted = o.voted;   // your own 추천 / 비추
     if (Number.isInteger(o?.at) && o.at >= 0) item.at = Math.min(o.at, Math.max(0, chatLen - 1));
     else if (Number.isInteger(o?.atMax) && o.atMax >= 0) item.atMax = Math.min(o.atMax, Math.max(0, chatLen - 1));
     if (o?.isMe === true) {
@@ -7975,8 +8412,9 @@ function addSettingsPanel() {
             </div>
           </details>
           <details class="stcm-sec" data-sec="topics">
-            <summary><i class="fa-solid fa-tags"></i> 글 주제 · 참고 · 추가 지시</summary>
+            <summary><i class="fa-solid fa-tags"></i> 글 주제 · 반응 분위기 · 참고 · 추가 지시</summary>
             <div class="stcm-sec-body">
+          <label class="checkbox_label"><input id="stcm_set_metapos" type="checkbox"><span>작품 반응 모드: 불호 반응 금지 <small>(작품 반응 모드로 글·댓글을 만들 때 불호·비판·불만·악플·팬끼리 싸움이 나오지 않아요. 설렘·감상·떡밥 분석·예측·드립 같은 반응으로 채워요. 세계관 속 모드와 내가 직접 쓰는 글에는 적용되지 않아요)</small></span></label>
           <small class="stcm-help">글 주제의 추가·삭제·선택은 커뮤니티 창의 주제 줄 <i class="fa-solid fa-plus"></i> 버튼에서 해요.</small>
           <div class="stcm-set-grid">
             <label>주제 적용
@@ -8140,6 +8578,7 @@ function addSettingsPanel() {
     bind('stcm_set_npc', 'npcPosts');
     bind('stcm_set_maxfeeds', 'maxFeeds');
     bind('stcm_set_mention', 'mentionScope');
+    bind('stcm_set_metapos', 'metaNoNegative', 'checked');
     bind('stcm_set_nickmode', 'nickMode');
     bind('stcm_set_minreason', 'minReasoning', 'checked');
     bind('stcm_set_trwhen', 'translateWhen');
@@ -8283,6 +8722,7 @@ async function onChatChanged() {
     captureDraft();   // a kept comment / post being edited: its edits stay with it
     if (view === 'compose') syncComposeDraft(document.querySelector('#stcm_feed .stcm-compose-view'));
     composer = null;
+    pickMode = null;
     currentFeedId = null;
     pendingImport = null;
     for (const u of unposted.values()) for (const d of u.comments) d.shown = false;   // kept comments come back on the next visit

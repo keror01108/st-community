@@ -173,6 +173,7 @@ dialog#stcm_overlay #toast-container { position: fixed; }
 .stcm-chips .pf-twitter.active { background: #111; }
 .stcm-t-dark .stcm-chips .pf-twitter.active { background: #e7e9ea; color: #000; }
 .stcm-chips .pf-fivech.active { background: #b5452f; }
+.stcm-chips .pf-fourchan.active { background: #117743; }
 .stcm-chips .pf-weibo.active { background: #e6162d; }
 .stcm-chips .pf-tieba.active { background: #3388ff; }
 
@@ -500,6 +501,7 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
 .stcm-dc { --k-bg: #fff; --k-card: #fff; --k-text: #333; --k-sub: #777; --k-line: #e3e3e3; --k-soft: #f9f9f9; --k-soft2: #f1f2f8; --k-name: #333; --k-link: #3b4890; --k-accent: #3b4890; }
 .stcm-reddit { --k-bg: #dae0e6; --k-card: #fff; --k-text: #1c1c1c; --k-sub: #787c7e; --k-line: #edeff1; --k-soft: #f6f7f8; --k-name: #1c1c1c; --k-link: #0079d3; --k-accent: #ff4500; }
 .stcm-twitter { --k-bg: #fff; --k-card: #fff; --k-text: #0f1419; --k-sub: #536471; --k-line: #eff3f4; --k-soft: #f7f9f9; --k-name: #0f1419; --k-link: #1d9bf0; --k-accent: #1d9bf0; }
+.stcm-4chan { --k-bg: #eef2ff; --k-card: #d6daf0; --k-text: #000; --k-sub: #000; --k-line: #b7c5d9; --k-soft: #d6daf0; --k-name: #117743; --k-link: #34345c; --k-accent: #af0a0f; --k-title: #0f0c5d; --k-green: #789922; --k-quote: #d00; }
 .stcm-5ch { --k-bg: #efefef; --k-card: #efefef; --k-text: #000; --k-sub: #555; --k-line: #bbb; --k-soft: #e4e4e4; --k-name: #008800; --k-link: #0000ff; --k-accent: #b5452f; --k-title: #ff0000; --k-top: #cccccc; --k-head-text: #000; }
 .stcm-weibo { --k-bg: #f2f2f5; --k-card: #fff; --k-text: #333; --k-sub: #999; --k-line: #f0f0f0; --k-soft: #f9f9f9; --k-soft2: #eef0f3; --k-name: #eb7350; --k-link: #eb7350; --k-accent: #e6162d; }
 .stcm-tieba { --k-bg: #f4f7fd; --k-card: #fff; --k-text: #333; --k-sub: #999; --k-line: #eceef2; --k-soft: #f7f8fa; --k-name: #2d64b3; --k-link: #2d64b3; --k-accent: #3388ff; }
@@ -510,6 +512,7 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
 .stcm-t-dark .stcm-dc { --k-bg: #16171d; --k-card: #16171d; --k-soft2: #23253a; --k-link: #8e9bff; }
 .stcm-t-dark .stcm-reddit { --k-bg: #030303; --k-card: #1a1a1b; --k-text: #d7dadc; --k-sub: #818384; --k-line: #343536; --k-soft: #272729; --k-name: #d7dadc; --k-link: #4fbcff; }
 .stcm-t-dark .stcm-twitter { --k-bg: #000; --k-card: #000; --k-text: #e7e9ea; --k-sub: #71767b; --k-line: #2f3336; --k-soft: #16181c; --k-name: #e7e9ea; }
+.stcm-t-dark .stcm-4chan { --k-bg: #1d1f21; --k-card: #282a2e; --k-text: #c5c8c6; --k-sub: #c5c8c6; --k-line: #111; --k-soft: #282a2e; --k-name: #c5c8c6; --k-link: #81a2be; --k-accent: #c5c8c6; --k-title: #b294bb; --k-green: #b5bd68; --k-quote: #5f89ac; }
 .stcm-t-dark .stcm-5ch { --k-bg: #1b1b1b; --k-card: #1b1b1b; --k-text: #ddd; --k-sub: #9a9a9a; --k-line: #3a3a3a; --k-soft: #262626; --k-name: #6fd36f; --k-link: #8ab4f8; --k-title: #ff6b6b; --k-top: #2c2c2c; --k-head-text: #ddd; }
 .stcm-t-dark .stcm-weibo { --k-bg: #141414; --k-card: #1f1f1f; --k-name: #ff8a5c; --k-link: #ff8a5c; }
 .stcm-t-dark .stcm-tieba { --k-bg: #111520; --k-card: #1a1f2c; --k-soft: #222839; --k-name: #7aa7ff; --k-link: #7aa7ff; }
@@ -530,6 +533,7 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
     --k-head-text: #fff;
     border: 1px solid var(--SmartThemeBorderColor, rgba(127, 127, 127, 0.3));
 }
+.stcm-t-theme .stcm-4chan { --k-accent: var(--SmartThemeBodyColor, #ddd); --k-green: #8fbf3a; --k-quote: var(--SmartThemeQuoteColor, #6ea8fe); }
 .stcm-t-theme .stcm-5ch { --k-head-text: var(--SmartThemeBodyColor, #ddd); --k-name: #4caf50; --k-title: #ff6b6b; }
 
 /* ---------- Naver Cafe ---------- */
@@ -553,10 +557,16 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
 .stcm-dc-cnt { color: #d31900; font-size: 13px; }
 .stcm-dc-meta { display: flex; gap: 10px; flex-wrap: wrap; font-size: 12px; color: var(--k-sub); border-bottom: 1px solid var(--k-line); padding-bottom: 8px; margin-bottom: 10px; }
 .stcm-ip { color: var(--k-sub); font-size: 11px; margin-left: 2px; }
-.stcm-dc-rec { display: flex; gap: 8px; align-items: center; justify-content: center; margin: 14px 0 8px; flex-wrap: wrap; }
-.stcm-dc-rec .up, .stcm-dc-rec .down { border: 1px solid var(--k-accent); border-radius: 4px; padding: 4px 14px; font-size: 13px; font-weight: 700; }
-.stcm-dc-rec .up { color: #d31900; }
-.stcm-dc-rec .down { color: var(--k-link); }
+.stcm-dc-rec { display: flex; gap: 10px; align-items: center; justify-content: center; max-width: 330px; margin: 16px auto 10px; padding: 16px 8px; border: 1px solid #c4c4c4; }
+.stcm-t-dark .stcm-dc-rec { border-color: var(--k-line); }
+.stcm-dc-rec .cnt { min-width: 52px; text-align: center; font-size: 17px; line-height: 1.1; }
+.stcm-dc-rec .cnt.up b { color: #d31900; }
+.stcm-dc-rec .cnt.down b { color: var(--k-text); opacity: 0.8; }
+.stcm-dc-rec .stcm-vote { width: 56px; height: 56px; flex: none; border-radius: 50%; flex-direction: column; justify-content: center; gap: 3px; color: #fff; font-size: 12px; font-weight: 700; line-height: 1; }
+.stcm-dc-rec .stcm-vote i { font-size: 21px; }
+.stcm-dc-rec .stcm-vote svg { width: 22px; height: 22px; }
+.stcm-dc-rec .stcm-vote.up { background: #6f6dd9; }
+.stcm-dc-rec .stcm-vote.down { background: #aaa; }
 .stcm-dc-comments { background: var(--k-soft); border-top: 1px solid var(--k-line); }
 .stcm-dc-c { display: grid; grid-template-columns: 110px 1fr auto; gap: 8px; padding: 7px 8px; border-bottom: 1px solid var(--k-line); font-size: 13px; }
 .stcm-dc-c .nick { font-weight: 700; font-size: 12px; overflow: hidden; text-overflow: ellipsis; color: var(--k-name); }
@@ -603,6 +613,24 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
 .stcm-5-head .n { color: var(--k-text); }
 .stcm-5-head .name { color: var(--k-name); font-weight: 700; }
 .stcm-5-res .stcm-body { padding-left: 1.5em; }
+
+/* ---------- 4chan ---------- */
+.stcm-4chan { border-radius: 6px; font-family: arial, helvetica, sans-serif; }
+.stcm-4-top { color: var(--k-accent); font: bold 24px Tahoma, sans-serif; letter-spacing: -1px; text-align: center; padding: 12px 8px 10px; border-bottom: 1px solid var(--k-line); }
+.stcm-4-thread { padding: 8px 8px 6px; border-bottom: 1px solid var(--k-line); }
+.stcm-4-op { padding: 2px 2px 6px; }
+.stcm-4-head { font-size: 13px; line-height: 1.5; color: var(--k-sub); }
+.stcm-4-head .subj { color: var(--k-title); font-weight: 700; }
+.stcm-4-head .name { color: var(--k-name); font-weight: 700; }
+.stcm-4-head .no { color: inherit; text-decoration: none; cursor: pointer; white-space: nowrap; }
+.stcm-4-head .no:hover { color: var(--k-quote); }
+.stcm-4-row { display: flex; align-items: flex-start; gap: 3px; margin: 4px 0; }
+.stcm-4-row .arr { flex: none; color: var(--k-line); font-size: 12px; padding-top: 4px; }
+.stcm-4-reply { min-width: 0; max-width: 100%; background: var(--k-card); border: 1px solid var(--k-line); border-width: 0 1px 1px 0; padding: 4px 8px 6px; }
+.stcm-4chan .stcm-body { font-size: 13.5px; margin-top: 3px; }
+.stcm-4chan .stcm-anchor { color: var(--k-quote); text-decoration: underline; }
+.stcm-4chan .stcm-green { color: var(--k-green); }
+.stcm-4chan .stcm-psum .tt { color: var(--k-title); }
 
 /* ---------- Weibo ---------- */
 .stcm-w-top { background: var(--k-card); color: var(--k-accent); padding: 10px 14px; font-weight: 700; border-bottom: 1px solid var(--k-line); }
@@ -1282,3 +1310,38 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
 
 /* 제목 번역: its own line under the original title (원문 위 · 번역문 아래) */
 .stcm-title-tr { display: block; margin-top: 2px; font-weight: 500; font-size: 0.92em; opacity: 0.75; }
+
+/* 사진·영상 in the middle of a text */
+.stcm-body > .stcm-img { margin: 8px 0; }
+.stcm-cp-media-head .n { font-variant-numeric: tabular-nums; }
+.stcm-cp-mediahint { display: block; font-size: 11.5px; color: var(--s-sub); line-height: 1.5; }
+.stcm-cp-medialist:empty + .stcm-cp-mediahint { display: none; }
+.stcm-cp-mediahint code { font-size: 11px; }
+
+/* 추천·비추·좋아요 you press (once) */
+.stcm-vote { font: inherit; color: inherit; background: none; border: 0; padding: 0; margin: 0; line-height: inherit; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; border-radius: 6px; }
+.stcm-vote:hover:not(.off) { opacity: 0.75; }
+.stcm-vote.on { color: var(--k-accent, var(--s-accent)); font-weight: 700; }
+.stcm-vote.off { opacity: 0.5; cursor: default; }
+.stcm-w-act > .stcm-vote { flex: 1; justify-content: center; }
+.stcm-dc-rec .stcm-vote.on { color: #fff; box-shadow: 0 0 0 3px rgba(111, 109, 217, 0.4); }
+.stcm-dc-rec .stcm-vote.down.on { box-shadow: 0 0 0 3px rgba(128, 128, 128, 0.4); }
+.stcm-td-rec .stcm-vote.on { box-shadow: inset 0 0 0 2px currentColor; }
+.stcm-r-act .vote .stcm-vote.on, .stcm-r-cact .stcm-vote.on { color: var(--k-accent, #ff4500); }
+.stcm-r-act .vote .stcm-vote[data-dir="down"].on, .stcm-r-cact .stcm-vote[data-dir="down"].on { color: #7193ff; }
+
+/* 선택 삭제 */
+.stcm-pickbar { position: sticky; top: 0; z-index: 5; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 8px; padding: 8px 10px; border: 1px solid var(--s-border); border-radius: 10px; background: var(--s-bg); font-size: 13px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12); }
+.stcm-pickbar .cnt { margin-right: auto; }
+.stcm-pickbar button { border: 1px solid var(--s-border); background: transparent; color: inherit; border-radius: 999px; padding: 4px 12px; cursor: pointer; font-size: 12.5px; }
+.stcm-pickbar button.danger { border-color: #d33; color: #d33; font-weight: 700; }
+.stcm-pickbar button:disabled { opacity: 0.4; cursor: default; }
+.stcm-picking [data-post], .stcm-picking [data-k] { position: relative; }
+.stcm-pickbox { position: absolute; top: 6px; right: 6px; z-index: 3; display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px 2px 4px; border-radius: 999px; background: var(--s-bg); border: 1px solid var(--s-border); font-size: 11.5px; color: var(--s-text); cursor: pointer; line-height: 1.6; }
+.stcm-pickbox.item span { display: none; }
+.stcm-pickbox.item { padding: 2px 4px; }
+.stcm-pickbox input { margin: 0; cursor: pointer; }
+.stcm-picked { outline: 2px solid #d33; outline-offset: -2px; border-radius: 6px; }
+#stcm_pick_toggle.on { background: var(--s-accent); color: var(--s-accent-text, #fff); border-color: transparent; font-weight: 700; }
+.stcm-picking .stcm-psum, .stcm-picking .stcm-td-row { padding-right: 96px; }
+.stcm-picking [data-k] { padding-right: 34px; }
