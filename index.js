@@ -28,7 +28,7 @@ const defaultSettings = Object.freeze({
     tailEnabled: false,          // 맨 밑 프롬프트: one more message at the very end of every request
     tailRole: 'user',            // 'user' | 'assistant'
     npcPosts: 'auto',
-    metaNoNegative: false,       // 작품 반응 모드: no dislike / criticism in generated posts and comments
+    metaDislike: 'auto',         // 작품 반응 모드 불호 반응: auto (the model decides) · include (at least one critical voice) · none (no dislike)
     mentionScope: 'all',         // 언급 범위: all | char (only {{char}}) | user (only {{user}}) | none (nobody from the story)
     customSpaces: [],            // [{ id, platform, name, desc, locale: { mode: inherit|story|country|custom, country, custom } }]
     spaceSelected: {},           // platform → space id ('' = 기본)
@@ -58,10 +58,13 @@ const defaultSettings = Object.freeze({
     crossRefCount: 6,
     autoPlatform: 'last',        // last | random | <platform id>
     pinDepth: 4,
-    extraInstruction: '',
+    extraMeta: '',               // 추가 지시 for 작품 반응 모드 (every generation in that mode)
+    extraWorld: '',              // 추가 지시 for 세계관 속 모드
     defaultMode: 'meta',         // meta | world
     defaultPlatform: 'naver',
     prompts: {},                 // user overrides of DEFAULT_PROMPTS
+    promptSaves: [],             // 따로 저장한 프롬프트: [{ id, key (the item it stands in for), name, text }]
+    promptUse: {},               // item key → id of the saved prompt used instead of it
     stores: {},                  // feed file index: storeId → { chat, owner, size, deletedAt }
     topics: '공포: 괴담, 무서운 경험담, 미스터리\n낚시: 어그로성 제목, 반전 있는 낚시글\n웃음: 웃긴 썰, 드립, 짤 설명\n연애: 연애 상담, 썸, 이별, 짝사랑\n고민: 인생·학교·직장 고민 상담\n정보: 정보 공유, 꿀팁, 후기\n질문: 궁금한 거 물어보는 글\n썰: 경험담, 목격담\n논쟁: 의견 대립, 키배 유발 주제',
     topicSelected: [],           // names of selected topics
@@ -109,9 +112,12 @@ const PLATFORMS = {
     dcinside: { name: 'DCInside', brand: false, label: '디시인사이드', icon: 'fa-ghost', lang: 'Korean', anon: 'ㅇㅇ', now: '방금', thread: false, hasTitle: true },
     reddit: { name: 'Reddit', brand: true, label: 'Reddit', icon: 'fa-reddit-alien', lang: 'English', anon: 'throwaway', now: 'just now', thread: false, hasTitle: true, capped: true },
     twitter: { name: 'X (Twitter)', brand: true, label: 'X (트위터)', icon: 'fa-x-twitter', lang: 'the language most natural for the story setting and its fandom (if unclear, Korean)', anon: 'user', now: 'now', thread: false, hasTitle: false },
+    threads: { name: 'Threads (Meta)', brand: true, label: '스레드', icon: 'fa-threads', lang: 'the language most natural for the story setting and its fandom (if unclear, Korean)', anon: 'user', now: '방금', thread: false, hasTitle: false },
+    instagram: { name: 'Instagram', brand: true, label: '인스타그램', icon: 'fa-instagram', lang: 'the language most natural for the story setting and its fandom (if unclear, Korean)', anon: 'user', now: '방금', thread: false, hasTitle: false },
     fivech: { name: '2channel / 5channel', brand: false, label: '2ch / 5ch', icon: 'fa-hashtag', lang: 'Japanese', anon: '名無しさん', now: null, thread: true, hasTitle: true, capped: true, flat: true, res: true },
     fourchan: { name: '4chan', brand: false, label: '4chan', icon: 'fa-clover', lang: 'English', anon: 'Anonymous', now: null, thread: true, hasTitle: true, capped: true, flat: true, res: true },
     weibo: { name: 'Sina Weibo', brand: true, label: '웨이보', icon: 'fa-weibo', lang: 'Simplified Chinese', anon: '微博用户', now: '刚刚', thread: false, hasTitle: false },
+    xiaohongshu: { name: 'Xiaohongshu (小红书 / RED)', brand: false, label: '샤오홍슈', icon: 'fa-book', lang: 'Simplified Chinese', anon: '小红薯', now: '刚刚', thread: false, hasTitle: true },
     discord: { name: 'Discord', brand: true, label: '디스코드', icon: 'fa-discord', lang: 'the language most natural for the story setting and its fandom (if unclear, Korean)', anon: 'user', now: '오늘', thread: false, hasTitle: false, flat: true, chat: true },
     tdgall: { name: '투디갤 (tdgall.com)', brand: false, label: '투디갤', icon: 'fa-snowflake', lang: 'Korean', anon: 'ㅇㅇ', now: '방금', thread: false, hasTitle: true },
     kkangtong: { name: '깡통 (Korean AI-chat community)', brand: false, label: '깡통', icon: 'fa-robot', lang: 'Korean', anon: '깡', now: '방금', thread: false, hasTitle: true },
@@ -136,7 +142,6 @@ const DEFAULT_PROMPTS = {
 Treat the story above as a serialized work of fiction (web novel / webtoon / ongoing serial) that the public reads as it updates. The most recent messages are the newest episode. {{user}} is the protagonist and {{char}} a main character.
 - Readers/fans react to the latest developments: hype, screaming, theories and predictions, character analysis, shipping, favorite lines, complaints about pacing or plot, memes, jokes, fan art or fanfic mentions, arguments between fans, lurkers, newcomers asking questions.
 - Readers know everything shown in the story so far, and nothing beyond it. They may misremember details or speculate wildly.
-- Vary sentiment and opinions; include at least one dissenting or critical voice.
 - Readers do not exist inside the story and cannot affect it.`,
 
     mode_world: `MODE: IN-WORLD COMMUNITY.
@@ -192,6 +197,7 @@ Output ONLY a JSON object, no code fences: {"title": "post title, or empty when 
 
     npc_on: `Named side characters (NPCs) from the story — friends, family, classmates, coworkers, rivals and other people who appear in the story or the world information, but not {{char}} or {{user}} — DO use this community. Let one or two of them post or comment as themselves under fitting handles, in their own voice, knowing only what they would know. They may talk about {{char}}/{{user}} from their own point of view.`,
     stats_update: `ALSO add "stats" to the JSON object: the post's and comments' numbers after these new comments, as {"post": {"views": 0, "likes": 0, "dislikes": 0}, "comments": {"c0": 0, "c2r1": 0}}. Start from the current numbers shown in <thread> — (views · likes · dislikes) after the post, (likes N) after a comment, and a reply's id after "↳ #" — and raise them to fit the attention and reception the thread is getting: views grow with every new comment, likes rise for well-received posts and comments (posts and comments by the player too), dislikes (downvotes / 비추) rise only where the platform has them and readers turn against the post. Never lower a number. In "comments" list only the existing comments whose likes change, by their id; leave out the new comments (their likes go in their own "likes").`,
+    meta_dislike: `- Vary sentiment and opinions; include at least one dissenting or critical voice.`,
     meta_positive: `STRICT — NO NEGATIVE REACTIONS: every post and comment about the work is positive or neutral. No dislike, criticism or complaints (about the plot, pacing, characters, writing, art or the author), no hate, mockery or sarcastic jabs at the work or its characters, no "I'm dropping this", no flame wars or fans attacking each other. This overrides every other instruction in this request — the task, the platform style, topics and extra instructions — that asks for dissent, critical voices, complaints or arguments, including the community's usual harsh or trolling tone. Keep the variety with other feelings: excitement, screaming, theories and predictions, character analysis, favorite lines, shipping, jokes and memes, questions, fan art and fanfic talk, worry or sadness FOR a character, impatience for the next update. Friendly, good-natured differences of opinion about predictions or ships are fine.`,
     only_char: `STRICT — ONLY {{char}}: posts and comments may mention and discuss {{char}} (what {{char}} did, said or seems like), but must not mention, name, describe, quote, impersonate or allude to {{user}} or any other character or person from the story or the world information — not by name, nickname, title, appearance, role or pronoun — and none of them posts or comments. Where the story involves {{user}} or others, talk about {{char}} alone and leave the other people out completely. This overrides every other instruction in this request that asks for anyone else.`,
     only_user: `STRICT — ONLY {{user}}: posts and comments may mention and discuss {{user}} (what {{user}} did, said or seems like), but must not mention, name, describe, quote, impersonate or allude to {{char}} or any other character or person from the story or the world information — not by name, nickname, title, appearance, role or pronoun — and none of them posts or comments. Where the story involves {{char}} or others, talk about {{user}} alone and leave the other people out completely. This overrides every other instruction in this request that asks for anyone else.`,
@@ -238,7 +244,7 @@ Follow it for who the users are and where and when they live, even where it diff
 }
 Numbers must be plain integers ("dislikes" counts downvotes / 비추; keep it 0 on platforms that have none). Escape double quotes inside strings. Every poster must feel like a distinct person with their own voice.
 List the posts from oldest to newest: the last post in "posts" is the most recent one, and the "time" values fit that order.
-"media" lists the photos, screenshots and videos attached to a post, in order. To show one in the middle of the post (between paragraphs, the way people put pictures inside a post), write the mark [[media:N]] on its own line in "body" at that place — N is its number in "media", counting from 1 — and put the same marks at the same places in "body_tr"; media without a mark are shown at the end of the post. "type" is "photo" or "video"; "desc" describes what that photo or video shows in one or two short sentences in the output language, without brackets (e.g. a selfie, food, a street or scenery shot, a screenshot of a chat or article, fan art, merch, an evidence photo; for a video: what happens in the clip — a short fancam, a vlog moment, a funny clip, CCTV or dashcam footage). A post may have several (a photo dump, before/after shots, a few clips). Use an empty list when the post has no picture or video — add them where they suit the community and the post, not on every post. The body may refer to them ("사진 보셈", "pic related", "영상 ㄱㄱ").`,
+"media" lists the photos, screenshots and videos attached to a post, in order. To show one in the middle of the post (between paragraphs, the way people put pictures inside a post), write the mark [[media:N]] on its own line in "body" at that place — N is its number in "media", counting from 1 — and put the same marks at the same places in "body_tr"; media without a mark are shown at the end of the post. Exception: on photo-first apps whose platform style says the photos are shown above the text (Instagram, Xiaohongshu), every photo / video is shown above the text, so write no marks there. "type" is "photo" or "video"; "desc" describes what that photo or video shows in one or two short sentences in the output language, without brackets (e.g. a selfie, food, a street or scenery shot, a screenshot of a chat or article, fan art, merch, an evidence photo; for a video: what happens in the clip — a short fancam, a vlog moment, a funny clip, CCTV or dashcam footage). A post may have several (a photo dump, before/after shots, a few clips). Use an empty list when the post has no picture or video — add them where they suit the community and the post, not on every post, unless the platform style says posts (almost) always have them (Instagram, Xiaohongshu). The body may refer to them ("사진 보셈", "pic related", "영상 ㄱㄱ").`,
 
     format_comments: `OUTPUT FORMAT: Return ONLY a JSON object, with no code fences and no commentary, matching:
 {
@@ -252,9 +258,12 @@ List the posts from oldest to newest: the last post in "posts" is the most recen
     guide_dcinside: `DCInside gallery (Korean anonymous forum). Board name ends with "갤러리" (e.g. "XX 마이너 갤러리"). Many anonymous posters with nickname "ㅇㅇ" and a partial IP as handle (e.g. "118.235"), some fixed nicknames. Tone: blunt banmal, internet slang, sarcasm, short punchy titles, memes (ㅋㅋ, ㄹㅇ, 개추, 념글, ~노, ~누), mild swearing. Fights and trolling are common but no slurs or hate speech. Titles are short.`,
     guide_reddit: `Reddit. Board is a subreddit name (e.g. "r/NovelNameFans"). Usernames like u/throwaway_8812, u/SleepyOtter. Posts have a title, body (may include "EDIT:" lines), score (upvotes). Comments are threaded with replies; top comments are witty, analytical, or pun threads. Use Reddit culture: "this", "OP", "TIL", "/s", flairs in tags.`,
     guide_twitter: `X (Twitter). Set "board" to a trending hashtag or topic. Each post is a short tweet (under 280 characters), with display name and @handle, no title. Use hashtags, emoji, fandom slang, screaming caps, "RT if...", short threads. Metrics: likes, retweets (shares), views. Comments are replies to the tweet.`,
+    guide_threads: `Threads (Meta's text app linked to Instagram). Set "board" to the topic tag these posts were found under (e.g. "별의노래"). Each post is a short text post (up to 500 characters, usually a few casual lines), no title. "author" is the username only (lowercase letters, digits, dots and underscores, e.g. "haneul.daily" or "starsong_fan"); leave "handle" empty. A post may carry one topic tag in tags[0]. Tone: personal and conversational, like a diary or talking to friends — confessions, hot takes, everyday rants, relationship and dating stories, questions to followers ("~하는 사람?", "나만 그래?"), light humor. Korean Threads users write in casual banmal and call each other 스친 (Threads friends); greetings like 스하, follow talk like 스팔 / 스팔로미. Viral posts gather many replies, including off-topic shout-outs and small self-promotions in the replies. Comments are replies to the post; "replies" answer a comment. Up to 10 photos or a short video may be attached in "media". Metrics: likes, reposts ("shares").`,
+    guide_instagram: `Instagram. Set "board" to the hashtag or Explore topic these posts were found under (e.g. "#별의노래"). Each post is a photo or video post: it MUST have "media" (one photo or video, or a carousel of up to 10 slides); never put [[media:N]] marks in the caption — the photos are shown above it. "body" is the caption: short to medium, line breaks, emoji, and hashtags at the end (#일상 #데일리 …). No title. "author" is the username only (lowercase letters, digits, dots and underscores, e.g. "haneul.daily"); leave "handle" empty. Comments are short: emoji-heavy praise ("너무 예뻐요😍", "분위기 미쳤다🔥"), questions, tagging friends with @username; "replies" answer a comment and often start with "@username". Metrics: likes; ordinary accounts get modest numbers, popular ones far more.`,
     guide_fivech: `2channel / 5channel (Japanese anonymous textboard). Each post object is one THREAD: "title" is the thread title (e.g. 【悲報】..., 【朗報】..., ○○について語るスレ Part3), "body" is the opener (>>1). Comments are the following replies in order (>>2, >>3...); the "replies" field must stay empty and "reply_to" must be -1 — reply with anchors like ">>1" or ">>5" in the body instead. Author is usually "名無しさん" (or a board-specific default name); "handle" is a random 8-character ID like "aB3dE9fG". Use 草, w, ワロタ, ガチ, kaomoji, light AA. Tone: cynical, joking, chaotic.`,
     guide_fourchan: `4chan (English anonymous imageboard). Set "board" to one board written as "/abbr/ - Name" that fits the story and the mode (e.g. "/a/ - Anime & Manga", "/v/ - Video Games", "/vg/ - Video Game Generals", "/tv/ - Television & Film", "/lit/ - Literature", "/co/ - Comics & Cartoons", "/x/ - Paranormal"; in the in-world mode a board of that world). Each post object is one THREAD: "title" is the optional subject (often empty; long-running topics are "generals" like "/xyz/ General #212"), "body" is the opening post, which almost always has an image — describe it in "media". Comments are the following posts in order; the "replies" field must stay empty and "reply_to" must be -1 — reply by quoting in the body with ">>N", where N is the post's place in the thread (>>1 is the OP, >>2 the first reply, and so on); the site shows these as real post numbers. A reply sometimes attaches an image too (a reaction image, a screenshot, an edit): give that comment its own "media" list, in the same shape as a post's. "author" is "Anonymous" (only rarely a name); leave "handle" empty. Use greentext — lines starting with ">" (">be me", ">mfw", quoting a line to mock or answer it) — and imageboard slang: OP, anon, kek, lmao, based, cope, ITT, sauce?, this, /thread, bump, checked, lurk moar. Tone: terse, ironic, irreverent; shitposting and running jokes mixed with real discussion and arguments; mostly lowercase, no emoji. "time" like "11/23/26(Mon)14:05:33". No slurs, hate speech, doxxing or harassment.`,
     guide_weibo: `Sina Weibo. Set "board" to a super-topic or trending topic (超话 / 热搜). Posts by bloggers with display names (e.g. 吃瓜群众小王), no title, using #话题# hashtags (with # on both sides), emoji like [doge] [允悲] [泪], words like 绝了, 磕到了, 破防了, 吃瓜, yyds. Metrics: likes, comments, reposts (shares). Comments may have replies.`,
+    guide_xiaohongshu: `Xiaohongshu (小红书, RED), the Chinese lifestyle note-sharing app. Set "board" to the topic (话题) these notes are under, without "#" (e.g. "星之歌"). Each post is a NOTE: it almost always has cover images — 1 to 9 photos (or a video) in "media"; never put [[media:N]] marks in the text — the images are shown above it. "title" is a short catchy title with emoji (e.g. "救命！这个剧情我哭死了😭"). "body" is the note: short lines, emoji (✨💗😭🔥), numbered tips or reviews, ending with hashtags written as "#话题" (e.g. "#星之歌 #追剧日常"). "author" is a cute nickname (e.g. 一只芋圆, 小鹿爱喝奶茶, 熬夜冠军); "handle" is the poster's IP location shown after the time — a province or region (e.g. 广东, 上海, 浙江, 海外). Words: 姐妹们, 宝子们, 家人们, 谁懂啊, 救命, 绝绝子, 狠狠爱了, 种草, 拔草, 避雷, 码住, 蹲, 冲. Comments: short reactions, questions ("求链接", "蹲后续", "同款求"), and the note's author answering under the same name; "replies" answer a comment. Metrics: likes (赞), "shares" is 收藏 (saves), comments. "time" like "3天前", "昨天 21:30" or "11-20".`,
     guide_discord: `Discord server. Set "board" to the server name (a fan server in reader mode, a local / guild / school / work server in the in-world mode). Each post object is one CHANNEL: "title" is the channel name without "#" (e.g. 잡담, 정보, 스포일러, 짤방, 공지, 오프라인), "body" is the first message of the shown chat log and "author" its sender. "comments" are the following chat messages in order — short, casual, fast, several messages in a row from the same person are normal; "replies" stays empty. Use "reply_to" to point at an earlier message only when someone uses Discord's reply. Usernames look like Discord display names; emoji, :custom_emoji:, @mentions, lowercase, typos, "ㅋㅋ", stickers described in brackets. "time" like "오늘 오후 3:12".`,
     guide_tdgall: `투디갤 (tdgall.com), a Korean anonymous community for 2D works — anime, manga, light novels, subculture/mobile games, webtoons — that split off from DCInside. Everyone posts anonymously: set "author" to "ㅇㅇ" and "handle" to a random 4-character code of letters/digits (e.g. "k7Qa"); a person keeps the same code inside one post. Put the board in tags[0]: one of 투디, 웹툰, 소설, 게임, AI, 괴담, 남극. Tone: casual banmal, fast fandom slang and chosung abbreviations (ㅋㅋ, ㅠㅠ, ㄹㅇ, ㄱㅊ), title prefixes such as ㅃ (off-topic chatter), ㅂㅎ (dislike post — replies agree rather than argue), ㅅㅍ (spoiler), ㅂㅇ (translation). Community words: 펭도리 (asking for a source or character name), 소주 (claiming a character as one's spouse), 자표, 갤메이저/갤마이너, 유입 (newcomer, treated warily). Typical posts: short reactions, questions, rants about creators or pacing, shipping, fan theories, recommendation requests. No real-person photos, doxxing or slurs.`,
     guide_kkangtong: `깡통, a Korean anonymous community about AI chatting and roleplay (mainly SillyTavern). Users share and discuss character bots (봇·캐릭터 카드), prompts and presets, Quick Replies (QR), extensions and scripts they built, NovelAI (NAI) image prompts and artist tags (작가 태그) for art styles, AI model and API news and tips, chat logs (로그), and chat about their favorite bots and characters (덕질). Everyone posts anonymously: a post's "author" is "깡". In comments, anonymous commenters are numbered in order of first appearance in that post — "깡1", "깡2", "깡3", … — and the same person keeps the same number in that post; the post's own writer appears as "글쓴 깡" (never a number). Leave "handle" empty. Only an official notice from the admins may use the author "운영깡". Put the board in tags[0]: one of 일반, 뉴스, 정보/팁, 로그, AI봇, 프롬프트, QR, 그림체, 음악, 자료, 확장, 질문, 추천/지식, 덕질, 제작/협업. Users call each other "깡" and add it to a role: 운영깡 (the admins), 제작깡 / 공유깡 (people who make and share bots, prompts or extensions), 너깡, 나깡, 질문깡, 로그깡 and so on (e.g. "제작깡 고마워", "나깡도 이거 씀"). Tone: casual banmal and 음슴체, ㅋㅋ, ㄹㅇ, gratitude to 제작깡, bug reports and fixes, model comparisons (Claude, Gemini, GPT, DeepSeek…), token and cost talk, sharing tips. In the reader-reaction mode, decide what the story is to these users from how it reads: it may be an AI chat log someone shared, or a novel, webtoon/manga, anime or game they are into — do not assume it is always a chat log. Users react to it as fans do, and may also connect it to their own AI chatting (making a bot of a character, prompts for that mood, NAI art of a scene, sharing their own logs). In the in-world mode, people living in the story world use 깡통 for their own AI chatting and talk about what is happening around them. Never mention, recommend or discuss RisuAI (리스 / 리수) in any way — this site does not cover it. Site rule: NEVER use ㅠㅠ / ㅜㅜ (or any ㅠ / ㅜ crying jamo) and NEVER use baby talk (애기어 — e.g. 고마워용, 해쪄, 넹, 웅웅, 했어염, 뿌잉, lisping or cutesy word endings); express feelings in plain words instead (e.g. "감동이다", "슬프네"). Rules like 투디갤: no real-person photos, no doxxing, no slurs, credit the 제작깡 when sharing their work.`,
@@ -291,6 +300,7 @@ const PROMPT_LABELS = {
     npc_on: '주변 인물(NPC): 직접 글 쓰기',
     npc_off: '주변 인물(NPC): 글 쓰지 않기',
     stats_update: '반응 생성 때 조회수·추천 수 갱신 지시',
+    meta_dislike: '작품 반응 모드: 불호 반응 꼭 넣기',
     meta_positive: '작품 반응 모드: 불호 반응 금지',
     only_char: '언급 범위: 캐릭터만',
     only_user: '언급 범위: 유저만',
@@ -304,9 +314,12 @@ const PROMPT_LABELS = {
     guide_dcinside: '스타일: 디시인사이드',
     guide_reddit: '스타일: Reddit',
     guide_twitter: '스타일: X (트위터)',
+    guide_threads: '스타일: 스레드',
+    guide_instagram: '스타일: 인스타그램',
     guide_fivech: '스타일: 2ch / 5ch',
     guide_fourchan: '스타일: 4chan',
     guide_weibo: '스타일: 웨이보',
+    guide_xiaohongshu: '스타일: 샤오홍슈',
     guide_blind: '스타일: 블라인드',
     guide_everytime: '스타일: 에브리타임',
     guide_tieba: '스타일: 바이두 티에바',
@@ -382,6 +395,8 @@ function getSettings() {
     if (s.language === 'korean') s.language = 'Korean';
     if (s.language === 'native_ko') { s.language = 'native'; if (!s.translateTo) s.translateTo = 'Korean'; }
     if (!s.prompts || typeof s.prompts !== 'object') s.prompts = {};
+    if (!Array.isArray(s.promptSaves)) s.promptSaves = [];
+    if (!s.promptUse || typeof s.promptUse !== 'object' || Array.isArray(s.promptUse)) s.promptUse = {};
     if (!Array.isArray(s.customApis)) s.customApis = [];
     s.customApis = s.customApis.filter(a => a && typeof a === 'object' && typeof a.id === 'string' && typeof a.url === 'string');
     for (const a of s.customApis) {
@@ -401,6 +416,19 @@ function getSettings() {
         delete s.noMention;
     }
     if (!['all', 'char', 'user', 'none'].includes(s.mentionScope)) s.mentionScope = 'all';
+    if (Object.hasOwn(s, 'metaNoNegative')) {   // before 1.47: one switch for 불호 반응 금지
+        if (s.metaNoNegative === true) s.metaDislike = 'none';
+        delete s.metaNoNegative;
+    }
+    if (!['auto', 'include', 'none'].includes(s.metaDislike)) s.metaDislike = 'auto';
+    if (Object.hasOwn(s, 'extraInstruction')) {   // before 1.45: one 추가 지시 for both modes — it goes on in each
+        const old = String(s.extraInstruction ?? '');
+        if (old.trim()) {
+            if (!String(s.extraMeta ?? '').trim()) s.extraMeta = old;
+            if (!String(s.extraWorld ?? '').trim()) s.extraWorld = old;
+        }
+        delete s.extraInstruction;
+    }
     if (!s.topicRenames || typeof s.topicRenames !== 'object' || Array.isArray(s.topicRenames)) s.topicRenames = {};
     for (const k of Object.keys(s.topicRenames)) {
         const v = s.topicRenames[k];
@@ -424,8 +452,18 @@ function saveSettings() {
 }
 
 function getPrompt(key) {
+    const saved = appliedPromptSave(key);   // a saved prompt put in this item's place
+    if (saved && saved.text.trim()) return saved.text;
     const custom = getSettings().prompts?.[key];
     return (typeof custom === 'string' && custom.trim()) ? custom : DEFAULT_PROMPTS[key];
+}
+
+/** The 따로 저장한 프롬프트 used instead of an item (null: the item itself). */
+function appliedPromptSave(key) {
+    const s = getSettings();
+    const id = s.promptUse?.[key];
+    if (!id) return null;
+    return s.promptSaves.find(x => x && x.id === id && x.key === key && typeof x.text === 'string') ?? null;
 }
 
 function fillTpl(template, vars) {
@@ -473,7 +511,7 @@ const unsavedStores = new Map();
 const LOCAL_KEY = (storeId) => `stcm_unsaved_${storeId}`;
 function keepLocalCopy(storeId, feeds, chat) {
     try {
-        const json = JSON.stringify({ storeId, chat, savedAt: Date.now(), feeds });
+        const json = JSON.stringify({ storeId, chat, savedAt: Date.now(), rev: fileRevs.get(storeId), feeds });   // rev: the server copy it came from
         if (json.length > 4_500_000) throw new Error('too big');
         localStorage.setItem(LOCAL_KEY(storeId), json);
         return true;
@@ -530,25 +568,53 @@ function retrySave() {
     if (feedState.ready && feedState.storeId && feedState.timer) {
         clearTimeout(feedState.timer);
         feedState.timer = null;
-        queueWrite(feedState.storeId, feedState.feeds, feedState.chatId ?? '');
+        queueWrite(feedState.storeId, feedState.feeds, feedState.chatId ?? '', feedState.scope);
     }
     for (const [storeId, u] of [...unsavedStores]) {
         if (storeId === feedState.storeId && feedState.ready) {
-            if (!feedState.timer) queueWrite(storeId, feedState.feeds, feedState.chatId ?? '');   // the copy loaded now is the newest
+            if (!feedState.timer) queueWrite(storeId, feedState.feeds, feedState.chatId ?? '', feedState.scope);   // the copy loaded now is the newest
         } else {
-            queueWrite(storeId, u.feeds, u.chat);
+            queueWrite(storeId, u.feeds, u.chat, u.scope);
         }
     }
 }
 
+/** Which chat the feeds belong to: its integrity id; without one, the chat's file name together with its character
+ *  (avatar file) or group, since chat file names repeat across characters. */
 function chatOwnerKey() {
     const c = ctx();
     const integrity = c.chatMetadata?.integrity;
-    return integrity ? `i:${integrity}` : `c:${c.getCurrentChatId?.() ?? ''}`;
+    if (integrity) return `i:${integrity}`;
+    const owner = chatScope();
+    return `c:${owner ? `${owner}/` : ''}${c.getCurrentChatId?.() ?? ''}`;
+}
+
+/** The character (avatar file) or group the open chat belongs to. */
+function chatScope() {
+    const c = ctx();
+    if (c.groupId) return `g:${c.groupId}`;
+    const file = c.characters?.[c.characterId]?.avatar;
+    return file ? `a:${file}` : '';
 }
 
 function fileNameFor(storeId) {
     return `${FILE_PREFIX}${storeId}.json`;
+}
+
+/** The file a chat's first feeds go into: the same name in every tab, so two tabs making the first feeds of one chat
+ *  meet in one file (and the save asks, as for any change made elsewhere) instead of each making its own file and
+ *  the chat ending up linked to only one of them. */
+function chatStoreId(key) {
+    const plain = /^i:([A-Za-z0-9-]{8,64})$/.exec(key)?.[1];   // the chat's integrity id
+    if (plain) return `chat-${plain}`;
+    let h1 = 0x811c9dc5, h2 = 0x9747b28c;
+    for (let i = 0; i < key.length; i++) {
+        const ch = key.charCodeAt(i);
+        h1 = Math.imul(h1 ^ ch, 0x01000193);
+        h2 = Math.imul(h2 ^ ch, 0x5bd1e995);
+        h2 ^= h2 >>> 15;
+    }
+    return `chat-${(h1 >>> 0).toString(16).padStart(8, '0')}${(h2 >>> 0).toString(16).padStart(8, '0')}`;
 }
 
 function newStoreId() {
@@ -563,8 +629,52 @@ function toBase64(str) {
     return btoa(bin);
 }
 
-async function uploadStore(storeId, feeds) {
-    const json = JSON.stringify({ version: 1, storeId, savedAt: Date.now(), feeds });
+/** Each feed file's revision as this tab last read or wrote it ('' = a file from an older version, null = no file
+ *  yet). Every save writes a new revision at the very start of the file, so a short read tells whether another tab
+ *  or device saved in between — then the file is not overwritten without asking. */
+const fileRevs = new Map();
+const TAB_ID = randomId(6);
+let revSeq = 0;
+function newRev() { return `${TAB_ID}${Date.now().toString(36)}${(++revSeq).toString(36)}`; }
+
+/** Whether the feed file is on the server (asked without a 404 showing in the console). null: couldn't tell. */
+async function fileExists(storeId) {
+    const url = `user/files/${fileNameFor(storeId)}`;
+    try {
+        const res = await fetch('/api/files/verify', { method: 'POST', headers: ctx().getRequestHeaders(), body: JSON.stringify({ urls: [url] }) });
+        if (!res.ok) return null;
+        const v = (await res.json())?.[url];
+        return typeof v === 'boolean' ? v : null;
+    } catch {
+        return null;
+    }
+}
+
+/** The revision of the file on the server now (only its first bytes are read). null: there is no file. */
+async function serverRev(storeId) {
+    const res = await fetch(`/user/files/${fileNameFor(storeId)}`, { headers: { Range: 'bytes=0-511' }, cache: 'no-store' });
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`파일 확인 실패 (${res.status})`);
+    let head = '';
+    const reader = res.body?.getReader?.();
+    if (reader) {
+        const dec = new TextDecoder();
+        while (head.length < 512) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            head += dec.decode(value, { stream: true });
+        }
+        reader.cancel().catch(() => { /* enough read */ });
+    } else {
+        head = (await res.text()).slice(0, 512);
+    }
+    return revIn(head);
+}
+/** The revision at the start of a feed file's text ('' if there is none there: written by an older version). */
+function revIn(text) { return /^\s*\{\s*"rev"\s*:\s*"([^"]*)"/.exec(text)?.[1] ?? ''; }
+
+async function uploadStore(storeId, feeds, rev) {
+    const json = JSON.stringify({ rev, version: 1, storeId, savedAt: Date.now(), feeds });   // rev first: serverRev reads only the start
     const res = await fetch('/api/files/upload', {
         method: 'POST',
         headers: ctx().getRequestHeaders(),
@@ -576,10 +686,14 @@ async function uploadStore(storeId, feeds) {
 
 async function downloadStore(storeId) {
     const res = await fetch(`/user/files/${fileNameFor(storeId)}`, { cache: 'no-store' });
-    if (res.status === 404) return null;
+    if (res.status === 404) return { feeds: null, rev: null };
     if (!res.ok) throw new Error(`파일 읽기 실패 (${res.status})`);
-    const data = await res.json();
-    return Array.isArray(data?.feeds) ? data.feeds : [];
+    const text = await res.text();
+    const data = JSON.parse(text);
+    // without its list of feeds the file is damaged (or not a feed file): never taken for "no feeds", which would be
+    // saved over it — it is an error like an unreadable file
+    if (!Array.isArray(data?.feeds)) throw new Error('피드 파일 형식이 올바르지 않아요');
+    return { feeds: data.feeds, rev: revIn(text) };   // rev: read like serverRev reads it
 }
 
 async function deleteStoreFile(storeId) {
@@ -598,9 +712,13 @@ function storeIndex() {
     return s.stores;
 }
 
+/** patch.scope: the character / group of the chat (정리 looks the chat up there: chat names repeat across characters).
+ *  Always the one of the chat the feeds were loaded for, never whatever is open by the time a save finishes. */
 function indexStore(storeId, patch) {
     const idx = storeIndex();
-    idx[storeId] = { ...(idx[storeId] ?? {}), ...patch, updated: Date.now() };
+    const e = { ...(idx[storeId] ?? {}), ...patch, updated: Date.now() };
+    if (!e.scope) delete e.scope;
+    idx[storeId] = e;
     saveSettings();
 }
 
@@ -611,33 +729,40 @@ function scheduleFeedWrite() {
         if (!feedState.feeds.length) return;
         // first feed in this chat: create its file and remember it in the chat
         const st = getChatStore();
-        st.storeId = newStoreId();
         st.storeOwner = chatOwnerKey();
+        st.storeId = chatStoreId(st.storeOwner);
+        if (st.storeOwner.startsWith('c:')) st.storeOwn = true;   // made for this chat (see split in the loader)
         feedState.storeId = st.storeId;
-        indexStore(st.storeId, { chat: ctx().getCurrentChatId?.() ?? '', owner: st.storeOwner });
-        ctx().saveMetadata();
+        if (!fileRevs.has(st.storeId)) fileRevs.set(st.storeId, null);   // no file yet: if another tab made it meanwhile, the save asks
+        indexStore(st.storeId, { chat: feedState.chatId ?? '', owner: st.storeOwner, scope: feedState.scope });
+        linkPending.add(st.storeId);
+        ctx().saveMetadata();   // SillyTavern doesn't report a failed save: saved again once the file is up (and found again by the index on the next open)
     }
     clearTimeout(feedState.timer);
     const storeId = feedState.storeId;
     const feeds = feedState.feeds;
     const chat = feedState.chatId ?? '';   // the chat these feeds belong to, even if another is open when it runs
-    if (unsavedStores.has(storeId)) unsavedStores.set(storeId, { feeds, chat });   // the copy to keep is the newest one
-    feedState.timer = setTimeout(() => { feedState.timer = null; queueWrite(storeId, feeds, chat); }, 700);
+    const scope = feedState.scope ?? '';
+    if (unsavedStores.has(storeId)) unsavedStores.set(storeId, { feeds, chat, scope });   // the copy to keep is the newest one
+    feedState.timer = setTimeout(() => { feedState.timer = null; queueWrite(storeId, feeds, chat, scope); }, 700);
     setSaveState('pending');
 }
 
-/** Upload one store file (one at a time). Resolves true when it is on the server (or already was).
+/** Upload one store file (one at a time). Resolves true when it is on the server (or already was), 'server' when the
+ *  copy another tab / device saved there was chosen over this one, false when it isn't saved.
  *  Only the newest request per file is sent: an older one still waiting in line is skipped, so a stale copy can
  *  never overwrite newer content. */
 const latestWrite = new Map();   // storeId → number of the newest request
+const linkPending = new Set();   // new files whose id the chat file may not have yet
 let writeSeq = 0;
-function queueWrite(storeId, feeds, chat = feedState.chatId ?? '') {
+function queueWrite(storeId, feeds, chat = feedState.chatId ?? '', scope = feedState.scope ?? '') {
     const seq = ++writeSeq;
     latestWrite.set(storeId, seq);
     const job = feedState.writing.then(async () => {
         if (latestWrite.get(storeId) !== seq) return true;   // a newer request for this file follows
         const json = JSON.stringify(feeds);
         const done = () => {   // this file is on the server now
+            if (linkPending.delete(storeId) && storeId === feedState.storeId) ctx().saveMetadata();
             unsavedStores.delete(storeId);
             dropLocalCopy(storeId);
             const wasError = feedState.error;
@@ -655,35 +780,117 @@ function queueWrite(storeId, feeds, chat = feedState.chatId ?? '') {
             else if (!feedState.timer && !feedState.saving) setSaveState('idle');
             return true;
         }
-        feedState.saving = true;
-        setSaveState('saving');
-        try {
-            const size = await uploadStore(storeId, feeds);
-            if (storeId === feedState.storeId) feedState.lastWritten = json;
-            indexStore(storeId, { size, chat });
-            done();
-            return true;
-        } catch (e) {
-            console.error(`[${MODULE}] failed to save feed file`, e);
+        // keep this copy (in memory for every chat, and in this browser) until the server has it
+        const keepUnsaved = (err, retry = true) => {
+            if (err) console.error(`[${MODULE}] failed to save feed file`, err);
             const firstFail = !unsavedStores.has(storeId);
-            unsavedStores.set(storeId, { feeds, chat });   // keep this copy even if the chat is left
-            const local = keepLocalCopy(storeId, feeds, chat);   // …and in this browser, even if the page is closed
-            if (!feedState.error) {
+            unsavedStores.set(storeId, { feeds, chat, scope });
+            const local = keepLocalCopy(storeId, feeds, chat);
+            if (err && !feedState.error) {
                 toastr.error(`커뮤니티 피드를 서버에 저장하지 못했어요. 잠시 뒤 다시 시도해요.${local ? ' (이 브라우저에 임시로 저장해 뒀어요)' : ' 피드가 커서 브라우저 임시 저장도 못 했어요. 페이지를 닫지 말아 주세요.'}`, '커뮤니티');
             } else if (firstFail && !local) {
                 toastr.warning('이 피드는 커서 브라우저 임시 저장을 못 했어요. 저장될 때까지 페이지를 닫지 말아 주세요.', '커뮤니티');
             }
             feedState.error = true;
             setSaveState('error');
-            clearTimeout(feedState.retryTimer);
-            feedState.retryTimer = setTimeout(retrySave, 20000);
+            if (retry) {
+                clearTimeout(feedState.retryTimer);
+                feedState.retryTimer = setTimeout(retrySave, 20000);
+            }
             return false;
+        };
+        // the file changed on the server since this tab read / wrote it: another tab or device saved in between
+        const known = fileRevs.get(storeId);   // undefined: this tab never read it (a file it is making)
+        if (known !== undefined) {
+            let now;
+            try {
+                now = known === null && (await fileExists(storeId)) === false ? null : await serverRev(storeId);
+            } catch (e) {
+                return keepUnsaved(e);   // can't tell: don't risk overwriting
+            }
+            if (now !== known) {
+                const choice = await askSaveConflict(storeId, chat);
+                if (choice === 'server') { useServerCopy(storeId, now); return 'server'; }   // not this copy: the caller may need to read it
+                if (choice !== 'mine') return keepUnsaved(null, false);   // not decided: asked again on the next save / 다시 시도
+            }
+        }
+        feedState.saving = true;
+        setSaveState('saving');
+        const rev = newRev();
+        try {
+            const size = await uploadStore(storeId, feeds, rev);
+            fileRevs.set(storeId, rev);   // the server has this tab's copy now
+            if (storeId === feedState.storeId) feedState.lastWritten = json;
+            indexStore(storeId, { size, chat, scope });
+            done();
+        } catch (e) {
+            return keepUnsaved(e);
         } finally {
             feedState.saving = false;
         }
+        watchKept(storeId, rev, seq, feeds, chat, scope);
+        return true;
     });
     feedState.writing = job.then(() => undefined);
     return job;
+}
+
+/** Two tabs that both checked before either saved both pass the check; the one saving second overwrites the first
+ *  (the server can't check and save in one step). So look at the file again a little after each save: if this
+ *  tab's copy is gone, save it again — that save sees the change and asks which to keep. */
+const KEEP_CHECKS = [2000, 10000];   // ms after the save
+function watchKept(storeId, rev, seq, feeds, chat, scope, step = 0) {
+    if (step >= KEEP_CHECKS.length) return;
+    const moved = () => fileRevs.get(storeId) !== rev || latestWrite.get(storeId) !== seq;   // saved / read again since: that checks
+    setTimeout(async () => {
+        if (moved()) return;
+        let now = rev;
+        try { now = await serverRev(storeId); } catch { /* can't tell now: look again / checked before the next save */ }
+        if (moved()) return;
+        if (now === rev) { watchKept(storeId, rev, seq, feeds, chat, scope, step + 1); return; }
+        const open = storeId === feedState.storeId && feedState.ready;
+        if (open) feedState.lastWritten = '';   // the server doesn't have it any more
+        queueWrite(storeId, open ? feedState.feeds : feeds, open ? (feedState.chatId ?? '') : chat, open ? feedState.scope : scope);
+    }, KEEP_CHECKS[step] - (KEEP_CHECKS[step - 1] ?? 0));
+}
+
+/** Another tab / device saved these feeds since this tab read them: keep which? */
+async function askSaveConflict(storeId, chat) {
+    const { Popup, POPUP_RESULT } = ctx();
+    const open = storeId === feedState.storeId || (!feedState.ready && chat === feedState.chatId);   // or the chat being opened
+    const which = open ? '이 채팅의' : `다른 채팅(${chat || '이름 모름'})의`;
+    const text = `${esc(which)} 커뮤니티 피드가 다른 탭이나 기기에서 먼저 저장됐어요. 이대로 저장하면 그쪽에서 바뀐 내용이 사라져요.<br><b>서버 내용 불러오기</b>: ${open ? '다른 곳에서 저장한 내용을 열어요. 이 탭에서 그 뒤에 바꾼 내용은 사라져요.' : '다른 곳에서 저장한 내용을 그대로 두고, 이 탭에서 저장 못 한 내용은 버려요.'}<br><b>이 탭 내용으로 저장</b>: 이 탭의 내용으로 덮어써요. 다른 곳에서 바꾼 내용은 사라져요.`;
+    if (!Popup?.show?.confirm) return confirm(`${which} 커뮤니티 피드가 다른 탭이나 기기에서 먼저 저장됐어요.\n확인: 서버 내용 불러오기 (이 탭에서 바꾼 내용은 사라져요)\n취소: 이 탭 내용으로 저장 (다른 곳에서 바꾼 내용은 사라져요)`) ? 'server' : 'mine';
+    const r = await Popup.show.confirm('다른 곳에서 먼저 저장했어요', text, { okButton: '서버 내용 불러오기', cancelButton: '이 탭 내용으로 저장' });
+    if (r === POPUP_RESULT.AFFIRMATIVE) return 'server';
+    if (r === POPUP_RESULT.NEGATIVE) return 'mine';
+    toastr.warning('저장을 미뤘어요. 위쪽 "저장 실패 · 다시 시도"를 누르거나 다음에 저장할 때 다시 물어봐요.', '커뮤니티');
+    return null;
+}
+
+/** Keep the server's copy (the other tab's / device's): this tab's unsaved copy goes; the open chat reloads. */
+function useServerCopy(storeId, rev) {
+    unsavedStores.delete(storeId);
+    dropLocalCopy(storeId);
+    fileRevs.set(storeId, rev);
+    if (storeId === feedState.storeId) { setTimeout(() => reloadFromServer(storeId), 0); return; }   // after this write job
+    feedState.error = unsavedStores.size > 0;
+    if (!feedState.timer) setSaveState(feedState.error ? 'error' : 'idle');
+}
+
+/** Open the server's copy of this chat's feeds (the other tab's / device's), dropping this tab's newer changes. */
+async function reloadFromServer(storeId) {
+    feedState.error = unsavedStores.size > 0;
+    if (feedState.storeId !== storeId) return;
+    clearTimeout(feedState.timer);
+    feedState.timer = null;
+    pickMode = null;      // ticks / an open edit point at the old objects
+    editTarget = null;
+    feedState.chatId = null;
+    await ensureFeedsReady();
+    if (isOpen() && view === 'feed') showFeed(getFeed(currentFeedId) ? currentFeedId : null, { keepScroll: true });
+    refreshInjection();
+    toastr.info('다른 곳에서 저장한 내용을 불러왔어요.', '커뮤니티');
 }
 
 /** Write any pending change right away (before switching chats). */
@@ -691,7 +898,7 @@ async function flushFeedWrite() {
     if (feedState.timer) {
         clearTimeout(feedState.timer);
         feedState.timer = null;
-        if (feedState.ready && feedState.storeId) await queueWrite(feedState.storeId, feedState.feeds, feedState.chatId ?? '');
+        if (feedState.ready && feedState.storeId) await queueWrite(feedState.storeId, feedState.feeds, feedState.chatId ?? '', feedState.scope);
     }
     // a failed save stays in unsavedStores and keeps being retried, whichever chat is open
     await feedState.writing;
@@ -763,23 +970,44 @@ function stampLegacy(feeds, chatLen) {
     return n;
 }
 
+/** A chat without a file id whose file exists all the same (its id didn't reach the chat file): the newest file the
+ *  store index made for this chat. */
+function lostStoreFor(key) {
+    let best = null;
+    for (const [id, e] of Object.entries(storeIndex())) {
+        // by the chat's key only: a chat name alone may be another character's chat of the same name
+        if (!e || e.deletedAt || e.owner !== key) continue;
+        if (!best || (Number(e.updated) || 0) > (Number(best.e.updated) || 0)) best = { id, e };
+    }
+    return best?.id ?? null;
+}
+
 /** Load (or migrate / fork) the feeds of the chat that is open now. */
 function loadFeedsForCurrentChat() {
     const run = (async () => {
         feedState.ready = false;
-        feedState.gen++;
+        const gen = ++feedState.gen;
+        // a newer load (another chat, or this same chat again) started meanwhile: this one's result is out of date
+        const stale = () => feedState.gen !== gen;
+        // read a feed file; only a load that is still current notes what the server's file looked like
+        const read = async (id) => {
+            const got = await downloadStore(id);
+            if (!stale()) fileRevs.set(id, got.rev);
+            return got.feeds;
+        };
         feedState.error = unsavedStores.size > 0;
         setSaveState(feedState.error ? 'error' : 'idle');
         feedState.feeds = [];
         feedState.storeId = null;
         feedState.lastWritten = '';
-        if (!hasChat()) { feedState.key = null; feedState.chatId = null; return; }
+        if (!hasChat()) { feedState.key = null; feedState.chatId = null; feedState.scope = ''; return; }
 
         const c = ctx();
         const key = chatOwnerKey();
         const chatId = c.getCurrentChatId();
         feedState.key = key;
         feedState.chatId = chatId;
+        feedState.scope = chatScope();   // this chat's character / group, kept with its saves
         const st = getChatStore();
         const chatLen = c.chat?.length ?? 0;
         let feeds = [];
@@ -787,6 +1015,11 @@ function loadFeedsForCurrentChat() {
 
         const legacy = Object.getOwnPropertyDescriptor(st, 'feeds');
         const isLegacy = !!(legacy && legacy.enumerable && Array.isArray(legacy.value));
+        // a branch that already has its own file, but the chat still points at the parent's (that save failed): use its own
+        if (!isLegacy && st.storeId && st.storeOwner && st.storeOwner !== key) {
+            const own = lostStoreFor(key);
+            if (own && own !== st.storeId) { st.storeId = own; st.storeOwner = key; metaChanged = true; }
+        }
         const before = { storeId: st.storeId, storeOwner: st.storeOwner, pins: st.pins };   // put back if the copy fails
         if (isLegacy) {
             // v1.5 and older kept feeds inside the chat file → move them out (removed only once the file is saved)
@@ -803,39 +1036,100 @@ function loadFeedsForCurrentChat() {
             const restore = Popup?.show?.confirm
                 ? (await Popup.show.confirm('저장 못 한 커뮤니티 피드', `${esc(when)}에 서버에 저장하지 못한 이 채팅의 커뮤니티 피드가 이 브라우저에 남아 있어요.<br><b>확인</b>: 그 내용으로 되살려 서버에 저장해요.<br><b>취소</b>: 버리고 서버에 있는 내용을 열어요.`)) === POPUP_RESULT.AFFIRMATIVE
                 : confirm('서버에 저장하지 못한 커뮤니티 피드가 이 브라우저에 남아 있어요. 되살릴까요?');
-            if (feedState.chatId !== chatId) return;
+            if (stale()) return;
             if (restore) {
                 feeds = local.feeds;
-                unsavedStores.set(st.storeId, { feeds, chat: chatId });   // saved below like any failed copy
+                if (local.rev !== undefined) fileRevs.set(st.storeId, local.rev);   // the server copy it came from: a newer one there is asked about
+                unsavedStores.set(st.storeId, { feeds, chat: chatId, scope: feedState.scope });   // saved below like any failed copy
             } else {
                 dropLocalCopy(st.storeId);
                 try {
-                    feeds = (await downloadStore(st.storeId)) ?? [];
+                    feeds = (await read(st.storeId)) ?? [];
                 } catch (e) {
                     console.error(`[${MODULE}] failed to load feed file`, e);
                     toastr.error('커뮤니티 피드 파일을 불러오지 못했어요.', '커뮤니티');
-                    if (feedState.chatId === chatId) feedState.chatId = null;
+                    if (!stale()) feedState.chatId = null;
                     return;
                 }
             }
         } else if (st.storeId) {
             try {
-                feeds = (await downloadStore(st.storeId)) ?? [];
+                feeds = (await read(st.storeId)) ?? [];
             } catch (e) {
                 console.error(`[${MODULE}] failed to load feed file`, e);
                 toastr.error('커뮤니티 피드 파일을 불러오지 못했어요.', '커뮤니티');
-                if (feedState.chatId === chatId) feedState.chatId = null;   // next ensureFeedsReady() retries
+                if (!stale()) feedState.chatId = null;   // next ensureFeedsReady() retries
                 return;   // stay not-ready so nothing overwrites the file
             }
+        } else {
+            // the chat never got its file's id saved (that save failed after the file was written, or a chat save from
+            // another tab that didn't have it came later): find the file again, in the index or by the chat's own file name
+            let lost = lostStoreFor(key);
+            if (!lost) {
+                const own = chatStoreId(key);
+                if (!storeIndex()[own]?.deletedAt && (await fileExists(own))) lost = own;
+            }
+            if (lost && !stale()) {
+                try {
+                    const got = await read(lost);
+                    if (got && !stale()) { feeds = got; st.storeId = lost; st.storeOwner = key; metaChanged = true; }
+                } catch (e) {
+                    console.error(`[${MODULE}] failed to load feed file`, e);
+                    toastr.error('커뮤니티 피드 파일을 불러오지 못했어요.', '커뮤니티');
+                    if (!stale()) feedState.chatId = null;
+                    return;
+                }
+            }
         }
-        if (feedState.chatId !== chatId) return;   // chat switched meanwhile
+        if (stale()) return;   // chat switched meanwhile, or opened again by a newer load
 
-        // Owner recorded by chat id (no integrity at the time) counts as the same chat
-        const sameOwner = st.storeOwner === key || st.storeOwner === `c:${chatId}`;
-        const forked = !!(st.storeId && st.storeOwner && !sameOwner);
-        if (sameOwner && st.storeOwner !== key) { st.storeOwner = key; metaChanged = true; }
+        // A chat without an integrity id was told apart by its file name alone up to 1.47.4 (and 1.47.5–1.47.6 kept such
+        // a link as it was), so chats of different characters with the same name may share one file. Such a chat
+        // moves to a copy of its own, once (storeOwn marks a file made for it); the shared file stays as it is.
+        let split = !!(st.storeId && !isLegacy && st.storeOwner
+            && ((st.storeOwner === `c:${chatId}` && key !== st.storeOwner) || (key.startsWith('c:') && !st.storeOwn)));
+        const sameOwner = st.storeOwner === key;
+        const forked = !!(st.storeId && st.storeOwner && !sameOwner && !split);
         let pinsForked = null;
-        if (forked) {
+        // A copy (branch, old feeds moved out of the chat file, split) goes to the chat's own file, whose name is the
+        // same in every tab: two tabs moving the same chat meet in one file. If it is there already (another tab moved
+        // it, or this chat's link to it wasn't saved), that file is used instead of making the copy again.
+        const target = forked || split || isLegacy ? chatStoreId(key) : null;
+        if (split && target === st.storeId) {   // the file already is this chat's own (made for it by 1.47.5–1.47.6)
+            split = false;
+            st.storeOwn = true;
+            metaChanged = true;
+        }
+        // use the chat's own file as it is on the server (read and checked): only then do the old data and link go
+        const adopt = (list, id) => {
+            feeds = list;
+            if (isLegacy) delete st.feeds;
+            if (forked) {
+                const ids = new Set(feeds.map(f => f.id));
+                const lens = new Map(feeds.map(f => [f.id, f.data.posts.length]));
+                st.pins = (st.pins ?? []).filter(p => ids.has(p.feedId) && p.postIdx < lens.get(p.feedId));
+            }
+            st.storeId = id;
+            st.storeOwner = key;
+            if (key.startsWith('c:')) st.storeOwn = true;
+            metaChanged = true;
+        };
+        const failOpen = (e) => {   // stay not-ready: nothing removed, the next open tries again
+            console.error(`[${MODULE}] failed to load feed file`, e);
+            toastr.error('커뮤니티 피드 파일을 불러오지 못했어요.', '커뮤니티');
+            if (!stale()) feedState.chatId = null;
+        };
+        let adopted = false;
+        if ((forked || split || isLegacy) && target !== st.storeId && (await fileExists(target)) === true) {
+            if (stale()) return;
+            let list;
+            try { list = await read(target); } catch (e) { failOpen(e); return; }
+            if (stale()) return;
+            if (list) { adopt(list, target); adopted = true; }   // null: gone again since — the copy is made below
+        }
+        if (stale()) return;
+        if (split && !adopted) feeds = structuredClone(feeds);   // everything as it was, in a file of its own
+        if (forked && !adopted) {
             // Branch / checkpoint: keep only what existed up to the branch point.
             // Old comments without a time stamp may be from after it: ask whether to keep them.
             let dropUnknown = false;
@@ -844,7 +1138,7 @@ function loadFeedsForCurrentChat() {
             if (unknown && Popup?.show?.confirm) {
                 dropUnknown = (await Popup.show.confirm('브랜치로 커뮤니티 피드 복사',
                     `언제 달렸는지 기록이 없는 예전 댓글이 ${unknown}개 있어요. 갈라진 시점 이후에 달린 것일 수도 있어요.<br><b>확인</b>을 누르면 빼고 복사하고, <b>취소</b>를 누르면 그대로 둬요.<br><small>(새 버전에서 달린 댓글은 시점에 맞게 알아서 빠져요.)</small>`)) === POPUP_RESULT.AFFIRMATIVE;
-                if (feedState.chatId !== chatId) return;
+                if (stale()) return;
             }
             // its own deep copy: the parent's data (maybe a not-yet-saved copy still being retried) stays untouched
             feeds = trimToBranchPoint(structuredClone(feeds), chatLen, dropUnknown);
@@ -852,30 +1146,43 @@ function loadFeedsForCurrentChat() {
             const lens = new Map(feeds.map(f => [f.id, f.data.posts.length]));
             pinsForked = (st.pins ?? []).filter(p => ids.has(p.feedId) && p.postIdx < lens.get(p.feedId));
         }
-        const needNewFile = forked || isLegacy || (!st.storeId && feeds.length > 0);
+        const needNewFile = !adopted && (forked || split || isLegacy || (!st.storeId && feeds.length > 0));
         if (needNewFile) {
             // write the copy first; the chat only switches to it once the server has it
-            const newId = newStoreId();
-            const ok = await queueWrite(newId, feeds, chatId);
-            if (feedState.chatId !== chatId) return;
-            if (!ok) {
+            const newId = target ?? newStoreId();
+            if (!fileRevs.has(newId)) fileRevs.set(newId, null);   // no file yet: if another tab makes it meanwhile, the save asks
+            const ok = await queueWrite(newId, feeds, chatId, feedState.scope);
+            if (stale()) return;
+            if (ok === 'server') {
+                // another tab made this file first and its copy was chosen: open that one, not the copy made here
+                let list = null;
+                try { list = await read(newId); } catch (e) { failOpen(e); return; }
+                if (stale()) return;
+                if (!list) { failOpen(new Error('파일이 없어요')); return; }
+                adopt(list, newId);
+            } else if (!ok) {
                 st.storeId = before.storeId;
                 st.storeOwner = before.storeOwner;
                 st.pins = before.pins;
                 feedState.chatId = null;   // stay not-ready: nothing is lost, the next open tries again
                 toastr.error('커뮤니티 피드를 옮겨 저장하지 못해서 지금은 열지 않았어요. 원래 데이터는 그대로 있어요. 잠시 뒤 다시 열어 주세요.', '커뮤니티');
                 return;
+            } else {
+                if (isLegacy) delete st.feeds;
+                if (pinsForked) st.pins = pinsForked;
+                st.storeId = newId;
+                st.storeOwner = key;
+                if (key.startsWith('c:')) st.storeOwn = true;
+                metaChanged = true;
             }
-            if (isLegacy) delete st.feeds;
-            if (pinsForked) st.pins = pinsForked;
-            st.storeId = newId;
-            st.storeOwner = key;
-            metaChanged = true;
         }
         if (st.storeId && !st.storeOwner) { st.storeOwner = key; metaChanged = true; }
 
         feedState.storeId = st.storeId ?? null;   // null: chat without feeds yet, file made on first save
         feedState.feeds = feeds;
+        const known = st.storeId ? storeIndex()[st.storeId] : null;
+        // an entry from an older version (or one noted wrongly by one): note where the chat is
+        if (known && !metaChanged && (known.chat !== chatId || (feedState.scope && known.scope !== feedState.scope))) indexStore(st.storeId, { chat: chatId ?? '', scope: feedState.scope });
         attachFeeds(st);
         feedState.ready = true;
         // a copy whose save failed is not on the server: lastWritten stays empty so the next save sends it
@@ -884,7 +1191,7 @@ function loadFeedsForCurrentChat() {
         if (!forked && stampLegacy(feeds, chatLen)) scheduleFeedWrite();
         else if (st.storeId && unsavedStores.get(st.storeId)?.feeds === feeds) scheduleFeedWrite();   // a kept copy: send it
         if (metaChanged) {
-            indexStore(st.storeId, { chat: chatId ?? '', owner: key, from: forked ? 'branch' : undefined });
+            indexStore(st.storeId, { chat: chatId ?? '', owner: key, from: forked ? 'branch' : undefined, scope: feedState.scope });
             await c.saveMetadata();
         }
         if (forked) refreshInjection();
@@ -1124,6 +1431,8 @@ function randomId(len = 8) {
     return out;
 }
 
+const HASHTAG_PLATFORMS = new Set(['twitter', 'reddit', 'threads', 'instagram', 'xiaohongshu']);
+
 /** Escape, then add light platform-specific highlighting. */
 function fmt(text, platform) {
     let html = esc(text);
@@ -1136,7 +1445,8 @@ function fmt(text, platform) {
         html = html.replace(/#([^#\n]{1,40})#/g, '<span class="stcm-tag">#$1#</span>');
         html = html.replace(/\[([^\]\n]{1,6})\]/g, '<span class="stcm-emo">[$1]</span>');
     }
-    if (platform === 'twitter' || platform === 'reddit') {
+    if (platform === 'xiaohongshu') html = html.replace(/\[话题\]#/g, '');   // "#话题[话题]#" as the app writes it → "#话题"
+    if (HASHTAG_PLATFORMS.has(platform)) {
         html = html.replace(/(^|\s)(#[\p{L}\p{N}_]+)/gu, '$1<span class="stcm-tag">$2</span>');
     }
     html = html.replace(/(^|\s)(@[\w.]+)/g, '$1<span class="stcm-tag">$2</span>');
@@ -1161,7 +1471,7 @@ function resolvedTranslation() {
 }
 
 // The language each community is written in by default (Discord / X follow the story)
-const NATIVE_LANG = { naver: 'ko', dcinside: 'ko', tdgall: 'ko', kkangtong: 'ko', blind: 'ko', everytime: 'ko', reddit: 'en', fivech: 'ja', fourchan: 'en', weibo: 'zh', tieba: 'zh' };
+const NATIVE_LANG = { naver: 'ko', dcinside: 'ko', tdgall: 'ko', kkangtong: 'ko', blind: 'ko', everytime: 'ko', reddit: 'en', fivech: 'ja', fourchan: 'en', weibo: 'zh', xiaohongshu: 'zh', tieba: 'zh' };
 const LANG_LABEL = { ko: 'Korean', en: 'English', ja: 'Japanese', zh: 'Chinese' };
 
 function langCode(name) {
@@ -1184,10 +1494,10 @@ function uiLang(platformId, langName) {
 
 // Fixed UI words of the Chinese / Japanese skins when the feed is written in another language
 const UI_WORDS = {
-    ko: { via: '웨이보 앱', bar: ' 티에바', lz: '글쓴이', floor: (n) => `${n}층`, name: '이름:', now: '방금', anon: { fivech: '이름 없음', fourchan: '익명', weibo: '웨이보 유저', tieba: '익명 유저', reddit: 'throwaway' }, over: (n) => `이 스레드는 ${n}을 넘었어요.<br>새 스레드를 세워 주세요.` },
-    en: { via: 'via Weibo app', bar: ' Bar', lz: 'OP', floor: (n) => `#${n}`, name: 'Name:', now: 'just now', anon: { fivech: 'Anonymous', fourchan: 'Anonymous', weibo: 'Weibo user', tieba: 'Anonymous user', reddit: 'throwaway' }, over: (n) => `This thread has passed ${n} posts.<br>Please start a new thread.` },
-    ja: { via: 'Weiboアプリから', bar: 'バー', lz: 'スレ主', floor: (n) => `${n}階`, name: '名前：', now: 'たった今', anon: { fivech: '名無しさん', fourchan: '名無し', weibo: 'Weiboユーザー', tieba: '匿名ユーザー', reddit: 'throwaway' }, over: (n) => `このスレッドは${n}を超えました。<br>新しいスレッドを立ててください。` },
-    zh: { via: '来自 微博客户端', bar: '吧', lz: '楼主', floor: (n) => `${n}楼`, name: '名字：', now: '刚刚', anon: { fivech: '无名氏', fourchan: '匿名', weibo: '微博用户', tieba: '匿名用户', reddit: 'throwaway' }, over: (n) => `本帖已超过${n}楼。<br>请开新帖。` },
+    ko: { via: '웨이보 앱', bar: ' 티에바', lz: '글쓴이', floor: (n) => `${n}층`, name: '이름:', now: '방금', author: '작성자', follow: '팔로우', cmts: (n) => `댓글 ${n}개`, anon: { fivech: '이름 없음', fourchan: '익명', xiaohongshu: '샤오홍슈 유저', weibo: '웨이보 유저', tieba: '익명 유저', reddit: 'throwaway' }, over: (n) => `이 스레드는 ${n}을 넘었어요.<br>새 스레드를 세워 주세요.` },
+    en: { via: 'via Weibo app', bar: ' Bar', lz: 'OP', floor: (n) => `#${n}`, name: 'Name:', now: 'just now', author: 'Author', follow: 'Follow', cmts: (n) => `${n} comments`, anon: { fivech: 'Anonymous', fourchan: 'Anonymous', xiaohongshu: 'RED user', weibo: 'Weibo user', tieba: 'Anonymous user', reddit: 'throwaway' }, over: (n) => `This thread has passed ${n} posts.<br>Please start a new thread.` },
+    ja: { via: 'Weiboアプリから', bar: 'バー', lz: 'スレ主', floor: (n) => `${n}階`, name: '名前：', now: 'たった今', author: '作者', follow: 'フォロー', cmts: (n) => `コメント ${n}件`, anon: { fivech: '名無しさん', fourchan: '名無し', xiaohongshu: '小紅書ユーザー', weibo: 'Weiboユーザー', tieba: '匿名ユーザー', reddit: 'throwaway' }, over: (n) => `このスレッドは${n}を超えました。<br>新しいスレッドを立ててください。` },
+    zh: { via: '来自 微博客户端', bar: '吧', lz: '楼主', floor: (n) => `${n}楼`, name: '名字：', now: '刚刚', author: '作者', follow: '关注', cmts: (n) => `共 ${n} 条评论`, anon: { fivech: '无名氏', fourchan: '匿名', xiaohongshu: '小红薯', weibo: '微博用户', tieba: '匿名用户', reddit: 'throwaway' }, over: (n) => `本帖已超过${n}楼。<br>请开新帖。` },
 };
 
 /** UI words for a feed (or for the current language setting when no feed yet). */
@@ -1402,15 +1712,16 @@ function commonBlocks(mode, platformId, lang = resolvedLanguage(), spaceId = cur
     const vars = baseVars(platformId);
     const npc = npcRule(mode, vars);
     const scene = sceneText(platformId, spaceId);
-    // 작품 반응 모드 · 불호 반응 금지: only positive / neutral reactions in what is generated
-    const positive = mode !== 'world' && getSettings().metaNoNegative ? fillTpl(getPrompt('meta_positive'), vars) : '';
+    // 작품 반응 모드 · 불호 반응: at least one critical voice, none at all, or as the model sees fit
+    const dis = mode === 'world' ? '' : getSettings().metaDislike;
+    const positive = dis === 'include' ? fillTpl(getPrompt('meta_dislike'), vars) : dis === 'none' ? fillTpl(getPrompt('meta_positive'), vars) : '';
     return {
         system: fillTpl(getPrompt('system'), vars),
         task: fillTpl(getPrompt(mode === 'world' ? 'mode_world' : 'mode_meta'), vars) + (npc ? `\n${npc}` : '') + (positive ? `\n${positive}` : ''),
         taskBase: fillTpl(getPrompt(mode === 'world' ? 'mode_world' : 'mode_meta'), vars),   // without the NPC rule (the player writes)
         style: fillTpl(getPrompt(`guide_${platformId}`), vars) + (scene ? `\n\n${scene}` : ''),
         language: languageInstruction(platformId, lang),
-        extra: getSettings().extraInstruction?.trim() || '',
+        extra: String((mode === 'world' ? getSettings().extraWorld : getSettings().extraMeta) ?? '').trim(),   // 추가 지시 of this mode
         vars,
     };
 }
@@ -2505,7 +2816,7 @@ function playerItem(platformId, { as, nick, charName, body, title }, langName = 
     const digits = String(Math.floor(1000 + Math.random() * 9000));
     if (platformId === 'fivech') handle = randomId(8);
     else if (TD_SKINS[platformId]?.codes) handle = randomId(4);
-    else if (platformId === 'twitter') handle = nick?.trim() || as !== 'mob' ? author.replace(/\s+/g, '_') : `user${digits}${randomId(3).toLowerCase()}`;
+    else if (platformId === 'twitter' || USERNAME_ONLY.has(platformId)) handle = nick?.trim() || as !== 'mob' ? author.replace(/\s+/g, '_') : `user${digits}${randomId(3).toLowerCase()}`;
     else if (platformId === 'reddit') handle = nick?.trim() || as !== 'mob' ? author.replace(/\s+/g, '_') : `throwaway_${digits}`;
     const item = { isMe: true, as, author, handle, body, body_tr: '', time: nowLabel(platformId, langName), likes: 0 };
     if (as === 'char') item.charName = charName;
@@ -2517,6 +2828,8 @@ function playerItem(platformId, { as, nick, charName, body, title }, langName = 
 // Nicknames: an empty box gets a community-style name; the same identity keeps its name inside one post
 // ---------------------------------------------------------------------------
 // Communities where everyone is anonymous by design: the platform default (ㅇㅇ, 名無しさん, 익명…) is the right name
+// Threads / Instagram show only a username (the handle; the name when there is none)
+const USERNAME_ONLY = new Set(['threads', 'instagram']);
 const ANON_PLATFORMS = new Set(['dcinside', 'tdgall', 'kkangtong', 'fivech', 'fourchan', 'everytime']);
 const NICK_WORDS = {
     ko: {
@@ -2561,6 +2874,11 @@ function randomNick(platformId, langName) {
             return { author: h, handle: h };
         }
         case 'twitter': return { author: lang === 'en' ? `${cap(pick(en.a))} ${cap(pick(en.n))}` : `${pick(w.a)}${pick(w.n)}`, handle: handleEn() };
+        case 'threads':
+        case 'instagram': {
+            const u = `${pick(en.a)}${pick(['.', '_', ''])}${pick(en.n)}${Math.random() < 0.6 ? digits() : ''}`.toLowerCase();
+            return { author: u, handle: u };
+        }
         case 'discord': return { author: lang === 'en' ? `${pick(en.a)}${pick(en.n)}` : `${pick(w.n)}${Math.random() < 0.5 ? digits() : ''}`, handle: '' };
         default: {
             const sep = lang === 'en' ? '_' : '';
@@ -2661,7 +2979,7 @@ async function resolveNick({ feed, post = null, identity, text = '', item }) {
     }
     got ??= randomNick(pid, lang);
     item.author = got.author;
-    item.handle = got.handle || (pid === 'reddit' || pid === 'twitter' ? got.author.replace(/\s+/g, '_') : item.handle);
+    item.handle = pid === 'xiaohongshu' ? '' : got.handle || (pid === 'reddit' || pid === 'twitter' || USERNAME_ONLY.has(pid) ? got.author.replace(/\s+/g, '_') : item.handle);
 }
 
 async function rememberIdentity(id) {
@@ -3499,7 +3817,14 @@ function mediaRowHtml(type, desc = '', mid = '', n = '') {
         <textarea rows="2" maxlength="1000" placeholder="${video ? '영상 묘사 — 예: 축제 불꽃놀이를 찍은 짧은 영상. 터질 때마다 사람들 환호성' : '사진 묘사 — 예: 축제 야시장 사진. 사람들 사이로 등불이 줄지어 걸려 있음'}">${esc(desc)}</textarea></div>`;
 }
 
-const MEDIA_HINT = '<small class="stcm-cp-mediahint">칸의 <b>본문에 넣기</b>를 누르면 본문 커서 자리에 <code>[[media:번호]]</code>가 들어가고, 그 자리에 사진·영상이 보여요. 넣지 않은 건 글 맨 아래에 나와요.</small>';
+// 인스타그램·샤오홍슈: a post's photos / videos sit above the text, as on the apps (see mediaStrip)
+const PHOTO_FIRST = new Set(['instagram', 'xiaohongshu']);
+
+/** Under the photo / video rows of a write form: what 본문에 넣기 does, and where the rest go on this community. */
+function mediaHint(platformId, isPost = true) {
+    const top = isPost && PHOTO_FIRST.has(platformId);
+    return `<small class="stcm-cp-mediahint">칸의 <b>본문에 넣기</b>를 누르면 본문 커서 자리에 <code>[[media:번호]]</code>가 들어가고, 그 자리에 사진·영상이 보여요. 넣지 않은 건 ${top ? '본문 위에 크게 나와요(여러 장이면 옆으로 넘겨요)' : '글 맨 아래에 나와요'}.</small>`;
+}
 
 /** Add a photo / video row to a write form or comment box. */
 function addMediaRow(root, type, desc = '', mid = '') {
@@ -3895,6 +4220,24 @@ function dcRecBox(feed, i, p) {
     </div>`;
 }
 
+/** Instagram's like line ("좋아요 1,234개") in the feed's language. */
+function igLikes(n, langName) {
+    n = Number(n) || 0;
+    const c = langCode(langName);
+    if (c === 'ja') return `「いいね！」${n.toLocaleString('ja-JP')}件`;
+    if (c === 'zh') return `${num(n, 'zh')} 次赞`;
+    if (c === 'en' || c === 'other') return `${n.toLocaleString('en-US')} like${n === 1 ? '' : 's'}`;
+    return `좋아요 ${n >= 10000 ? num(n, 'ko') : n.toLocaleString('ko-KR')}개`;
+}
+
+/** Instagram / 샤오홍슈: the photos / videos above the text, side by side (swipe), with how many there are. */
+function mediaStrip(o) {
+    const list = unplacedMedia(o, inlineText(o));
+    if (!list.length) return '';
+    const trNow = trOn(o);
+    return `<div class="stcm-strip">${list.length > 1 ? `<span class="n"><i class="fa-regular fa-clone"></i> ${list.length}</span>` : ''}<div class="rail">${list.map(m => mediaItemHtml(m, trNow)).join('')}</div></div>`;
+}
+
 /** Reddit ↑ score ↓ (score = upvotes − downvotes). */
 function redditVote(feed, i, path, o) {
     const score = Math.max(0, (Number(o.likes) || 0) - (Number(o.dislikes) || 0));
@@ -4155,7 +4498,7 @@ function composerSlot(feed, i) {
         ${ident}
         ${target ? `<div class="stcm-cp-target">↳ <b>${esc(target.author)}</b>님에게 ${chat ? '답장' : '답글'} <a class="stcm-link" data-act="reply-cancel">취소</a></div>` : ''}
         <textarea class="stcm-cp-body" rows="3" placeholder="${esc(ph)}">${esc(composer.draft?.body ?? '')}</textarea>
-        ${withMedia ? `<div class="stcm-cp-medialist">${(composer.draft?.media ?? []).map((m, k) => mediaRowHtml(m.type, m.desc, m.mid, k + 1)).join('')}</div>${MEDIA_HINT}` : ''}
+        ${withMedia ? `<div class="stcm-cp-medialist">${(composer.draft?.media ?? []).map((m, k) => mediaRowHtml(m.type, m.desc, m.mid, k + 1)).join('')}</div>${mediaHint(feed.platform, false)}` : ''}
         <div class="stcm-cp-ai">
             <input class="stcm-cp-inst" type="text" maxlength="500" value="${esc(composer.draft?.inst ?? '')}" placeholder="AI에게 지시 (선택) — 비우면 알아서">
             <button data-act="ai-write-comment" title="고른 신분으로 AI가 써 줘요. 칸에 글이 있으면 그걸 다듬어요."><i class="fa-solid fa-wand-magic-sparkles"></i> AI로 쓰기</button>
@@ -4190,7 +4533,8 @@ function isPostOpen(feed, i) {
 function postSummaryHtml(feed, p, i) {
     const pf = feed.platform;
     const n = commentTotal(p);
-    const titled = !!String(p.title ?? '').trim() && pf !== 'twitter';
+    const social = pf === 'twitter' || USERNAME_ONLY.has(pf);   // no titles: the line starts with the name, then the text
+    const titled = !!String(p.title ?? '').trim() && !social;
     const title = titled ? ttlHtml(p) : esc(truncate(stripMediaMarks((trOn(p) && p.body_tr) || p.body), 90));
     let tag = '';
     if (pf === 'naver' || pf === 'blind' || pf === 'everytime') tag = p.tags?.[0] || '';
@@ -4198,17 +4542,17 @@ function postSummaryHtml(feed, p, i) {
     const cnt = pf === 'fivech' ? `(${n + 1})`
         : pf === 'fourchan' ? `R: ${n}`
         : pf === 'reddit' ? `${n} comments`
-        : (pf === 'twitter' || pf === 'weibo') ? `<i class="fa-regular fa-comment"></i> ${n}`
+        : (social || pf === 'weibo' || pf === 'xiaohongshu') ? `<i class="fa-regular fa-comment"></i> ${n}`
         : pf === 'tieba' ? `${n}`
         : `[${n}]`;
     const who = pf === 'reddit' ? `u/${String(p.handle || p.author || 'anon').replace(/^u\//, '')}`
-        : pf === 'twitter' ? `${p.author || ''}` : (p.author || '');
+        : USERNAME_ONLY.has(pf) ? String(p.handle || p.author || '') : (p.author || '');
     const extra = PLATFORMS[pf]?.res || pf === 'tieba' ? '' : (Number(p.likes) ? ` · ♥ ${num(p.likes)}` : '');
     return `<div class="stcm-psum" data-act="post-toggle" data-feed="${esc(feed.id)}" data-idx="${i}" role="button" tabindex="0" aria-expanded="${isPostOpen(feed, i) ? 'true' : 'false'}">
         ${tag ? `<span class="tag">${esc(tag)}</span>` : ''}
-        <span class="tt">${p.isMe ? '<i class="fa-solid fa-pen-nib mine"></i> ' : ''}${!titled && pf === 'twitter' ? `<b>${esc(who)}</b> ` : ''}${title}</span>
+        <span class="tt">${p.isMe ? '<i class="fa-solid fa-pen-nib mine"></i> ' : ''}${!titled && social ? `<b>${esc(who)}</b> ` : ''}${title}</span>
         <span class="cnt">${cnt}</span>
-        <span class="mt">${titled || pf !== 'twitter' ? `${esc(who)}${who ? ' · ' : ''}` : ''}${esc(postTime(feed, i))}${extra}</span>
+        <span class="mt">${titled || !social ? `${esc(who)}${who ? ' · ' : ''}` : ''}${esc(postTime(feed, i))}${extra}</span>
         <i class="fa-solid fa-chevron-down chev"></i>
     </div>`;
 }
@@ -4229,7 +4573,7 @@ function applyFolding(feed, root) {
 function setPostOpen(feedId, idx, open) {
     const key = `${feedId}:${idx}`;
     if (open) openPosts.add(key); else openPosts.delete(key);
-    const art = document.querySelector(`#stcm_feed article.stcm-fold[data-post="${idx}"]`);
+    const art = document.querySelector(`#stcm_feed article.stcm-fold[data-post="${idx}"], #stcm_feed article.stcm-td-post[data-post="${idx}"]`);
     if (!art) return;
     art.classList.toggle('open', open);
     art.querySelector(':scope > .stcm-psum')?.setAttribute('aria-expanded', open ? 'true' : 'false');
@@ -4464,6 +4808,64 @@ const renderers = {
         </div>`;
     },
 
+    threads(feed) {
+        const d = feed.data;
+        const uname = (o) => String(o.handle || o.author || 'user').replace(/^@/, '');
+        // one post / reply: avatar column (with the thread line down to its replies), name, text, ♡ 💬 🔁 ✈
+        const one = (o, i, path, { tm = o.time, line = false, sub = false, replies = 0, links = '', topic = '' } = {}) => `
+            <div class="stcm-th-post${sub ? ' sub' : ''}" data-k="${i}.${path}">
+                <div class="stcm-th-side">${avatar(uname(o))}${line ? '<span class="line"></span>' : ''}</div>
+                <div class="stcm-th-main">
+                    <div class="stcm-th-head"><b>${esc(uname(o))}</b>${meBadge(o)}${topic ? `<span class="topic"><i class="fa-solid fa-chevron-right"></i> ${esc(topic)}</span>` : ''}<span class="tm">${esc(tm)}</span></div>
+                    <div class="stcm-body">${txt(o, 'threads')}</div>${imgBox(o)}
+                    <div class="stcm-th-act">${voteBtn(feed, i, path, o, 'up', `<i class="fa-regular fa-heart"></i>${Number(o.likes) ? ` ${num(o.likes)}` : ''}`, { title: '좋아요' })}<span><i class="fa-regular fa-comment"></i>${replies ? ` ${num(replies)}` : ''}</span><span><i class="fa-solid fa-retweet"></i>${Number(o.shares) ? ` ${num(o.shares)}` : ''}</span><span><i class="fa-regular fa-paper-plane"></i></span></div>
+                    ${links}
+                </div>
+            </div>`;
+        const slot = (i, place) => { const s = slotAt(feed, i, place); return s ? `<div class="stcm-th-slot">${s}</div>` : ''; };
+        return `<div class="stcm-skin stcm-threads">
+            <div class="stcm-th-top"><i class="fa-brands fa-threads"></i> ${esc(d.board || 'Threads')}</div>
+            ${newestFirst(feed, (p, i) => `
+            <article class="stcm-th-thread" data-post="${i}">
+                ${one(p, i, 'op', { tm: postTime(feed, i), replies: commentTotal(p), topic: p.tags?.[0] ?? '' })}
+                ${p.comments.length ? '<div class="stcm-th-sep"></div>' : ''}
+                ${p.comments.map((c, ci) => one(c, i, `${ci}`, { line: c.replies.length > 0, replies: c.replies.length, links: itemLinks(feed, i, ci, null, c) })
+                    + c.replies.map((r, ri) => one(r, i, `${ci}.${ri}`, { sub: true, line: ri < c.replies.length - 1, links: itemLinks(feed, i, ci, ri, r) })).join('')
+                    + slot(i, `c${ci}`)).join('')}
+                <div class="stcm-sx-foot">${postFooter(feed, i)}</div>
+            </article>`).join('')}
+        </div>`;
+    },
+
+    instagram(feed) {
+        const d = feed.data;
+        const uname = (o) => String(o.handle || o.author || 'user').replace(/^@/, '');
+        const likes = (n) => igLikes(n, feedLang(feed));
+        const cm = (o, i, ci, ri) => `
+            <div class="stcm-ig-c${ri == null ? '' : ' reply'}" data-k="${i}.${ci}${ri == null ? '' : `.${ri}`}">
+                ${avatar(uname(o), 'sm')}
+                <div class="m">
+                    <div><b>${esc(uname(o))}</b>${meBadge(o)} <span class="stcm-body">${txt(o, 'instagram')}</span></div>${imgBox(o)}
+                    <div class="ft"><span>${esc(o.time)}</span>${Number(o.likes) ? `<span>${esc(likes(o.likes))}</span>` : ''}${itemLinks(feed, i, ci, ri, o)}</div>
+                </div>
+                ${voteBtn(feed, i, ri == null ? `${ci}` : `${ci}.${ri}`, o, 'up', '<i class="fa-regular fa-heart"></i>', { cls: 'lk', title: '좋아요' })}
+            </div>`;
+        return `<div class="stcm-skin stcm-ig">
+            <div class="stcm-ig-top"><span class="logo">Instagram</span>${d.board ? `<span class="tag">${esc(d.board)}</span>` : ''}</div>
+            ${newestFirst(feed, (p, i) => `
+            <article class="stcm-ig-post" data-post="${i}">
+                <div class="stcm-ig-head">${avatar(uname(p), 'ring')}<b>${esc(uname(p))}</b>${meBadge(p)}<i class="fa-solid fa-ellipsis more"></i></div>
+                ${mediaStrip(p)}
+                <div class="stcm-ig-act">${voteBtn(feed, i, 'op', p, 'up', '<i class="fa-regular fa-heart"></i>', { title: '좋아요' })}<i class="fa-regular fa-comment"></i><i class="fa-regular fa-paper-plane"></i><i class="fa-regular fa-bookmark save"></i></div>
+                <div class="stcm-ig-likes">${esc(likes(p.likes))}</div>
+                <div class="stcm-ig-cap"><b>${esc(uname(p))}</b> <span class="stcm-body">${txt(p, 'instagram')}</span></div>
+                <div class="stcm-ig-time">${esc(postTime(feed, i))}</div>
+                <div class="stcm-ig-comments">${p.comments.map((c, ci) => cm(c, i, ci, null) + c.replies.map((r, ri) => cm(r, i, ci, ri)).join('') + slotAt(feed, i, `c${ci}`)).join('')}</div>
+                <div class="stcm-sx-foot">${postFooter(feed, i)}</div>
+            </article>`).join('')}
+        </div>`;
+    },
+
     fivech(feed) {
         const d = feed.data;
         const w = uiWords('fivech', feed.lang) ?? UI_WORDS.ja;
@@ -4546,6 +4948,40 @@ const renderers = {
                 </div>
                 ${postFooter(feed, i)}
             </article>`).join('')}
+        </div>`;
+    },
+
+    xiaohongshu(feed) {
+        const d = feed.data;
+        const w = uiWords('xiaohongshu', feed.lang) ?? UI_WORDS.zh;
+        const anon = w.anon.xiaohongshu;
+        const where = (o, tm) => `${esc(tm)}${o.handle ? ` <span class="loc">${esc(o.handle)}</span>` : ''}`;   // time + IP location
+        return `<div class="stcm-skin stcm-xhs">
+            <div class="stcm-x-top"><span class="logo">小红书</span>${d.board ? `<span class="topic"># ${esc(d.board)}</span>` : ''}</div>
+            ${newestFirst(feed, (p, i) => {
+                const cm = (o, ci, ri) => `
+                    <div class="stcm-x-c${ri == null ? '' : ' reply'}" data-k="${i}.${ci}${ri == null ? '' : `.${ri}`}">
+                        ${avatar(o.author, 'sm')}
+                        <div class="m">
+                            <div class="nm">${esc(o.author || anon)}${o.author && o.author === p.author ? `<span class="au">${esc(w.author)}</span>` : ''}${meBadge(o)}</div>
+                            <div class="stcm-body">${txt(o, 'xiaohongshu')}</div>${imgBox(o)}
+                            <div class="ft">${where(o, o.time)}${itemLinks(feed, i, ci, ri, o)}</div>
+                        </div>
+                        ${voteBtn(feed, i, ri == null ? `${ci}` : `${ci}.${ri}`, o, 'up', `<i class="fa-regular fa-heart"></i><small>${Number(o.likes) ? num(o.likes, 'zh') : ''}</small>`, { cls: 'lk', title: '赞' })}
+                    </div>`;
+                const n = commentTotal(p);
+                return `<article class="stcm-x-note" data-post="${i}">
+                    <div class="stcm-x-head">${avatar(p.author)}<b>${esc(p.author || anon)}</b>${meBadge(p)}<span class="follow">${esc(w.follow)}</span></div>
+                    ${mediaStrip(p)}
+                    ${p.title ? `<h3>${ttlHtml(p)}</h3>` : ''}
+                    <div class="stcm-body">${txt(p, 'xiaohongshu')}</div>
+                    <div class="stcm-x-date">${where(p, postTime(feed, i))}</div>
+                    <div class="stcm-x-ctitle">${esc(w.cmts(n))}</div>
+                    <div class="stcm-x-comments">${p.comments.map((c, ci) => cm(c, ci, null) + c.replies.map((r, ri) => cm(r, ci, ri)).join('') + slotAt(feed, i, `c${ci}`)).join('')}</div>
+                    <div class="stcm-x-bar">${voteBtn(feed, i, 'op', p, 'up', `<i class="fa-regular fa-heart"></i> ${num(p.likes, 'zh')}`, { title: '赞' })}<span><i class="fa-regular fa-star"></i> ${num(p.shares, 'zh')}</span><span><i class="fa-regular fa-comment"></i> ${num(n, 'zh')}</span></div>
+                    <div class="stcm-sx-foot">${postFooter(feed, i)}</div>
+                </article>`;
+            }).join('')}
         </div>`;
     },
 
@@ -5310,7 +5746,7 @@ function closeMoreMenu() {
     return true;
 }
 
-const PF_COLOR = { naver: '#03c75a', dcinside: '#3b4890', tdgall: '#3d6ea8', kkangtong: '#d98a1c', blind: '#e0352b', everytime: '#c62917', reddit: '#ff4500', twitter: '', fivech: '#b5452f', fourchan: '#117743', weibo: '#e6162d', discord: '#5865f2', tieba: '#3388ff' };
+const PF_COLOR = { naver: '#03c75a', dcinside: '#3b4890', tdgall: '#3d6ea8', kkangtong: '#d98a1c', blind: '#e0352b', everytime: '#c62917', reddit: '#ff4500', twitter: '', threads: '', instagram: '#e1306c', xiaohongshu: '#ff2442', fivech: '#b5452f', fourchan: '#117743', weibo: '#e6162d', discord: '#5865f2', tieba: '#3388ff' };
 /** The one-line picker: "☕ 네이버 카페 › 별의 노래 게임 카페 ▾". */
 function updatePicker() {
     const b = document.getElementById('stcm_btn_pick');
@@ -5709,6 +6145,7 @@ async function onFeedClick(e) {
         const art = el.closest('.stcm-td-post');
         if (openPosts.has(key)) openPosts.delete(key); else openPosts.add(key);
         art?.classList.toggle('open', openPosts.has(key));
+        updateFoldAllButton(getFeed(feedId));
         return;
     }
     if (act === 'td-cat' || act === 'td-filter') {
@@ -6262,7 +6699,7 @@ function renderTopicChips() {
 // ---------------------------------------------------------------------------
 // Community background (per chat) and spaces the user creates (a game cafe, a school gallery…)
 // ---------------------------------------------------------------------------
-const SPACE_UNIT = { naver: '카페', dcinside: '갤러리', tdgall: '갤', kkangtong: '게시판', reddit: '서브레딧', twitter: '커뮤니티', fivech: '板', fourchan: '보드', weibo: '超话', tieba: '吧', discord: '서버', blind: '라운지', everytime: '학교' };
+const SPACE_UNIT = { naver: '카페', dcinside: '갤러리', tdgall: '갤', kkangtong: '게시판', reddit: '서브레딧', twitter: '커뮤니티', threads: '토픽', instagram: '해시태그', xiaohongshu: '话题', fivech: '板', fourchan: '보드', weibo: '超话', tieba: '吧', discord: '서버', blind: '라운지', everytime: '학교' };
 
 function spaceUnit(platformId) { return SPACE_UNIT[platformId] ?? '게시판'; }
 function customSpaces() { return getSettings().customSpaces; }
@@ -6448,7 +6885,7 @@ function showSpaceEditor() {
 }
 
 function spacePlaceholder(pid) {
-    return { naver: '별의 노래 공식 팬카페', dcinside: '별의 노래 갤러리', reddit: 'r/StarSongGame', fivech: 'ゲーム板', fourchan: '/vg/ - Video Game Generals', discord: '별의 노래 길드 서버', blind: '게임업계 라운지', everytime: '한빛대학교', weibo: '星之歌超话', tieba: '星之歌吧', twitter: '별의 노래 유저 모임', tdgall: '별의 노래 갤', kkangtong: '별의 노래 봇 연구소' }[pid] ?? '게임 카페';
+    return { naver: '별의 노래 공식 팬카페', dcinside: '별의 노래 갤러리', reddit: 'r/StarSongGame', threads: '별의노래', instagram: '#별의노래', xiaohongshu: '星之歌', fivech: 'ゲーム板', fourchan: '/vg/ - Video Game Generals', discord: '별의 노래 길드 서버', blind: '게임업계 라운지', everytime: '한빛대학교', weibo: '星之歌超话', tieba: '星之歌吧', twitter: '별의 노래 유저 모임', tdgall: '별의 노래 갤', kkangtong: '별의 노래 봇 연구소' }[pid] ?? '게임 카페';
 }
 
 async function onSpaceAction(el) {
@@ -6800,7 +7237,7 @@ function showFeed(feedId, opts = {}) {
     const hasTr = feed.data.posts.some(p => p.body_tr || p.body_ko || p.title_tr || postMedia(p).some(m => m.desc_tr) || p.comments.some(c => c.body_tr || c.body_ko));
     const when = new Date(feed.updatedAt || feed.createdAt).toLocaleString();
     bar.innerHTML = `<span class="stcm-fb-info"><b>${esc(PLATFORMS[feed.platform]?.label)}</b> · ${esc(MODES[feed.mode]?.label)} · #${feedLastAt(feed)} 시점 · ${esc(when)}${currentBoardKey() !== null ? ` · ${esc(boardName(feedBoardKey(feed), feed.platform))}` : (feed.topics?.length ? ` · 주제: ${esc(feed.topics.join(', '))}` : '')}${feed.topic ? ` · “${esc(truncate(feed.topic, 30))}”` : ''}</span>
-        ${foldable(feed) && feed.data.posts.length ? '<button id="stcm_fold_all" data-act="fold-all"></button>' : ''}
+        ${(foldable(feed) || TD_SKINS[feed.platform]) && feed.data.posts.length ? '<button id="stcm_fold_all" data-act="fold-all"></button>' : ''}
         ${feed.data.posts.length ? `<button id="stcm_pick_toggle" data-act="pick-mode" class="${pickMode ? 'on' : ''}" title="여러 글·댓글을 골라서 한꺼번에 지우기"><i class="fa-regular fa-square-check"></i> 선택</button>` : ''}
         ${hasTr ? `<button id="stcm_tr_toggle" class="${showTr ? 'on' : ''}" title="${showTr ? '원문 보기' : '번역 보기'}"><i class="fa-solid fa-language"></i> 번역</button>` : ''}`;
     updateFoldAllButton(feed);
@@ -7043,7 +7480,7 @@ function showEditItem(feedId, postIdx, ci = null, ri = null) {
         <p class="stcm-cp-hint">${item.isMe ? '내가 쓴' : 'AI가 만든'} ${esc(what)}을(를) 고쳐요. 글쓴이·좋아요·${kind === 'post' ? '댓글은' : '답글은'} 그대로예요. 고친 부분의 번역은 지워지니, 필요하면 다시 번역해 주세요.</p>
         ${withTitle ? `<input class="stcm-cp-title" type="text" placeholder="${pf?.chat ? '채널 이름' : '제목'}">` : ''}
         <textarea class="stcm-cp-body" rows="${kind === 'post' ? 8 : 4}" placeholder="본문"></textarea>
-        ${withMedia ? `<div class="stcm-cp-medialist"></div>${MEDIA_HINT}` : ''}
+        ${withMedia ? `<div class="stcm-cp-medialist"></div>${mediaHint(feed.platform, kind === 'post')}` : ''}
         <div class="stcm-cp-foot">
             ${withMedia ? `<button data-act="cp-photo" class="stcm-cp-photo" title="사진 한 장 더 붙이기"><i class="fa-regular fa-image"></i> 사진</button>
             <button data-act="cp-video" class="stcm-cp-photo" title="영상 하나 더 붙이기"><i class="fa-solid fa-film"></i> 영상</button>` : ''}
@@ -7143,7 +7580,7 @@ function showCompose() {
         ${p.hasTitle || p.chat ? `<input class="stcm-cp-title" type="text" placeholder="${p.chat ? '채널 이름 (예: 잡담) — 새 채널이 생기고 첫 메시지가 올라가요' : (p.thread ? '스레드 제목' : '제목')}">` : ''}
         ${TD_SKINS[selPlatform] ? `<select class="stcm-cp-cat">${tdCats(selPlatform).filter(c => c !== '전체').map(c => `<option value="${esc(c)}" ${feed && tdState(feed.id).cat === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>` : ''}
         <textarea class="stcm-cp-body" rows="7" placeholder="${p.thread ? '>>1 본문' : '본문'}"></textarea>
-        <div class="stcm-cp-medialist"></div>${MEDIA_HINT}
+        <div class="stcm-cp-medialist"></div>${mediaHint(selPlatform)}
         <div class="stcm-cp-ai">
             <input class="stcm-cp-inst" type="text" maxlength="500" placeholder="AI에게 지시 (선택) — 비우면 고른 글 주제에 맞게">
             <button data-act="ai-write-post" title="고른 신분으로 AI가 제목과 본문을 써 줘요. 본문 칸에 글이 있으면 그걸 다듬어요."><i class="fa-solid fa-wand-magic-sparkles"></i> AI로 쓰기</button>
@@ -8414,7 +8851,13 @@ function addSettingsPanel() {
           <details class="stcm-sec" data-sec="topics">
             <summary><i class="fa-solid fa-tags"></i> 글 주제 · 반응 분위기 · 참고 · 추가 지시</summary>
             <div class="stcm-sec-body">
-          <label class="checkbox_label"><input id="stcm_set_metapos" type="checkbox"><span>작품 반응 모드: 불호 반응 금지 <small>(작품 반응 모드로 글·댓글을 만들 때 불호·비판·불만·악플·팬끼리 싸움이 나오지 않아요. 설렘·감상·떡밥 분석·예측·드립 같은 반응으로 채워요. 세계관 속 모드와 내가 직접 쓰는 글에는 적용되지 않아요)</small></span></label>
+          <label>작품 반응 모드: 불호 반응 <small>(작품 반응 모드로 글·댓글을 만들 때. 세계관 속 모드와 내가 직접 쓰는 글에는 적용되지 않아요)</small>
+            <select id="stcm_set_metadislike" class="text_pole">
+              <option value="auto">AI가 알아서 (기본 — 따로 지시하지 않아요)</option>
+              <option value="include">꼭 넣기 (반대·비판 의견을 하나 이상)</option>
+              <option value="none">금지 (불호·비판·악플·팬끼리 싸움 없이)</option>
+            </select>
+          </label>
           <small class="stcm-help">글 주제의 추가·삭제·선택은 커뮤니티 창의 주제 줄 <i class="fa-solid fa-plus"></i> 버튼에서 해요.</small>
           <div class="stcm-set-grid">
             <label>주제 적용
@@ -8434,8 +8877,10 @@ function addSettingsPanel() {
           <label class="checkbox_label"><input id="stcm_set_crossref" type="checkbox"><span>모든 생성에서 다른 게시글 참고 <small>(꺼 두면 글 아래 <i class="fa-solid fa-link"></i>로 그 글만 켤 수 있어요)</small></span></label>
           <label>참고할 다른 글 수 <input id="stcm_set_crossrefcount" type="number" min="1" max="20" class="text_pole"></label>
 
-          <label>추가 지시 <small>(모든 생성에 붙어요. 아무 언어나 OK)</small></label>
-          <textarea id="stcm_set_extra" class="text_pole" rows="3"></textarea>
+          <label>추가 지시 · 작품 반응 모드 <small>(작품 반응 모드의 모든 생성에 붙어요. 아무 언어나 OK)</small></label>
+          <textarea id="stcm_set_extra_meta" class="text_pole" rows="3"></textarea>
+          <label>추가 지시 · 세계관 속 모드 <small>(세계관 속 모드의 모든 생성에 붙어요. 아무 언어나 OK)</small></label>
+          <textarea id="stcm_set_extra_world" class="text_pole" rows="3"></textarea>
             </div>
           </details>
           <details class="stcm-sec" data-sec="prompt">
@@ -8452,12 +8897,19 @@ function addSettingsPanel() {
             </label>
           </div>
           <select id="stcm_set_prompt_key" class="text_pole">${promptOpts}</select>
+          <div id="stcm_set_prompt_use" class="stcm-prompt-use" hidden></div>
           <textarea id="stcm_set_prompt" class="text_pole stcm-prompt-box" rows="10"></textarea>
           <div class="stcm-prompt-row">
             <small id="stcm_set_prompt_state"></small>
+            <div class="menu_button" id="stcm_set_prompt_saveas" title="지금 칸의 내용을 이름을 붙여 따로 저장해요. 저장한 프롬프트는 이 항목 대신 골라 쓸 수 있어요">따로 저장</div>
             <div class="menu_button" id="stcm_set_prompt_reset">이 항목 기본값으로</div>
             <div class="menu_button" id="stcm_set_prompt_reset_all">전체 기본값으로</div>
           </div>
+          <details class="stcm-psaves" id="stcm_psaves">
+            <summary>따로 저장한 프롬프트 <b>0</b>개</summary>
+            <small class="stcm-help">각 프롬프트 위에 어떤 항목을 고친 건지 나와요. <b>적용</b>하면 그 항목 대신 이 프롬프트가 쓰여요 (항목마다 하나씩). 이름과 내용은 여기서 바로 고칠 수 있어요.</small>
+            <div id="stcm_psaves_list"></div>
+          </details>
           <small class="stcm-help">쓸 수 있는 변수: <code>{{char}}</code> <code>{{user}}</code> <code>{{platform}}</code> (커뮤니티 영어 이름), <code>{{language}}</code> (언어 항목), <code>{{translation}}</code> (번역 항목), <code>{{count}}</code> (개수), <code>{{comments}}</code> (글당 댓글 수). 실리태번 매크로도 쓸 수 있어요. 비워 두면 기본값을 써요.</small>
             </div>
           </details>
@@ -8578,7 +9030,7 @@ function addSettingsPanel() {
     bind('stcm_set_npc', 'npcPosts');
     bind('stcm_set_maxfeeds', 'maxFeeds');
     bind('stcm_set_mention', 'mentionScope');
-    bind('stcm_set_metapos', 'metaNoNegative', 'checked');
+    bind('stcm_set_metadislike', 'metaDislike');
     bind('stcm_set_nickmode', 'nickMode');
     bind('stcm_set_minreason', 'minReasoning', 'checked');
     bind('stcm_set_trwhen', 'translateWhen');
@@ -8586,7 +9038,8 @@ function addSettingsPanel() {
     document.getElementById('stcm_set_trdisplay')?.addEventListener('change', () => { if (isOpen() && view === 'feed' && currentFeedId) showFeed(currentFeedId, { keepScroll: true }); });
 
     bind('stcm_set_pf', 'defaultPlatform');
-    bind('stcm_set_extra', 'extraInstruction');
+    bind('stcm_set_extra_meta', 'extraMeta');
+    bind('stcm_set_extra_world', 'extraWorld');
     bind('stcm_set_topicscope', 'topicScope');
     bind('stcm_set_topicmix', 'topicMix');
     for (const id of ['stcm_set_topicscope', 'stcm_set_topicmix']) {
@@ -8598,13 +9051,116 @@ function addSettingsPanel() {
     const keySel = document.getElementById('stcm_set_prompt_key');
     const box = document.getElementById('stcm_set_prompt');
     const state = document.getElementById('stcm_set_prompt_state');
+    const useBox = document.getElementById('stcm_set_prompt_use');
+    const savesWrap = document.getElementById('stcm_psaves');
+    const savesList = document.getElementById('stcm_psaves_list');
+    const itemName = (k) => PROMPT_LABELS[k] ?? k;
+    // the item list marks the items a saved prompt stands in for
+    // an applied saved prompt left empty is not used (getPrompt falls back to the item): say so everywhere
+    const isEmpty = (x) => !String(x?.text ?? '').trim();
+    const markKeys = () => {
+        for (const o of keySel.options) {
+            const saved = appliedPromptSave(o.value);
+            o.textContent = !saved ? itemName(o.value)
+                : isEmpty(saved) ? `${itemName(o.value)} ☆ ${saved.name} (비어 있어 원래 항목 사용 중)`
+                : `${itemName(o.value)} ★ ${saved.name} 적용 중`;
+        }
+    };
+    const forHtml = (x) => {
+        const on = s.promptUse[x.key] === x.id;
+        const tag = !on ? '' : isEmpty(x) ? ' <span class="tag empty">적용했지만 내용이 비어 원래 항목 사용 중</span>' : ' <span class="tag">적용 중</span>';
+        return `<i class="fa-solid fa-right-left"></i> <b>${esc(itemName(x.key))}</b>을(를) 고친 프롬프트 · 적용하면 그 항목 대신 쓰여요${tag}`;
+    };
     const load = () => {
         const k = keySel.value;
         const custom = s.prompts[k];
         box.value = (typeof custom === 'string' && custom.trim()) ? custom : DEFAULT_PROMPTS[k];
         box.placeholder = k === 'tail' ? '여기 적은 글이 요청 맨 끝에 붙어요 (위에서 "맨 밑 프롬프트 사용"을 켜야 들어가요). 예: 출력은 반드시 JSON 하나만.' : '';
         state.textContent = (typeof custom === 'string' && custom.trim()) ? '수정됨' : '기본값';
+        const saved = appliedPromptSave(k);
+        useBox.hidden = !saved;
+        useBox.classList.toggle('empty', !!saved && isEmpty(saved));
+        useBox.innerHTML = !saved ? ''
+            : isEmpty(saved) ? `<i class="fa-regular fa-star"></i> 따로 저장한 <b>${esc(saved.name)}</b>을(를) 적용했지만 내용이 비어 있어서, 지금은 아래 원래 항목이 쓰여요. <span class="menu_button" data-ps="off" data-id="${esc(saved.id)}">적용 해제</span>`
+            : `<i class="fa-solid fa-star"></i> 지금은 따로 저장한 <b>${esc(saved.name)}</b>이(가) 이 항목 대신 쓰여요. 아래 내용은 적용을 풀면 다시 쓰여요. <span class="menu_button" data-ps="off" data-id="${esc(saved.id)}">적용 해제</span>`;
     };
+    const renderSaves = () => {
+        const order = Object.keys(PROMPT_LABELS);
+        const list = s.promptSaves.filter(x => x && hasKey(DEFAULT_PROMPTS, x.key)).sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key));
+        savesWrap.querySelector('summary b').textContent = String(list.length);
+        savesList.innerHTML = list.length ? list.map(x => {
+            const on = s.promptUse[x.key] === x.id;
+            return `<div class="stcm-psave${on ? ' on' : ''}" data-id="${esc(x.id)}">
+                <div class="for">${forHtml(x)}</div>
+                <input type="text" class="text_pole name" maxlength="80" placeholder="이름" value="${esc(x.name)}">
+                <textarea class="text_pole stcm-prompt-box text" rows="8">${esc(x.text)}</textarea>
+                <div class="stcm-prompt-row">
+                    <div class="menu_button" data-ps="${on ? 'off' : 'on'}" data-id="${esc(x.id)}">${on ? '적용 해제 (원래 항목으로)' : '적용 (원래 항목 대신 쓰기)'}</div>
+                    <div class="menu_button" data-ps="item" data-id="${esc(x.id)}">원래 항목 보기</div>
+                    <div class="menu_button" data-ps="del" data-id="${esc(x.id)}">삭제</div>
+                </div>
+            </div>`;
+        }).join('') : '<small class="stcm-help">아직 없어요. 위에서 항목을 고치고 <b>따로 저장</b>을 누르면 여기에 쌓여요.</small>';
+    };
+    const refreshSaves = () => { markKeys(); load(); renderSaves(); };
+    const onSaveAction = async (el) => {
+        const x = s.promptSaves.find(v => v.id === el.dataset.id);
+        if (!x) return;
+        const act = el.dataset.ps;
+        if (act === 'on') s.promptUse[x.key] = x.id;   // one saved prompt per item: this one replaces any other
+        if (act === 'off' && s.promptUse[x.key] === x.id) delete s.promptUse[x.key];
+        if (act === 'item') {
+            keySel.value = x.key;
+            load();
+            keySel.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            return;
+        }
+        if (act === 'del') {
+            const { Popup, POPUP_RESULT } = ctx();
+            const ok = Popup?.show?.confirm
+                ? (await Popup.show.confirm('저장한 프롬프트 삭제', `"${esc(x.name)}"을(를) 지울까요?${s.promptUse[x.key] === x.id ? '<br><small>지금 적용 중이라, 지우면 원래 항목이 다시 쓰여요.</small>' : ''}`)) === POPUP_RESULT.AFFIRMATIVE
+                : confirm(`"${x.name}"을(를) 지울까요?`);
+            if (!ok) return;
+            s.promptSaves = s.promptSaves.filter(v => v !== x);
+            if (s.promptUse[x.key] === x.id) delete s.promptUse[x.key];
+        }
+        saveSettings();
+        refreshSaves();
+    };
+    useBox.addEventListener('click', (e) => { const el = e.target.closest('[data-ps]'); if (el) onSaveAction(el); });
+    savesList.addEventListener('click', (e) => { const el = e.target.closest('[data-ps]'); if (el) onSaveAction(el); });
+    savesList.addEventListener('input', (e) => {
+        const card = e.target.closest('.stcm-psave');
+        const x = card && s.promptSaves.find(v => v.id === card.dataset.id);
+        if (!x) return;
+        if (e.target.matches('.name')) x.name = e.target.value.slice(0, 80);
+        else if (e.target.matches('.text')) x.text = e.target.value;
+        else return;
+        saveSettings();
+        if (s.promptUse[x.key] === x.id) {   // where it is in use: the new name, or that it is empty (the item is used then)
+            markKeys();
+            if (keySel.value === x.key) load();
+            card.querySelector('.for').innerHTML = forHtml(x);
+        }
+    });
+    document.getElementById('stcm_set_prompt_saveas').addEventListener('click', async () => {
+        const k = keySel.value;
+        const text = box.value;
+        if (!text.trim()) { toastr.warning('저장할 내용이 비어 있어요.'); return; }
+        const { Popup } = ctx();
+        const suggest = `${itemName(k).replace(/\s*\(.*\)\s*$/, '')} (개조본)`;
+        const name = Popup?.show?.input
+            ? await Popup.show.input('따로 저장', `"${esc(itemName(k))}" 칸의 지금 내용을 따로 저장해요. 이름을 정해 주세요.`, suggest)
+            : prompt('저장할 이름', suggest);
+        if (name == null) return;
+        const x = { id: `p${Date.now().toString(36)}${randomId(4)}`, key: k, name: String(name).trim().slice(0, 80) || suggest, text };
+        s.promptSaves.push(x);
+        saveSettings();
+        refreshSaves();
+        savesWrap.open = true;
+        savesList.querySelector(`.stcm-psave[data-id="${x.id}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        toastr.success(`"${esc(x.name)}"(으)로 저장했어요. 쓰려면 <b>적용</b>을 누르세요.${s.prompts[k] ? '<br><small>원래 항목은 고친 그대로예요. 되돌리려면 "이 항목 기본값으로"를 누르세요.</small>' : ''}`, '', { escapeHtml: false, timeOut: 5000 });
+    });
     keySel.addEventListener('change', load);
     box.addEventListener('input', () => {
         const k = keySel.value;
@@ -8621,14 +9177,15 @@ function addSettingsPanel() {
     document.getElementById('stcm_set_prompt_reset_all').addEventListener('click', async () => {
         const { Popup, POPUP_RESULT } = ctx();
         const ok = Popup?.show?.confirm
-            ? (await Popup.show.confirm('프롬프트 초기화', '수정한 프롬프트를 모두 기본값으로 되돌릴까요?')) === POPUP_RESULT.AFFIRMATIVE
-            : confirm('모두 기본값으로 되돌릴까요?');
+            ? (await Popup.show.confirm('프롬프트 초기화', '수정한 프롬프트를 모두 기본값으로 되돌릴까요?<br><small>따로 저장한 프롬프트는 지우지 않고, 적용만 풀어요.</small>')) === POPUP_RESULT.AFFIRMATIVE
+            : confirm('모두 기본값으로 되돌릴까요? (따로 저장한 프롬프트는 지우지 않고 적용만 풀어요)');
         if (!ok) return;
         s.prompts = {};
+        s.promptUse = {};
         saveSettings();
-        load();
+        refreshSaves();
     });
-    load();
+    refreshSaves();
 
     // Connection dropdown (ST profiles + APIs added in the panel)
     const sel = document.getElementById('stcm_set_profile');
@@ -8762,6 +9319,16 @@ function onChatDeleted(name) {
     if (changed) { saveSettings(); updateCleanupLabel(); }
 }
 
+function onCharacterRenamed(oldAvatar, newAvatar) {
+    if (!oldAvatar || !newAvatar) return;
+    const from = `a:${oldAvatar}`, to = `a:${newAvatar}`;
+    for (const info of Object.values(storeIndex())) {
+        if (info.scope === from) info.scope = to;
+        if (info.owner?.startsWith(`c:${from}/`)) info.owner = `c:${to}/${info.owner.slice(from.length + 3)}`;
+    }
+    saveSettings();
+}
+
 function onChatRenamed(data) {
     const from = String(data?.oldFileName ?? '').replace(/\.jsonl$/, '');
     const to = String(data?.newFileName ?? '').replace(/\.jsonl$/, '');
@@ -8771,22 +9338,147 @@ function onChatRenamed(data) {
     saveSettings();
 }
 
+/** Every chat that exists now (all characters' and groups'), with its file name, character / group and metadata.
+ *  null: couldn't get the list. The server leaves out what it fails to read, so this only shows what exists:
+ *  a chat missing from it is not proof that it was deleted. */
+async function listAllChats() {
+    try {
+        const res = await fetch('/api/chats/recent', { method: 'POST', headers: ctx().getRequestHeaders(), body: JSON.stringify({ metadata: true }) });
+        if (!res.ok) return null;
+        const list = await res.json();
+        return Array.isArray(list) ? list : null;
+    } catch {
+        return null;
+    }
+}
+
+const chatFileName = (n) => String(n ?? '').replace(/\.jsonl$/, '');
+
+/** The chat file names of one character, read so that a failure shows. null: couldn't tell. */
+async function characterChatNames(avatarFile) {
+    const post = (url, body) => fetch(url, { method: 'POST', headers: ctx().getRequestHeaders(), body: JSON.stringify(body) });
+    try {
+        const res = await post('/api/characters/chats', { avatar_url: avatarFile, simple: true });
+        const list = res.ok ? await res.json() : null;
+        // the plain folder listing (a server without `simple` sends chat details instead, leaving out chats it fails to read)
+        if (Array.isArray(list) && list.every(x => x && !('file_size' in x))) return new Set(list.map(x => chatFileName(x.file_name ?? x.file_id)));
+        // { error: true }: no chat folder (no chats) — or a folder that couldn't be read. This one tells them apart.
+        const res2 = await post('/api/chats/search', { query: '', avatar_url: avatarFile });
+        const list2 = res2.ok ? await res2.json() : null;
+        return Array.isArray(list2) ? new Set(list2.map(x => chatFileName(x?.file_name))) : null;
+    } catch {
+        return null;
+    }
+}
+
+/** Every group's chat ids (Map group id → Set). null: couldn't get them. */
+async function groupChatNames() {
+    try {
+        const res = await fetch('/api/groups/all', { method: 'POST', headers: ctx().getRequestHeaders(), body: '{}' });
+        const list = res.ok ? await res.json() : null;
+        if (!Array.isArray(list)) return null;
+        return new Map(list.filter(g => g?.id).map(g => [String(g.id), new Set((g.chats ?? []).map(chatFileName))]));
+    } catch {
+        return null;
+    }
+}
+
+/** A deleted chat only gives its file name, and other characters may have a chat of the same name; the server's chat
+ *  list may also miss chats it failed to read. So a marked file is deleted only once its chat is confirmed gone from
+ *  its character's (or group's) own chat folder — anything unclear stays. */
 async function cleanupDeletedStores() {
     const idx = storeIndex();
     const targets = Object.entries(idx).filter(([, i]) => i.deletedAt);
     if (!targets.length) { toastr.info('정리할 파일이 없어요.'); return; }
     const { Popup, POPUP_RESULT } = ctx();
-    const msg = `삭제된 채팅의 피드 파일 ${targets.length}개를 지울까요?<br><small>아직 한 번도 열지 않은 브랜치·체크포인트가 그 채팅에서 갈라져 나왔다면, 그 브랜치는 피드를 이어받지 못해요.</small>`;
+    const msg = `삭제된 채팅의 피드 파일 ${targets.length}개를 지울까요?<br><small>지우기 전에 채팅마다 정말 지워졌는지 확인해서, 아직 있는 채팅(다른 캐릭터의 같은 이름 채팅, 아직 열지 않은 브랜치·체크포인트 등)이 쓰는 파일이나 확인이 안 되는 파일은 남겨요.</small>`;
     const ok = Popup?.show?.confirm ? (await Popup.show.confirm('피드 파일 정리', msg)) === POPUP_RESULT.AFFIRMATIVE : confirm('삭제된 채팅의 피드 파일을 지울까요?');
     if (!ok) return;
-    let done = 0;
-    for (const [id] of targets) {
-        if (id === feedState.storeId) { delete idx[id].deletedAt; continue; }
+    toastr.info('채팅 목록을 확인하는 중…', '', { timeOut: 2000 });
+    const chats = await listAllChats();
+    if (!chats) { toastr.error('채팅 목록을 확인하지 못해서 아무 파일도 지우지 않았어요. 잠시 뒤 다시 해 주세요.', '커뮤니티'); return; }
+    // what still exists (a chat being in this list keeps its file; not being in it proves nothing)
+    const used = new Set();     // files an existing chat points at (an unopened branch still uses its parent's)
+    const owners = new Set();   // keys of the existing chats (chatOwnerKey)
+    const names = new Set();    // chat file names that exist anywhere
+    const read = new Set();     // scope/name of the chats whose metadata was read (so it's known which file they use)
+    for (const ch of chats) {
+        const name = chatFileName(ch?.file_id ?? ch?.file_name);
+        if (!name) continue;
+        names.add(name);
+        const scope = ch.group ? `g:${ch.group}` : ch.avatar ? `a:${ch.avatar}` : '';
+        owners.add(`c:${scope ? `${scope}/` : ''}${name}`);
+        const meta = ch.chat_metadata;
+        if (meta && typeof meta === 'object') {
+            if (meta.integrity) owners.add(`i:${meta.integrity}`);
+            if (meta[MODULE]?.storeId) used.add(meta[MODULE].storeId);
+            read.add(`${scope}/${name}`);
+        } else if (!ch.chat_items && ch.mes === '[The chat is empty]') {
+            read.add(`${scope}/${name}`);   // an empty file: points at nothing
+        }
+    }
+    // each marked file's chat, looked up in its own folder: Map scope → Set of chat names (null: couldn't read)
+    const scopeOf = (info) => info.scope || /^c:([ag]:[^/]+)\//.exec(info.owner ?? '')?.[1] || '';
+    const folders = new Map();
+    let groups;
+    const namesIn = async (scope) => {
+        if (!folders.has(scope)) {
+            let set = null;
+            if (scope.startsWith('a:')) set = await characterChatNames(scope.slice(2));
+            else if (scope.startsWith('g:')) { groups ??= await groupChatNames(); set = groups?.get(scope.slice(2)) ?? null; }   // no such group: unclear
+            folders.set(scope, set);
+        }
+        return folders.get(scope);
+    };
+    // Every character's and group's chat folder, read in full: which chat names exist, and whether the metadata of
+    // every one of those chats came with the list above. Only then is it sure that no chat (an unopened branch, a copy)
+    // still points at a file about to be deleted.
+    let all;
+    const scanAll = async () => {
+        if (all === undefined) {
+            all = { names: new Set(), complete: true };
+            groups ??= await groupChatNames();
+            const scopes = (ctx().characters ?? []).filter(ch => ch?.avatar).map(ch => `a:${ch.avatar}`);
+            if (groups) scopes.push(...[...groups.keys()].map(id => `g:${id}`));
+            else all.complete = false;
+            for (const sc of scopes) {
+                const set = await namesIn(sc);
+                if (!set) { all.complete = false; all.names = null; break; }
+                for (const n of set) {
+                    all.names.add(n);
+                    if (!read.has(`${sc}/${n}`)) all.complete = false;   // left out of the list: what it points at is unknown
+                }
+            }
+        }
+        return all;
+    };
+    const knownCharacter = (scope) => scope.startsWith('g:') || (ctx().characters ?? []).some(ch => ch?.avatar && `a:${ch.avatar}` === scope);
+    let done = 0, kept = 0, unsure = 0;
+    const keep = (id) => { delete idx[id].deletedAt; kept++; };   // its chat (or one using it) is still there
+    for (const [id, info] of targets) {
+        const name = String(info.chat ?? '');
+        if (id === feedState.storeId || used.has(id) || (info.owner && owners.has(info.owner))) { keep(id); continue; }
+        const scope = scopeOf(info);
+        let gone = false;
+        if (scope) {
+            const set = await namesIn(scope);
+            if (set?.has(name)) { keep(id); continue; }
+            // its own folder read fine and the chat isn't there. (A character that is gone may have been renamed
+            // elsewhere: then it must not show up anywhere either.)
+            gone = !!set && (knownCharacter(scope) || !names.has(name));
+        } else if (!names.has(name)) {
+            // a file without a known character (recorded by an older version): gone only if no folder has that name
+            const { names: everywhere } = await scanAll();
+            gone = !!everywhere && !everywhere.has(name);
+        }
+        if (gone && !(await scanAll()).complete) gone = false;   // a chat that may point at it couldn't be read
+        if (!gone) { unsure++; continue; }   // stays marked: checked again next time
         if (await deleteStoreFile(id)) { delete idx[id]; done++; }
     }
     saveSettings();
     updateCleanupLabel();
-    toastr.success(`파일 ${done}개를 정리했어요.`);
+    const notes = [kept ? `아직 있는 채팅이 쓰는 파일 ${kept}개는 남겨 뒀어요.` : '', unsure ? `지워도 되는지 확인하지 못한 파일 ${unsure}개도 남겨 뒀어요 (다음에 다시 확인해요).` : ''].filter(Boolean).join(' ');
+    toastr.success(`파일 ${done}개를 정리했어요.${notes ? ` ${notes}` : ''}`);
 }
 
 function updateCleanupLabel() {
@@ -8865,5 +9557,6 @@ function registerCommands() {
     if (event_types.CHAT_DELETED) eventSource.on(event_types.CHAT_DELETED, onChatDeleted);
     if (event_types.GROUP_CHAT_DELETED) eventSource.on(event_types.GROUP_CHAT_DELETED, onChatDeleted);
     if (event_types.CHAT_RENAMED) eventSource.on(event_types.CHAT_RENAMED, onChatRenamed);
+    if (event_types.CHARACTER_RENAMED) eventSource.on(event_types.CHARACTER_RENAMED, onCharacterRenamed);
     eventSource.on(event_types.MESSAGE_RECEIVED, onMessageReceived);
 })();

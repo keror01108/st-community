@@ -172,6 +172,10 @@ dialog#stcm_overlay #toast-container { position: fixed; }
 .stcm-chips .pf-reddit.active { background: #ff4500; }
 .stcm-chips .pf-twitter.active { background: #111; }
 .stcm-t-dark .stcm-chips .pf-twitter.active { background: #e7e9ea; color: #000; }
+.stcm-chips .pf-threads.active { background: #111; }
+.stcm-t-dark .stcm-chips .pf-threads.active { background: #e7e9ea; color: #000; }
+.stcm-chips .pf-instagram.active { background: linear-gradient(45deg, #f09433, #dc2743 55%, #bc1888); }
+.stcm-chips .pf-xiaohongshu.active { background: #ff2442; }
 .stcm-chips .pf-fivech.active { background: #b5452f; }
 .stcm-chips .pf-fourchan.active { background: #117743; }
 .stcm-chips .pf-weibo.active { background: #e6162d; }
@@ -501,6 +505,9 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
 .stcm-dc { --k-bg: #fff; --k-card: #fff; --k-text: #333; --k-sub: #777; --k-line: #e3e3e3; --k-soft: #f9f9f9; --k-soft2: #f1f2f8; --k-name: #333; --k-link: #3b4890; --k-accent: #3b4890; }
 .stcm-reddit { --k-bg: #dae0e6; --k-card: #fff; --k-text: #1c1c1c; --k-sub: #787c7e; --k-line: #edeff1; --k-soft: #f6f7f8; --k-name: #1c1c1c; --k-link: #0079d3; --k-accent: #ff4500; }
 .stcm-twitter { --k-bg: #fff; --k-card: #fff; --k-text: #0f1419; --k-sub: #536471; --k-line: #eff3f4; --k-soft: #f7f9f9; --k-name: #0f1419; --k-link: #1d9bf0; --k-accent: #1d9bf0; }
+.stcm-threads { --k-bg: #fff; --k-card: #fff; --k-text: #000; --k-sub: #999; --k-line: #e5e5e5; --k-soft: #f5f5f5; --k-name: #000; --k-link: #0095f6; --k-accent: #000; }
+.stcm-ig { --k-bg: #fafafa; --k-card: #fff; --k-text: #000; --k-sub: #737373; --k-line: #dbdbdb; --k-soft: #efefef; --k-name: #000; --k-link: #00376b; --k-accent: #e1306c; }
+.stcm-xhs { --k-bg: #f5f5f5; --k-card: #fff; --k-text: #333; --k-sub: #999; --k-line: #f0f0f0; --k-soft: #f5f5f5; --k-name: #333; --k-link: #13386c; --k-accent: #ff2442; }
 .stcm-4chan { --k-bg: #eef2ff; --k-card: #d6daf0; --k-text: #000; --k-sub: #000; --k-line: #b7c5d9; --k-soft: #d6daf0; --k-name: #117743; --k-link: #34345c; --k-accent: #af0a0f; --k-title: #0f0c5d; --k-green: #789922; --k-quote: #d00; }
 .stcm-5ch { --k-bg: #efefef; --k-card: #efefef; --k-text: #000; --k-sub: #555; --k-line: #bbb; --k-soft: #e4e4e4; --k-name: #008800; --k-link: #0000ff; --k-accent: #b5452f; --k-title: #ff0000; --k-top: #cccccc; --k-head-text: #000; }
 .stcm-weibo { --k-bg: #f2f2f5; --k-card: #fff; --k-text: #333; --k-sub: #999; --k-line: #f0f0f0; --k-soft: #f9f9f9; --k-soft2: #eef0f3; --k-name: #eb7350; --k-link: #eb7350; --k-accent: #e6162d; }
@@ -512,6 +519,9 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
 .stcm-t-dark .stcm-dc { --k-bg: #16171d; --k-card: #16171d; --k-soft2: #23253a; --k-link: #8e9bff; }
 .stcm-t-dark .stcm-reddit { --k-bg: #030303; --k-card: #1a1a1b; --k-text: #d7dadc; --k-sub: #818384; --k-line: #343536; --k-soft: #272729; --k-name: #d7dadc; --k-link: #4fbcff; }
 .stcm-t-dark .stcm-twitter { --k-bg: #000; --k-card: #000; --k-text: #e7e9ea; --k-sub: #71767b; --k-line: #2f3336; --k-soft: #16181c; --k-name: #e7e9ea; }
+.stcm-t-dark .stcm-threads { --k-bg: #101010; --k-card: #101010; --k-text: #f3f5f7; --k-sub: #777; --k-line: #2b2b2b; --k-soft: #1e1e1e; --k-name: #f3f5f7; --k-accent: #f3f5f7; }
+.stcm-t-dark .stcm-ig { --k-bg: #000; --k-card: #000; --k-text: #f5f5f5; --k-sub: #a8a8a8; --k-line: #262626; --k-soft: #121212; --k-name: #f5f5f5; --k-link: #e0f1ff; }
+.stcm-t-dark .stcm-xhs { --k-bg: #0a0a0a; --k-card: #141414; --k-text: #e6e6e6; --k-sub: #8a8a8a; --k-line: #262626; --k-soft: #1f1f1f; --k-name: #e6e6e6; --k-link: #8fb4ff; }
 .stcm-t-dark .stcm-4chan { --k-bg: #1d1f21; --k-card: #282a2e; --k-text: #c5c8c6; --k-sub: #c5c8c6; --k-line: #111; --k-soft: #282a2e; --k-name: #c5c8c6; --k-link: #81a2be; --k-accent: #c5c8c6; --k-title: #b294bb; --k-green: #b5bd68; --k-quote: #5f89ac; }
 .stcm-t-dark .stcm-5ch { --k-bg: #1b1b1b; --k-card: #1b1b1b; --k-text: #ddd; --k-sub: #9a9a9a; --k-line: #3a3a3a; --k-soft: #262626; --k-name: #6fd36f; --k-link: #8ab4f8; --k-title: #ff6b6b; --k-top: #2c2c2c; --k-head-text: #ddd; }
 .stcm-t-dark .stcm-weibo { --k-bg: #141414; --k-card: #1f1f1f; --k-name: #ff8a5c; --k-link: #ff8a5c; }
@@ -558,7 +568,7 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
 .stcm-dc-meta { display: flex; gap: 10px; flex-wrap: wrap; font-size: 12px; color: var(--k-sub); border-bottom: 1px solid var(--k-line); padding-bottom: 8px; margin-bottom: 10px; }
 .stcm-ip { color: var(--k-sub); font-size: 11px; margin-left: 2px; }
 .stcm-dc-rec { display: flex; gap: 10px; align-items: center; justify-content: center; max-width: 330px; margin: 16px auto 10px; padding: 16px 8px; border: 1px solid #c4c4c4; }
-.stcm-t-dark .stcm-dc-rec { border-color: var(--k-line); }
+.stcm-t-dark .stcm-dc-rec, .stcm-t-theme .stcm-dc-rec { border-color: var(--k-line); }
 .stcm-dc-rec .cnt { min-width: 52px; text-align: center; font-size: 17px; line-height: 1.1; }
 .stcm-dc-rec .cnt.up b { color: #d31900; }
 .stcm-dc-rec .cnt.down b { color: var(--k-text); opacity: 0.8; }
@@ -648,6 +658,82 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
 .stcm-w-replies { background: var(--k-soft2); border-radius: 4px; padding: 6px 8px; margin-top: 6px; font-size: 12px; }
 .stcm-w-replies > div { margin: 2px 0; }
 
+/* ---------- Instagram / 샤오홍슈: photos above the text, side by side ---------- */
+.stcm-strip { position: relative; }
+.stcm-strip .rail { display: flex; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; }
+.stcm-strip .rail::-webkit-scrollbar { display: none; }
+.stcm-strip .stcm-img { flex: 0 0 100%; box-sizing: border-box; min-height: 230px; margin: 0; border: 0; border-radius: 0; scroll-snap-align: start; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 24px 28px; background: var(--k-soft); font-size: 14px; }
+.stcm-strip .stcm-img + .stcm-img { margin-top: 0; }
+.stcm-strip .stcm-img > i { font-size: 26px; margin: 0 0 6px; opacity: 0.5; }
+.stcm-strip .n { position: absolute; top: 10px; right: 10px; z-index: 1; background: rgba(0, 0, 0, 0.55); color: #fff; border-radius: 999px; padding: 2px 9px; font-size: 12px; pointer-events: none; }
+
+/* ---------- Threads ---------- */
+.stcm-th-top { display: flex; align-items: center; gap: 8px; padding: 12px 14px; font-weight: 800; border-bottom: 1px solid var(--k-line); background: var(--k-card); }
+.stcm-th-thread { background: var(--k-card); border-bottom: 1px solid var(--k-line); padding-bottom: 4px; }
+.stcm-th-post { display: flex; gap: 10px; padding: 12px 14px 4px; }
+.stcm-th-post.sub { padding-left: 30px; }
+.stcm-th-side { display: flex; flex-direction: column; align-items: center; flex: none; }
+.stcm-th-side .line { flex: 1; width: 2px; min-height: 12px; margin-top: 6px; border-radius: 1px; background: var(--k-line); }
+.stcm-th-main { flex: 1; min-width: 0; }
+.stcm-th-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; font-size: 14px; }
+.stcm-th-head b { color: var(--k-name); }
+.stcm-th-head .topic { color: var(--k-sub); font-size: 13px; }
+.stcm-th-head .topic i { font-size: 9px; }
+.stcm-th-head .tm { margin-left: auto; color: var(--k-sub); font-size: 13px; }
+.stcm-th-act { display: flex; gap: 18px; margin: 8px 0 2px; color: var(--k-text); font-size: 13px; }
+.stcm-th-sep { border-top: 1px solid var(--k-line); margin-top: 8px; }
+.stcm-th-slot { padding: 0 14px 8px; }
+
+/* ---------- Instagram ---------- */
+.stcm-ig-top { display: flex; align-items: baseline; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--k-line); background: var(--k-card); }
+.stcm-ig-top .logo { font: 600 25px/1.1 "Billabong", "Segoe Script", "Brush Script MT", cursive; }
+.stcm-ig-top .tag { color: var(--k-sub); font-size: 13px; font-weight: 600; }
+.stcm-ig-post { background: var(--k-card); border-bottom: 1px solid var(--k-line); padding-bottom: 8px; margin-bottom: 8px; }
+.stcm-ig-head { display: flex; align-items: center; gap: 10px; padding: 10px 12px; font-size: 14px; }
+.stcm-ig-head b { color: var(--k-name); }
+.stcm-ig-head .more { margin-left: auto; }
+.stcm-avatar.ring { box-shadow: 0 0 0 2px var(--k-card), 0 0 0 4px #d62976; }
+.stcm-ig-act { display: flex; align-items: center; gap: 16px; padding: 8px 12px 2px; font-size: 22px; color: var(--k-text); }
+.stcm-ig-act .stcm-vote { font-size: 22px; }
+.stcm-ig-act .save { margin-left: auto; }
+.stcm-ig-likes { padding: 2px 12px; font-size: 14px; font-weight: 700; }
+.stcm-ig-cap { padding: 2px 12px; font-size: 14px; }
+.stcm-ig-cap b, .stcm-ig-c b { color: var(--k-name); }
+.stcm-ig-time { padding: 4px 12px 6px; color: var(--k-sub); font-size: 11px; letter-spacing: 0.2px; }
+.stcm-ig-comments { padding: 0 12px; }
+.stcm-ig-c { display: flex; align-items: flex-start; gap: 10px; padding: 6px 0; font-size: 13.5px; }
+.stcm-ig-c.reply { padding-left: 34px; }
+.stcm-ig-c .m { flex: 1; min-width: 0; }
+.stcm-ig-c .ft { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 2px; color: var(--k-sub); font-size: 12px; }
+.stcm-ig-c .ft .stcm-links { margin-left: 0; }
+.stcm-ig-c .lk { padding-top: 4px; color: var(--k-sub); font-size: 12px; }
+
+/* ---------- 샤오홍슈 ---------- */
+.stcm-x-top { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--k-line); background: var(--k-card); }
+.stcm-x-top .logo { background: #ff2442; color: #fff; border-radius: 6px; padding: 2px 8px; font-size: 14px; font-weight: 800; }
+.stcm-x-top .topic { color: var(--k-text); font-weight: 700; }
+.stcm-x-note { background: var(--k-card); margin: 8px 0; padding-bottom: 6px; }
+.stcm-x-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; font-size: 14px; }
+.stcm-x-head .follow { margin-left: auto; border: 1px solid #ff2442; border-radius: 999px; padding: 2px 14px; color: #ff2442; font-size: 13px; font-weight: 600; }
+.stcm-x-note > h3 { margin: 12px 14px 6px; color: var(--k-text); font-size: 17px; font-weight: 700; }
+.stcm-x-note > .stcm-body { padding: 0 14px; font-size: 15px; line-height: 1.7; }
+.stcm-x-date { padding: 8px 14px 10px; border-bottom: 1px solid var(--k-line); color: var(--k-sub); font-size: 12px; }
+.stcm-x-ctitle { padding: 10px 14px 2px; color: var(--k-sub); font-size: 13px; }
+.stcm-x-comments { padding: 0 14px; }
+.stcm-x-c { display: flex; align-items: flex-start; gap: 10px; padding: 8px 0; font-size: 14px; }
+.stcm-x-c.reply { padding-left: 34px; }
+.stcm-x-c .m { flex: 1; min-width: 0; }
+.stcm-x-c .nm { color: var(--k-sub); font-size: 13px; }
+.stcm-x-c .au { margin-left: 4px; border-radius: 999px; padding: 0 6px; background: var(--k-soft); color: var(--k-sub); font-size: 10px; }
+.stcm-x-c .ft { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 2px; color: var(--k-sub); font-size: 12px; }
+.stcm-x-c .ft .stcm-links { margin-left: 0; }
+.stcm-x-c .lk { flex-direction: column; gap: 0; color: var(--k-sub); font-size: 14px; }
+.stcm-x-c .lk small { font-size: 11px; }
+.stcm-x-bar { display: flex; justify-content: flex-end; gap: 22px; padding: 10px 14px 4px; border-top: 1px solid var(--k-line); color: var(--k-text); font-size: 14px; }
+.stcm-sx-foot { padding: 0 14px 6px; }   /* Threads / Instagram / 샤오홍슈: the post's buttons */
+.stcm-threads .stcm-vote.on, .stcm-ig .stcm-vote.on { color: #ff3040; }
+.stcm-xhs .stcm-vote.on { color: #ff2442; }
+
 /* ---------- Baidu Tieba ---------- */
 .stcm-tb-top { background: var(--k-accent); color: #fff; padding: 10px 14px; font-weight: 700; }
 .stcm-tb-thread { background: var(--k-card); margin: 8px; border-radius: 6px; border: 1px solid var(--k-line); overflow: hidden; }
@@ -671,6 +757,18 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
 .stcm-prompt-box { font-family: monospace; font-size: 12px; min-height: 160px; }
 .stcm-prompt-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .stcm-prompt-row small { margin-right: auto; opacity: 0.7; }
+.stcm-prompt-use { margin: 6px 0; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--s-accent, #8b5cf6); background: color-mix(in srgb, var(--s-accent, #8b5cf6) 12%, transparent); font-size: 13px; line-height: 1.6; }
+.stcm-prompt-use .fa-star { color: #f5b301; }
+.stcm-prompt-use .menu_button { display: inline-flex; margin: 2px 0 0 4px; padding: 2px 10px; font-size: 12px; }
+.stcm-psaves { margin-top: 10px; }
+.stcm-psaves > summary { cursor: pointer; font-weight: 700; }
+.stcm-psave { margin: 8px 0; padding: 10px; border: 1px solid var(--s-border, rgba(127, 127, 127, 0.35)); border-radius: 10px; display: flex; flex-direction: column; gap: 6px; }
+.stcm-psave.on { border-color: var(--s-accent, #8b5cf6); box-shadow: 0 0 0 1px var(--s-accent, #8b5cf6) inset; }
+.stcm-psave .for { font-size: 12.5px; opacity: 0.85; }
+.stcm-psave .for .tag { margin-left: 4px; padding: 0 8px; border-radius: 999px; background: var(--s-accent, #8b5cf6); color: #fff; font-size: 11px; font-weight: 700; }
+.stcm-psave .name { font-weight: 700; }
+.stcm-psave .for .tag.empty { background: #c77700; }
+.stcm-prompt-use.empty { border-color: #c77700; background: color-mix(in srgb, #c77700 12%, transparent); }
 .stcm-help { opacity: 0.7; line-height: 1.6; }
 
 /* ---------- responsive ---------- */
@@ -997,7 +1095,8 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
 .stcm-fold:not(.open) > .stcm-psum { padding: 11px 14px; }
 .stcm-fold:not(.open) > .stcm-psum:hover { background: var(--k-soft); }
 .stcm-fold.open > .stcm-psum { padding: 0 0 10px; margin-bottom: 10px; border-bottom: 1px solid var(--k-line); }
-.stcm-t-thread.stcm-fold.open > .stcm-psum, .stcm-tb-thread.stcm-fold.open > .stcm-psum { padding: 12px 14px; margin: 0; }
+.stcm-t-thread.stcm-fold.open > .stcm-psum, .stcm-tb-thread.stcm-fold.open > .stcm-psum,
+.stcm-th-thread.stcm-fold.open > .stcm-psum, .stcm-ig-post.stcm-fold.open > .stcm-psum, .stcm-x-note.stcm-fold.open > .stcm-psum { padding: 12px 14px; margin: 0; }
 .stcm-psum .tag { flex: 0 0 auto; font-size: 12px; font-weight: 700; color: var(--k-accent); }
 .stcm-psum .tt { flex: 1 1 180px; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .stcm-psum .tt .mine { color: var(--k-accent); font-size: 11px; }
@@ -1041,6 +1140,8 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
     padding: 5px 12px; font-size: 13px; cursor: pointer; margin: 2px 0;
 }
 .stcm-settings-view .menu_button:hover { background: var(--s-hover); }
+/* SillyTavern makes .menu_button min-content wide: in the Extensions drawer the Korean labels broke into one letter per line */
+#stcm_settings .menu_button { width: auto; white-space: nowrap; }
 .stcm-settings-view .checkbox_label { display: flex; align-items: flex-start; gap: 8px; }
 .stcm-settings-view input[type="checkbox"] { accent-color: var(--s-accent); margin-top: 2px; flex: 0 0 auto; }
 .stcm-settings-view code { background: var(--s-input); border-radius: 4px; padding: 0 4px; }
