@@ -27,13 +27,13 @@ const defaultSettings = Object.freeze({
     storyMsgChars: 1500,         // story log: longest part of one chat message sent (0 = no limit)
     tailEnabled: false,          // 맨 밑 프롬프트: one more message at the very end of every request
     tailRole: 'user',            // 'user' | 'assistant'
-    npcPosts: 'auto',
+    npcPosts: 'auto',            // story side characters posting themselves: auto | on | off
     metaDislike: 'auto',         // 작품 반응 모드 불호 반응: auto (the model decides) · include (at least one critical voice) · none (no dislike)
     mentionScope: 'all',         // 언급 범위: all | char (only {{char}}) | user (only {{user}}) | none (nobody from the story)
     customSpaces: [],            // [{ id, platform, name, desc, locale: { mode: inherit|story|country|custom, country, custom } }]
     spaceSelected: {},           // platform → space id ('' = 기본)
     nickMode: 'random',          // empty nickname box: 'random' (instant, community style) · 'ai' (fits the person and the post)
-    minReasoning: false,         // ask reasoning models to think as little as possible            // story side characters posting themselves: auto | on | off
+    minReasoning: false,         // ask reasoning models to think as little as possible
     translateConn: '',           // '' = translate in the same call · 'main' · ST profile id · 'api:<id>'
     translateModel: '',          // model for that translation connection ('' = the connection's own model)
     translateWhen: 'auto',       // 'auto' = with every generation · 'manual' = only from a post's 번역 button
@@ -73,11 +73,11 @@ const defaultSettings = Object.freeze({
     topicScope: 'all',           // all: manual + auto generation | auto: auto generation only
     threadCap: 1000,             // max posts per thread on capped platforms (2ch, Reddit)
     theme: 'theme',              // light | dark | theme (follow SillyTavern theme)
-    compactUi: false,
+    compactUi: false,            // 간략한 화면: community/space/board in one picker, some header buttons in ⋯
     fullTitles: true,            // long post titles (and their translations) wrap onto more lines instead of being cut with …
-    secOpen: { conn: true },
-    maxFeeds: 0,                 // feeds kept per chat (0 = no limit); pinned / watched feeds are never dropped     // settings sections left open (key → true)
-    fullscreen: false,           // panel fills the whole window (PC; phones are always full)            // 간략한 화면: community/space/board in one picker, some header buttons in ⋯
+    secOpen: { conn: true },     // settings sections left open (key → true)
+    maxFeeds: 0,                 // feeds kept per chat (0 = no limit); pinned / watched feeds are never dropped
+    fullscreen: false,           // panel fills the whole window (PC; phones are always full)
     foldPrefs: {},               // { short?: bool, tall?: bool } — unset: folded on short screens only
 });
 
@@ -381,6 +381,7 @@ function apiWhere(a) {
 }
 
 const cleanSpaceLists = new WeakSet();
+const checkedSettings = new WeakSet();   // settings objects already filled in / tidied (getSettings is called very often)
 
 function getSettings() {
     const { extensionSettings } = ctx();
@@ -388,6 +389,7 @@ function getSettings() {
         extensionSettings[MODULE] = structuredClone(defaultSettings);
     }
     const s = extensionSettings[MODULE];
+    if (checkedSettings.has(s)) return s;
     for (const key of Object.keys(defaultSettings)) {
         if (!Object.hasOwn(s, key)) s[key] = structuredClone(defaultSettings[key]);
     }
@@ -444,11 +446,22 @@ function getSettings() {
         cleanSpaceLists.add(s.customSpaces);
     }
     if (!s.spaceSelected || typeof s.spaceSelected !== 'object' || Array.isArray(s.spaceSelected)) s.spaceSelected = {};
+    if (s.stores && typeof s.stores === 'object') {
+        for (const e of Object.values(s.stores)) if (e && typeof e === 'object') delete e.size;   // noted up to 1.47.9, never used
+    }
+    checkedSettings.add(s);
     return s;
 }
 
 function saveSettings() {
     ctx().saveSettingsDebounced();
+}
+
+/** Ask yes / no in SillyTavern's own dialog (html) — the browser's (plain text) only where that isn't there. */
+async function askYes(title, html, plain = title) {
+    const { Popup, POPUP_RESULT } = ctx();
+    if (Popup?.show?.confirm) return (await Popup.show.confirm(title, html)) === POPUP_RESULT.AFFIRMATIVE;
+    return confirm(plain);
 }
 
 function getPrompt(key) {
@@ -489,29 +502,72 @@ function hasChat() {
 const FILE_PREFIX = 'stcm-feed-';
 const feedState = {
     key: null,        // owner key of the chat the cache belongs to
+    fileKey: null,    // what names / finds this chat's own file (the key, plus the chat's name for a branch)
+    isBranch: false,  // the chat is a branch / checkpoint (SillyTavern's main_chat)
     chatId: null,     // chat the cache belongs to (cache validity)
     storeId: null,
     feeds: [],
     ready: false,
     loading: null,    // Promise while loading
-    lastWritten: '',  // JSON last uploaded, to skip no-op writes
+    lastWritten: '',  // key (textKey) of the feeds JSON last uploaded, to skip no-op writes
     timer: null,
     writing: Promise.resolve(),
     error: false,
     retryTimer: null,
     gen: 0,           // +1 on every load: results that started before a reload must not land in stale objects
+    missingId: null,  // the chat's feed file isn't on the server and the user chose to wait (not opened)
 };
 
 /** Feed files whose last save failed: storeId → { feeds, chat }. Kept across chat switches (the only copy of
  *  those changes) and retried until the server has them; opening that chat again uses this copy. */
 const unsavedStores = new Map();
 
-/** 임시 저장: a failed save also leaves a copy in this browser, so closing the page doesn't lose it.
- *  Removed as soon as the server has the file. Too big for the browser's storage → told so. */
+/** 임시 저장: a failed save also leaves a copy in this browser, so closing the page doesn't lose it. Removed as soon
+ *  as the server has the file. Kept in IndexedDB: localStorage holds only about 5 MB per site, shared with SillyTavern
+ *  and other extensions. (localStorage only where IndexedDB can't be opened; copies left there by older versions
+ *  are moved over at start.) */
 const LOCAL_KEY = (storeId) => `stcm_unsaved_${storeId}`;
-function keepLocalCopy(storeId, feeds, chat) {
+const copyDb = (() => {
+    let opening = null;
+    const open = () => opening ??= new Promise((resolve) => {
+        try {
+            const req = indexedDB.open('st_community', 1);
+            req.onupgradeneeded = () => req.result.createObjectStore('unsaved');
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => resolve(null);
+            req.onblocked = () => resolve(null);
+        } catch {
+            resolve(null);
+        }
+    });
+    const run = async (mode, use) => {
+        const db = await open();
+        if (!db) throw new Error('IndexedDB를 쓸 수 없어요');
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction('unsaved', mode);
+            const req = use(tx.objectStore('unsaved'));
+            tx.oncomplete = () => resolve(req.result);
+            tx.onerror = () => reject(tx.error);
+            tx.onabort = () => reject(tx.error);
+        });
+    };
+    return {
+        get: (k) => run('readonly', os => os.get(k)),
+        put: (k, v) => run('readwrite', os => os.put(v, k)),
+        del: (k) => run('readwrite', os => os.delete(k)),
+    };
+})();
+const validCopy = (d, storeId) => (d && d.storeId === storeId && Array.isArray(d.feeds) ? d : null);
+/** Resolves true when the copy was kept. */
+async function keepLocalCopy(storeId, feeds, chat) {
+    const rec = { storeId, chat, savedAt: Date.now(), rev: fileRevs.get(storeId), feeds };   // rev: the server copy it came from
     try {
-        const json = JSON.stringify({ storeId, chat, savedAt: Date.now(), rev: fileRevs.get(storeId), feeds });   // rev: the server copy it came from
+        await copyDb.put(LOCAL_KEY(storeId), rec);
+        try { localStorage.removeItem(LOCAL_KEY(storeId)); } catch { /* ignore */ }
+        return true;
+    } catch { /* no IndexedDB here: localStorage, as before */ }
+    try {
+        const json = JSON.stringify(rec);
         if (json.length > 4_500_000) throw new Error('too big');
         localStorage.setItem(LOCAL_KEY(storeId), json);
         return true;
@@ -521,14 +577,31 @@ function keepLocalCopy(storeId, feeds, chat) {
     }
 }
 function dropLocalCopy(storeId) {
+    copyDb.del(LOCAL_KEY(storeId)).catch(() => { /* none there */ });
     try { localStorage.removeItem(LOCAL_KEY(storeId)); } catch { /* ignore */ }
 }
-function readLocalCopy(storeId) {
+async function readLocalCopy(storeId) {
     try {
-        const d = JSON.parse(localStorage.getItem(LOCAL_KEY(storeId)) ?? 'null');
-        return d && d.storeId === storeId && Array.isArray(d.feeds) ? d : null;
+        const d = validCopy(await copyDb.get(LOCAL_KEY(storeId)), storeId);
+        if (d) return d;
+    } catch { /* look in localStorage */ }
+    try {
+        return validCopy(JSON.parse(localStorage.getItem(LOCAL_KEY(storeId)) ?? 'null'), storeId);
     } catch {
         return null;
+    }
+}
+/** Copies left in localStorage by older versions move to IndexedDB (each removed only once it is there). */
+async function moveOldLocalCopies() {
+    let keys = [];
+    try { keys = Object.keys(localStorage).filter(k => k.startsWith('stcm_unsaved_')); } catch { return; }
+    for (const k of keys) {
+        try {
+            const d = JSON.parse(localStorage.getItem(k) ?? 'null');
+            if (!d || !Array.isArray(d.feeds) || LOCAL_KEY(d.storeId) !== k) continue;
+            await copyDb.put(k, d);
+            localStorage.removeItem(k);
+        } catch { /* stays where it is */ }
     }
 }
 
@@ -622,6 +695,47 @@ function newStoreId() {
     return String(id).replace(/[^a-zA-Z0-9-]/g, '');
 }
 
+/** The feeds as they go into the file. Fields that are empty in most posts and comments (no handle, no translation,
+ *  no tags / photos) are left out — often a fifth of the file — and put back by fillEmpty when it is read, so the
+ *  feeds in memory are just as before. */
+const EMPTY_TEXT = new Set(['handle', 'body_tr', 'title_tr']);
+function feedsJson(feeds) {
+    return JSON.stringify(feeds, (k, v) => ((v === '' && EMPTY_TEXT.has(k)) || ((k === 'tags' || k === 'media') && Array.isArray(v) && !v.length) ? undefined : v));
+}
+function fillEmpty(feeds) {
+    const item = (o) => {
+        if (!o || typeof o !== 'object') return;
+        o.handle ??= '';
+        o.body_tr ??= '';
+    };
+    for (const f of feeds) {
+        for (const p of Array.isArray(f?.data?.posts) ? f.data.posts : []) {
+            if (!p || typeof p !== 'object') continue;
+            item(p);
+            p.title_tr ??= '';
+            p.tags ??= [];
+            if (p.media === undefined && !Object.hasOwn(p, 'image') && !Object.hasOwn(p, 'image_tr')) p.media = [];   // (an old single photo is moved into it when shown)
+            for (const c of Array.isArray(p.comments) ? p.comments : []) {
+                item(c);
+                for (const r of Array.isArray(c?.replies) ? c.replies : []) item(r);
+            }
+        }
+    }
+    return feeds;
+}
+
+/** A short stand-in for a long text, to tell whether it changed without keeping the whole text around. */
+function textKey(text) {
+    let h1 = 0x811c9dc5, h2 = 0x9747b28c;
+    for (let i = 0; i < text.length; i++) {
+        const ch = text.charCodeAt(i);
+        h1 = Math.imul(h1 ^ ch, 0x01000193);
+        h2 = Math.imul(h2 ^ ch, 0x5bd1e995);
+        h2 ^= h2 >>> 13;
+    }
+    return `${text.length}:${(h1 >>> 0).toString(36)}:${(h2 >>> 0).toString(36)}`;
+}
+
 function toBase64(str) {
     const bytes = new TextEncoder().encode(str);
     let bin = '';
@@ -673,15 +787,16 @@ async function serverRev(storeId) {
 /** The revision at the start of a feed file's text ('' if there is none there: written by an older version). */
 function revIn(text) { return /^\s*\{\s*"rev"\s*:\s*"([^"]*)"/.exec(text)?.[1] ?? ''; }
 
-async function uploadStore(storeId, feeds, rev) {
-    const json = JSON.stringify({ rev, version: 1, storeId, savedAt: Date.now(), feeds });   // rev first: serverRev reads only the start
+/** feedsText: feedsJson() of the feeds — the very text that was compared is the one sent. */
+async function uploadStore(storeId, feedsText, rev) {
+    // rev first: serverRev reads only the start
+    const text = `{"rev":${JSON.stringify(rev)},"version":1,"storeId":${JSON.stringify(storeId)},"savedAt":${Date.now()},"feeds":${feedsText}}`;
     const res = await fetch('/api/files/upload', {
         method: 'POST',
         headers: ctx().getRequestHeaders(),
-        body: JSON.stringify({ name: fileNameFor(storeId), data: toBase64(json) }),
+        body: JSON.stringify({ name: fileNameFor(storeId), data: toBase64(text) }),
     });
     if (!res.ok) throw new Error(`파일 저장 실패 (${res.status})`);
-    return json.length;
 }
 
 async function downloadStore(storeId) {
@@ -693,7 +808,7 @@ async function downloadStore(storeId) {
     // without its list of feeds the file is damaged (or not a feed file): never taken for "no feeds", which would be
     // saved over it — it is an error like an unreadable file
     if (!Array.isArray(data?.feeds)) throw new Error('피드 파일 형식이 올바르지 않아요');
-    return { feeds: data.feeds, rev: revIn(text) };   // rev: read like serverRev reads it
+    return { feeds: fillEmpty(data.feeds), rev: revIn(text) };   // rev: read like serverRev reads it
 }
 
 async function deleteStoreFile(storeId) {
@@ -729,14 +844,21 @@ function scheduleFeedWrite() {
         if (!feedState.feeds.length) return;
         // first feed in this chat: create its file and remember it in the chat
         const st = getChatStore();
-        st.storeOwner = chatOwnerKey();
-        st.storeId = chatStoreId(st.storeOwner);
+        st.storeOwner = feedState.key ?? chatOwnerKey();
+        st.storeId = chatStoreId(feedState.fileKey ?? st.storeOwner);
+        const taken = storeIndex()[st.storeId];
+        if (!feedState.isBranch && taken?.chat && taken.chat !== (feedState.chatId ?? '')) {
+            // another chat with the same id has that name (an imported copy and its original): this one's is named by the chat too
+            feedState.fileKey = `${st.storeOwner}#${feedState.chatId ?? ''}`;
+            st.storeId = chatStoreId(feedState.fileKey);
+        }
         if (st.storeOwner.startsWith('c:')) st.storeOwn = true;   // made for this chat (see split in the loader)
+        if (feedState.isBranch) st.storeChat = feedState.chatId;
         feedState.storeId = st.storeId;
         if (!fileRevs.has(st.storeId)) fileRevs.set(st.storeId, null);   // no file yet: if another tab made it meanwhile, the save asks
-        indexStore(st.storeId, { chat: feedState.chatId ?? '', owner: st.storeOwner, scope: feedState.scope });
+        indexStore(st.storeId, { chat: feedState.chatId ?? '', owner: feedState.fileKey ?? st.storeOwner, scope: feedState.scope });
         linkPending.add(st.storeId);
-        ctx().saveMetadata();   // SillyTavern doesn't report a failed save: saved again once the file is up (and found again by the index on the next open)
+        saveMetaNow();   // SillyTavern doesn't report a failed save: saved again once the file is up (and found again by the index on the next open)
     }
     clearTimeout(feedState.timer);
     const storeId = feedState.storeId;
@@ -758,11 +880,31 @@ let writeSeq = 0;
 function queueWrite(storeId, feeds, chat = feedState.chatId ?? '', scope = feedState.scope ?? '') {
     const seq = ++writeSeq;
     latestWrite.set(storeId, seq);
-    const job = feedState.writing.then(async () => {
+    // keep this copy (in memory for every chat, and in this browser) until the server has it
+    const keepUnsaved = async (err, retry = true) => {
+        if (err) console.error(`[${MODULE}] failed to save feed file`, err);
+        const firstFail = !unsavedStores.has(storeId);
+        unsavedStores.set(storeId, { feeds, chat, scope });
+        const local = await keepLocalCopy(storeId, feeds, chat);
+        if (err && !feedState.error) {
+            toastr.error(`커뮤니티 피드를 서버에 저장하지 못했어요. 잠시 뒤 다시 시도해요.${local ? ' (이 브라우저에 임시로 저장해 뒀어요)' : ' 피드가 커서 브라우저 임시 저장도 못 했어요. 페이지를 닫지 말아 주세요.'}`, '커뮤니티');
+        } else if (firstFail && !local) {
+            toastr.warning('이 피드는 커서 브라우저 임시 저장을 못 했어요. 저장될 때까지 페이지를 닫지 말아 주세요.', '커뮤니티');
+        }
+        feedState.error = true;
+        setSaveState('error');
+        if (retry) {
+            clearTimeout(feedState.retryTimer);
+            feedState.retryTimer = setTimeout(retrySave, 20000);
+        }
+        return false;
+    };
+    const work = async () => {
         if (latestWrite.get(storeId) !== seq) return true;   // a newer request for this file follows
-        const json = JSON.stringify(feeds);
+        const json = feedsJson(feeds);   // made once: what is compared is what is sent
+        const key = textKey(json);
         const done = () => {   // this file is on the server now
-            if (linkPending.delete(storeId) && storeId === feedState.storeId) ctx().saveMetadata();
+            if (linkPending.delete(storeId) && storeId === feedState.storeId) saveMetaNow();
             unsavedStores.delete(storeId);
             dropLocalCopy(storeId);
             const wasError = feedState.error;
@@ -774,31 +916,12 @@ function queueWrite(storeId, feeds, chat = feedState.chatId ?? '', scope = feedS
             }
             if (!feedState.timer) setSaveState(feedState.error ? 'error' : 'saved');   // a newer change waits: keep 저장 중
         };
-        if (storeId === feedState.storeId && json === feedState.lastWritten) {
+        if (storeId === feedState.storeId && key === feedState.lastWritten) {
             // same as what the server has (e.g. a failed change was undone): nothing to send, nothing pending
             if (unsavedStores.has(storeId) || feedState.error) done();
             else if (!feedState.timer && !feedState.saving) setSaveState('idle');
             return true;
         }
-        // keep this copy (in memory for every chat, and in this browser) until the server has it
-        const keepUnsaved = (err, retry = true) => {
-            if (err) console.error(`[${MODULE}] failed to save feed file`, err);
-            const firstFail = !unsavedStores.has(storeId);
-            unsavedStores.set(storeId, { feeds, chat, scope });
-            const local = keepLocalCopy(storeId, feeds, chat);
-            if (err && !feedState.error) {
-                toastr.error(`커뮤니티 피드를 서버에 저장하지 못했어요. 잠시 뒤 다시 시도해요.${local ? ' (이 브라우저에 임시로 저장해 뒀어요)' : ' 피드가 커서 브라우저 임시 저장도 못 했어요. 페이지를 닫지 말아 주세요.'}`, '커뮤니티');
-            } else if (firstFail && !local) {
-                toastr.warning('이 피드는 커서 브라우저 임시 저장을 못 했어요. 저장될 때까지 페이지를 닫지 말아 주세요.', '커뮤니티');
-            }
-            feedState.error = true;
-            setSaveState('error');
-            if (retry) {
-                clearTimeout(feedState.retryTimer);
-                feedState.retryTimer = setTimeout(retrySave, 20000);
-            }
-            return false;
-        };
         // the file changed on the server since this tab read / wrote it: another tab or device saved in between
         const known = fileRevs.get(storeId);   // undefined: this tab never read it (a file it is making)
         if (known !== undefined) {
@@ -818,21 +941,30 @@ function queueWrite(storeId, feeds, chat = feedState.chatId ?? '', scope = feedS
         setSaveState('saving');
         const rev = newRev();
         try {
-            const size = await uploadStore(storeId, feeds, rev);
-            fileRevs.set(storeId, rev);   // the server has this tab's copy now
-            if (storeId === feedState.storeId) feedState.lastWritten = json;
-            indexStore(storeId, { size, chat, scope });
-            done();
+            await uploadStore(storeId, json, rev);
         } catch (e) {
             return keepUnsaved(e);
         } finally {
             feedState.saving = false;
         }
+        fileRevs.set(storeId, rev);   // the server has this tab's copy now
+        if (storeId === feedState.storeId) feedState.lastWritten = key;
+        noteStore(storeId, chat, scope);
+        done();
         watchKept(storeId, rev, seq, feeds, chat, scope);
         return true;
-    });
-    feedState.writing = job.then(() => undefined);
+    };
+    // a mistake in here must not stop every later save (they wait on this one)
+    const job = feedState.writing.then(() => work().catch(e => keepUnsaved(e)));
+    feedState.writing = job.then(() => undefined, () => undefined);
     return job;
+}
+
+/** The index entry of a file just saved: written (a settings save) only when something in it changes. */
+function noteStore(storeId, chat, scope) {
+    const e = storeIndex()[storeId];
+    if (e && e.chat === chat && (!scope || e.scope === scope)) return;
+    indexStore(storeId, scope ? { chat, scope } : { chat });   // a save that doesn't know it keeps the noted one
 }
 
 /** Two tabs that both checked before either saved both pass the check; the one saving second overwrites the first
@@ -873,7 +1005,15 @@ function useServerCopy(storeId, rev) {
     unsavedStores.delete(storeId);
     dropLocalCopy(storeId);
     fileRevs.set(storeId, rev);
-    if (storeId === feedState.storeId) { setTimeout(() => reloadFromServer(storeId), 0); return; }   // after this write job
+    latestWrite.set(storeId, ++writeSeq);   // saves of this tab's copy still waiting in line (changes made while asked) are not sent
+    if (storeId === feedState.storeId) {
+        // nothing done here before the server's copy is open may be saved over it (an automatic post, a click behind the question)
+        clearTimeout(feedState.timer);
+        feedState.timer = null;
+        feedState.ready = false;
+        setTimeout(() => reloadFromServer(storeId), 0);   // after this write job
+        return;
+    }
     feedState.error = unsavedStores.size > 0;
     if (!feedState.timer) setSaveState(feedState.error ? 'error' : 'idle');
 }
@@ -970,13 +1110,43 @@ function stampLegacy(feeds, chatLen) {
     return n;
 }
 
+/** Does this chat (file name) of that character / group exist? null: couldn't tell. */
+async function chatExists(name, scope) {
+    if (scope.startsWith('a:')) {
+        const names = await characterChatNames(scope.slice(2));
+        return names ? names.has(name) : null;
+    }
+    if (scope.startsWith('g:')) {
+        const groups = await groupChatNames();
+        return groups ? !!groups.get(scope.slice(2))?.has(name) : null;
+    }
+    return null;
+}
+
+/** Feed files found missing whose chat the user chose not to open yet: asked again only when the chat is opened again. */
+const missingLater = new Set();
+/** The chat's feed file isn't on the server: start with an empty feed (true) or leave the chat closed for now. */
+async function startOverMissing(storeId, pins = 0, pinsOn = true) {
+    if (missingLater.has(storeId)) return false;
+    // pins live in the chat file, not the feed file: they stay (and keep going into the story while 반영 is on) until taken off
+    const pinNote = pins <= 0 ? ''
+        : pinsOn ? ` 본편에 반영(📌) 중이던 글 ${pins}개는 그대로 반영돼요. 필요 없으면 📌 반영 목록에서 ✕로 지워 주세요.`
+            : ` 📌 반영 목록의 글 ${pins}개는 그대로 남아요. 지금은 반영이 꺼져 있어서 본편에는 들어가지 않아요. 필요 없으면 📌 반영 목록에서 ✕로 지워 주세요.`;
+    const ok = await askYes('커뮤니티 피드 파일 없음',
+        `이 채팅이 쓰던 커뮤니티 피드 파일(<code>${esc(fileNameFor(storeId))}</code>)을 서버에서 찾을 수 없어요. 실리태번 Clean-Up으로 지워졌거나, 백업을 되돌릴 때 빠졌을 수 있어요.<br><b>확인</b>: 빈 피드로 새로 시작해요. 내보내 둔 피드 파일이 있으면 🕘 지난 피드의 <b>불러오기</b>로 되살릴 수 있어요.${pinNote}<br><b>취소</b>: 지금은 열지 않아요. 서버의 <code>user/files</code> 폴더에 그 파일을 되돌려 놓고 채팅을 다시 열어 주세요.`,
+        '이 채팅의 커뮤니티 피드 파일을 서버에서 찾을 수 없어요. 빈 피드로 새로 시작할까요? (취소: 지금은 열지 않아요)');
+    if (!ok) missingLater.add(storeId);
+    return ok;
+}
+
 /** A chat without a file id whose file exists all the same (its id didn't reach the chat file): the newest file the
  *  store index made for this chat. */
-function lostStoreFor(key) {
+function lostStoreFor(key, chatId) {
     let best = null;
     for (const [id, e] of Object.entries(storeIndex())) {
-        // by the chat's key only: a chat name alone may be another character's chat of the same name
-        if (!e || e.deletedAt || e.owner !== key) continue;
+        // by the chat's key (a chat name alone may be another character's chat of the same name) and its name (a
+        // branch made by SillyTavern 1.18 or older has its parent's key)
+        if (!e || e.deletedAt || e.owner !== key || e.chat !== chatId) continue;
         if (!best || (Number(e.updated) || 0) > (Number(best.e.updated) || 0)) best = { id, e };
     }
     return best?.id ?? null;
@@ -1005,7 +1175,15 @@ function loadFeedsForCurrentChat() {
         const c = ctx();
         const key = chatOwnerKey();
         const chatId = c.getCurrentChatId();
+        // A branch / checkpoint names its parent in main_chat. SillyTavern 1.18 and older gave it the parent's integrity
+        // id too, so its key alone can't tell it from the parent: its own file is named and found by key + its name.
+        const mainChat = c.chatMetadata?.main_chat;
+        const isBranch = typeof mainChat === 'string' && mainChat !== '' && mainChat !== chatId;
+        let fileKey = isBranch ? `${key}#${chatId}` : key;
+        feedState.missingId = null;
         feedState.key = key;
+        feedState.fileKey = fileKey;
+        feedState.isBranch = isBranch;
         feedState.chatId = chatId;
         feedState.scope = chatScope();   // this chat's character / group, kept with its saves
         const st = getChatStore();
@@ -1017,62 +1195,95 @@ function loadFeedsForCurrentChat() {
         const isLegacy = !!(legacy && legacy.enumerable && Array.isArray(legacy.value));
         // a branch that already has its own file, but the chat still points at the parent's (that save failed): use its own
         if (!isLegacy && st.storeId && st.storeOwner && st.storeOwner !== key) {
-            const own = lostStoreFor(key);
-            if (own && own !== st.storeId) { st.storeId = own; st.storeOwner = key; metaChanged = true; }
+            const own = lostStoreFor(fileKey, chatId);
+            if (own && own !== st.storeId) { st.storeId = own; st.storeOwner = key; if (isBranch) st.storeChat = chatId; metaChanged = true; }
         }
         const before = { storeId: st.storeId, storeOwner: st.storeOwner, pins: st.pins };   // put back if the copy fails
-        if (isLegacy) {
-            // v1.5 and older kept feeds inside the chat file → move them out (removed only once the file is saved)
-            feeds = legacy.value;
+        // The chat's first feeds whose file id never reached the chat file (that save failed too, or the page was closed
+        // first): what is kept of them is under the file name the chat's first feeds always get.
+        // (or the name a chat gets when another chat with the same id, an imported copy or its original, has the first)
+        const ownIds = !isLegacy && !st.storeId ? [...new Set([chatStoreId(fileKey), chatStoreId(`${key}#${chatId}`)])] : [];
+        const linkOwn = (id) => {   // this chat uses that file from now on (saved again once the file is up)
+            st.storeId = id;
+            st.storeOwner = key;
+            if (key.startsWith('c:')) st.storeOwn = true;
+            if (isBranch) st.storeChat = chatId;
+            linkPending.add(id);
             metaChanged = true;
-        } else if (st.storeId && unsavedStores.has(st.storeId)) {
-            // its last save failed: this copy is newer than the server file (it keeps being retried)
-            feeds = unsavedStores.get(st.storeId).feeds;
-        } else if (st.storeId && readLocalCopy(st.storeId)) {
-            // a copy left in this browser by a save that failed before the page was closed
-            const local = readLocalCopy(st.storeId);
-            const { Popup, POPUP_RESULT } = c;
-            const when = new Date(local.savedAt).toLocaleString();
-            const restore = Popup?.show?.confirm
-                ? (await Popup.show.confirm('저장 못 한 커뮤니티 피드', `${esc(when)}에 서버에 저장하지 못한 이 채팅의 커뮤니티 피드가 이 브라우저에 남아 있어요.<br><b>확인</b>: 그 내용으로 되살려 서버에 저장해요.<br><b>취소</b>: 버리고 서버에 있는 내용을 열어요.`)) === POPUP_RESULT.AFFIRMATIVE
-                : confirm('서버에 저장하지 못한 커뮤니티 피드가 이 브라우저에 남아 있어요. 되살릴까요?');
-            if (stale()) return;
-            if (restore) {
-                feeds = local.feeds;
-                if (local.rev !== undefined) fileRevs.set(st.storeId, local.rev);   // the server copy it came from: a newer one there is asked about
-                unsavedStores.set(st.storeId, { feeds, chat: chatId, scope: feedState.scope });   // saved below like any failed copy
-            } else {
-                dropLocalCopy(st.storeId);
-                try {
-                    feeds = (await read(st.storeId)) ?? [];
-                } catch (e) {
-                    console.error(`[${MODULE}] failed to load feed file`, e);
-                    toastr.error('커뮤니티 피드 파일을 불러오지 못했어요.', '커뮤니티');
-                    if (!stale()) feedState.chatId = null;
-                    return;
-                }
+        };
+        // still being retried by this page (another chat with the same id may have made it: only this chat's own)
+        const unsavedId = st.storeId ?? ownIds.find(id => unsavedStores.get(id)?.chat === chatId) ?? null;
+        // a copy left in this browser by a save that failed before the page was closed
+        let copyId = st.storeId ?? null;
+        let local = !isLegacy && copyId && !unsavedStores.has(copyId) ? await readLocalCopy(copyId) : null;
+        if (!unsavedId) {
+            for (const id of ownIds) {
+                if (local) break;
+                if (unsavedStores.has(id)) continue;   // another chat's, being retried
+                const d = await readLocalCopy(id);
+                if (d?.chat === chatId) { local = d; copyId = id; }
             }
-        } else if (st.storeId) {
+        }
+        if (stale()) return;
+        let restore = false;
+        if (local) {
+            const when = new Date(local.savedAt).toLocaleString();
+            restore = await askYes('저장 못 한 커뮤니티 피드', `${esc(when)}에 서버에 저장하지 못한 이 채팅의 커뮤니티 피드가 이 브라우저에 남아 있어요.<br><b>확인</b>: 그 내용으로 되살려 서버에 저장해요.<br><b>취소</b>: 버리고 서버에 있는 내용을 열어요.`, '서버에 저장하지 못한 커뮤니티 피드가 이 브라우저에 남아 있어요. 되살릴까요?');
+            if (stale()) return;
+            if (!restore) dropLocalCopy(copyId);
+        }
+        // the chat's file (null: there is none) — read so that a failure keeps the chat closed and nothing is saved over it
+        const readLinked = async () => {
             try {
-                feeds = (await read(st.storeId)) ?? [];
+                return { ok: true, list: await read(st.storeId) };
             } catch (e) {
                 console.error(`[${MODULE}] failed to load feed file`, e);
                 toastr.error('커뮤니티 피드 파일을 불러오지 못했어요.', '커뮤니티');
                 if (!stale()) feedState.chatId = null;   // next ensureFeedsReady() retries
-                return;   // stay not-ready so nothing overwrites the file
+                return { ok: false };
             }
+        };
+        let startEmpty = false;   // its file is gone and the user starts anew: an empty file is written right away
+        if (isLegacy) {
+            // v1.5 and older kept feeds inside the chat file → move them out (removed only once the file is saved)
+            feeds = legacy.value;
+            metaChanged = true;
+        } else if (unsavedId && unsavedStores.has(unsavedId)) {
+            // its last save failed: this copy is newer than the server file (it keeps being retried)
+            feeds = unsavedStores.get(unsavedId).feeds;
+            if (!st.storeId) linkOwn(unsavedId);
+        } else if (restore) {
+            feeds = local.feeds;
+            if (local.rev !== undefined) fileRevs.set(copyId, local.rev);   // the server copy it came from: a newer one there is asked about
+            if (!st.storeId) linkOwn(copyId);
+            unsavedStores.set(copyId, { feeds, chat: chatId, scope: feedState.scope });   // saved below like any failed copy
+        } else if (st.storeId) {
+            const got = await readLinked();
+            if (!got.ok || stale()) return;   // stay not-ready so nothing overwrites the file
+            if (got.list == null) {
+                // The file this chat uses isn't on the server (deleted by Clean-Up, left out of a restored backup…):
+                // say so instead of opening it as a chat that never had feeds.
+                if (!(await startOverMissing(st.storeId, st.pins?.length ?? 0, st.pinsEnabled !== false))) {
+                    if (!stale()) { feedState.chatId = null; feedState.missingId = st.storeId; }   // looked at again on the next open
+                    return;
+                }
+                if (stale()) return;
+                startEmpty = true;
+            }
+            feeds = got.list ?? [];
         } else {
             // the chat never got its file's id saved (that save failed after the file was written, or a chat save from
             // another tab that didn't have it came later): find the file again, in the index or by the chat's own file name
-            let lost = lostStoreFor(key);
+            let lost = lostStoreFor(fileKey, chatId) ?? (isBranch ? null : lostStoreFor(`${key}#${chatId}`, chatId));   // (an imported copy's own)
             if (!lost) {
-                const own = chatStoreId(key);
-                if (!storeIndex()[own]?.deletedAt && (await fileExists(own))) lost = own;
+                const own = chatStoreId(fileKey);
+                const e = storeIndex()[own];
+                if (!e?.deletedAt && (!e || e.chat === chatId) && (await fileExists(own))) lost = own;   // noted for another chat: not this one's
             }
             if (lost && !stale()) {
                 try {
                     const got = await read(lost);
-                    if (got && !stale()) { feeds = got; st.storeId = lost; st.storeOwner = key; metaChanged = true; }
+                    if (got && !stale()) { feeds = got; st.storeId = lost; st.storeOwner = key; if (isBranch) st.storeChat = chatId; metaChanged = true; }
                 } catch (e) {
                     console.error(`[${MODULE}] failed to load feed file`, e);
                     toastr.error('커뮤니티 피드 파일을 불러오지 못했어요.', '커뮤니티');
@@ -1083,21 +1294,55 @@ function loadFeedsForCurrentChat() {
         }
         if (stale()) return;   // chat switched meanwhile, or opened again by a newer load
 
+        // An imported chat (a chat file copied back in) comes with its original's metadata: the same id, the same feed
+        // file. When the file is noted for another chat that still exists, this one moves to a copy of its own, once.
+        // (A renamed chat's old name is gone: it keeps its file. Can't tell now: looked at again on the next open.)
+        let copied = false;
+        let keepNote = false;   // the index keeps naming the other chat until it is known which it is
+        const noted = st.storeId && !isLegacy && !isBranch && !startEmpty && st.storeOwner === key && !unsavedStores.has(st.storeId) ? storeIndex()[st.storeId] : null;
+        if (noted && !noted.deletedAt && noted.chat && noted.chat !== chatId) {
+            const other = await chatExists(noted.chat, noted.scope || feedState.scope);
+            if (stale()) return;
+            if (other === true) {
+                copied = true;
+                fileKey = `${key}#${chatId}`;   // named by the chat too: its original has the same key
+                feedState.fileKey = fileKey;
+            } else if (other === null) {
+                keepNote = true;
+            }
+        }
+
         // A chat without an integrity id was told apart by its file name alone up to 1.47.4 (and 1.47.5–1.47.6 kept such
         // a link as it was), so chats of different characters with the same name may share one file. Such a chat
         // moves to a copy of its own, once (storeOwn marks a file made for it); the shared file stays as it is.
-        let split = !!(st.storeId && !isLegacy && st.storeOwner
+        let split = copied || !!(st.storeId && !isLegacy && st.storeOwner
             && ((st.storeOwner === `c:${chatId}` && key !== st.storeOwner) || (key.startsWith('c:') && !st.storeOwn)));
         const sameOwner = st.storeOwner === key;
+        // A branch with its parent's key (SillyTavern 1.18 and older) uses the parent's file: what is done in one would
+        // show in the other. It moves to a copy of its own, once (storeChat names the chat a file was made for).
+        if (isBranch && sameOwner && st.storeId && !isLegacy && st.storeChat !== chatId) {
+            const e = storeIndex()[st.storeId];
+            if (e?.from === 'branch' && (e.owner === key || e.owner === fileKey)) {
+                st.storeChat = chatId;   // its own copy, made for it by an earlier version
+                metaChanged = true;
+            } else if (st.storeChat && st.storeChat !== mainChat) {
+                st.storeChat = chatId;   // its own file under its old name (the chat was renamed)
+                metaChanged = true;
+            } else {
+                split = true;            // the parent's file (its metadata came with the branch)
+            }
+        }
         const forked = !!(st.storeId && st.storeOwner && !sameOwner && !split);
         let pinsForked = null;
         // A copy (branch, old feeds moved out of the chat file, split) goes to the chat's own file, whose name is the
         // same in every tab: two tabs moving the same chat meet in one file. If it is there already (another tab moved
         // it, or this chat's link to it wasn't saved), that file is used instead of making the copy again.
-        const target = forked || split || isLegacy ? chatStoreId(key) : null;
+        const target = forked || split || isLegacy ? chatStoreId(fileKey) : null;
         if (split && target === st.storeId) {   // the file already is this chat's own (made for it by 1.47.5–1.47.6)
             split = false;
-            st.storeOwn = true;
+            st.storeOwner = key;
+            if (key.startsWith('c:')) st.storeOwn = true;
+            if (isBranch) st.storeChat = chatId;
             metaChanged = true;
         }
         // use the chat's own file as it is on the server (read and checked): only then do the old data and link go
@@ -1112,6 +1357,7 @@ function loadFeedsForCurrentChat() {
             st.storeId = id;
             st.storeOwner = key;
             if (key.startsWith('c:')) st.storeOwn = true;
+            if (isBranch) st.storeChat = chatId;
             metaChanged = true;
         };
         const failOpen = (e) => {   // stay not-ready: nothing removed, the next open tries again
@@ -1134,10 +1380,9 @@ function loadFeedsForCurrentChat() {
             // Old comments without a time stamp may be from after it: ask whether to keep them.
             let dropUnknown = false;
             const unknown = countUnknown(feeds, chatLen);
-            const { Popup, POPUP_RESULT } = c;
-            if (unknown && Popup?.show?.confirm) {
-                dropUnknown = (await Popup.show.confirm('브랜치로 커뮤니티 피드 복사',
-                    `언제 달렸는지 기록이 없는 예전 댓글이 ${unknown}개 있어요. 갈라진 시점 이후에 달린 것일 수도 있어요.<br><b>확인</b>을 누르면 빼고 복사하고, <b>취소</b>를 누르면 그대로 둬요.<br><small>(새 버전에서 달린 댓글은 시점에 맞게 알아서 빠져요.)</small>`)) === POPUP_RESULT.AFFIRMATIVE;
+            if (unknown) {
+                dropUnknown = (await askYes('브랜치로 커뮤니티 피드 복사',
+                    `언제 달렸는지 기록이 없는 예전 댓글이 ${unknown}개 있어요. 갈라진 시점 이후에 달린 것일 수도 있어요.<br><b>확인</b>을 누르면 빼고 복사하고, <b>취소</b>를 누르면 그대로 둬요.<br><small>(새 버전에서 달린 댓글은 시점에 맞게 알아서 빠져요.)</small>`, '언제 달렸는지 기록이 없는 예전 댓글이 있어요. 빼고 복사할까요?'));
                 if (stale()) return;
             }
             // its own deep copy: the parent's data (maybe a not-yet-saved copy still being retried) stays untouched
@@ -1173,6 +1418,7 @@ function loadFeedsForCurrentChat() {
                 st.storeId = newId;
                 st.storeOwner = key;
                 if (key.startsWith('c:')) st.storeOwn = true;
+                if (isBranch) st.storeChat = chatId;
                 metaChanged = true;
             }
         }
@@ -1182,17 +1428,20 @@ function loadFeedsForCurrentChat() {
         feedState.feeds = feeds;
         const known = st.storeId ? storeIndex()[st.storeId] : null;
         // an entry from an older version (or one noted wrongly by one): note where the chat is
-        if (known && !metaChanged && (known.chat !== chatId || (feedState.scope && known.scope !== feedState.scope))) indexStore(st.storeId, { chat: chatId ?? '', scope: feedState.scope });
+        if (known && !metaChanged && !keepNote && (known.chat !== chatId || (feedState.scope && known.scope !== feedState.scope))) indexStore(st.storeId, { chat: chatId ?? '', scope: feedState.scope });
         attachFeeds(st);
         feedState.ready = true;
         // a copy whose save failed is not on the server: lastWritten stays empty so the next save sends it
-        feedState.lastWritten = unsavedStores.has(st.storeId) && unsavedStores.get(st.storeId).feeds === feeds ? '' : JSON.stringify(feeds);
+        feedState.lastWritten = unsavedStores.has(st.storeId) && unsavedStores.get(st.storeId).feeds === feeds ? '' : textKey(feedsJson(feeds));
+        if (startEmpty) { feedState.lastWritten = ''; scheduleFeedWrite(); }   // the empty file: asked once, not on every open
         // old comments: remember they existed by now (later branches from here keep them for sure)
         if (!forked && stampLegacy(feeds, chatLen)) scheduleFeedWrite();
         else if (st.storeId && unsavedStores.get(st.storeId)?.feeds === feeds) scheduleFeedWrite();   // a kept copy: send it
         if (metaChanged) {
-            indexStore(st.storeId, { chat: chatId ?? '', owner: key, from: forked ? 'branch' : undefined, scope: feedState.scope });
-            await c.saveMetadata();
+            indexStore(st.storeId, { chat: chatId ?? '', owner: fileKey, from: forked ? 'branch' : undefined, scope: feedState.scope });
+            await saveMetaNow();
+        } else {
+            noteMetaSaved();   // as it is in the chat file (defaults filled in now aren't worth a save of their own)
         }
         if (forked) refreshInjection();
     })();
@@ -1266,8 +1515,39 @@ function getChatStore() {
     return st;
 }
 
+/** This chat's metadata as last saved. Saving it means SillyTavern sends the whole chat file, so it only goes out
+ *  when it changed — feeds live in their own file. Which board was open last and the unread count wait (debounced:
+ *  losing them on a quick chat switch costs nothing). */
+const metaSaved = { chatId: null, main: null, light: null };
+function metaParts(st) {
+    const { lastMode, lastPlatform, unread, ...rest } = st;   // feeds aren't enumerable: not in it
+    return { main: JSON.stringify(rest), light: JSON.stringify([lastMode ?? null, lastPlatform ?? null, unread ?? 0]) };
+}
+function noteMetaSaved() {   // what is in memory now is (being) saved
+    const st = hasChat() ? ctx().chatMetadata?.[MODULE] : null;
+    if (!st) { metaSaved.chatId = null; return; }
+    Object.assign(metaSaved, { chatId: ctx().getCurrentChatId?.() ?? null }, metaParts(st));
+}
+async function saveMetaNow() {
+    noteMetaSaved();
+    await ctx().saveMetadata();
+}
+
 async function saveChatStore() {
     scheduleFeedWrite();   // first, while this chat's copy is surely the one loaded
+    const st = hasChat() ? ctx().chatMetadata?.[MODULE] : null;
+    if (!st) return;
+    const now = metaParts(st);
+    const chatId = ctx().getCurrentChatId?.() ?? null;
+    if (metaSaved.chatId === chatId && metaSaved.main === now.main) {
+        if (metaSaved.light !== now.light) {
+            metaSaved.light = now.light;
+            const c = ctx();
+            if (c.saveMetadataDebounced) c.saveMetadataDebounced(); else await c.saveMetadata();
+        }
+        return;
+    }
+    Object.assign(metaSaved, { chatId }, now);
     await ctx().saveMetadata();
 }
 
@@ -1645,11 +1925,17 @@ async function buildContextBlock() {
         }
     }
 
-    const recent = (c.chat ?? [])
-        .filter(isReadableMessage)
-        .map(m => ({ name: m.name, text: cleanStoryText(m.mes) }))
-        .filter(m => m.text)
-        .slice(-Math.max(1, s.contextMessages));
+    // the last N readable messages, read from the end (a long chat isn't cleaned up message by message in full)
+    const want = Number.isFinite(Number(s.contextMessages)) ? Math.max(1, Math.floor(Number(s.contextMessages))) : Infinity;
+    const recent = [];
+    const all = c.chat ?? [];
+    for (let i = all.length - 1; i >= 0 && recent.length < want; i--) {
+        const m = all[i];
+        if (!isReadableMessage(m)) continue;
+        const text = cleanStoryText(m.mes);
+        if (text) recent.push({ name: m.name, text });
+    }
+    recent.reverse();
 
     const wiParts = [];
     const wiMode = getChatStore()?.wi?.mode ?? (s.includeWorldInfo ? 'auto' : 'off');
@@ -2357,13 +2643,34 @@ function trConnection() {
 }
 
 /**
- * Translate items [{ o, postIdx, field: 'body' | 'title' }] in small batches; returns the post indexes touched.
+ * Translate items [{ o, postIdx, field: 'body' | 'title' }] in small batches; returns { touched: post indexes,
+ * changed: items left out because they were edited meanwhile }. A failure carries the posts touched before it.
  * `mark` (optional) records attempts so the automatic pass doesn't resend texts that need no translation.
  */
-async function translateItems(feedId, todo, { target, conn, model, mark = null, chatId = ctx().getCurrentChatId?.() } = {}) {
-    const touched = new Set();
+async function translateItems(feedId, todo, opts = {}) {
+    const done = { touched: new Set(), changed: 0 };
+    try {
+        await translateBatches(feedId, todo, opts, done);
+        return done;
+    } catch (e) {
+        e.touched = done.touched;   // the batches done before it failed: the caller saves them
+        throw e;
+    } finally {
+        if (done.changed) toastr.info('번역하는 사이 글이나 번역이 바뀐 곳은 번역을 넣지 않았어요. 필요하면 다시 번역해 주세요.', '커뮤니티');
+    }
+}
+
+/** What an item's translation is now (to see whether it changed while its translation was being made). */
+function trTextOf(t) {
+    if (t.field === 'title') return t.o.title_tr ?? '';
+    if (t.field === 'desc') return t.o.desc_tr ?? '';
+    return t.o.body_tr || t.o.body_ko || '';
+}
+
+async function translateBatches(feedId, todo, { target, conn, model, mark = null, chatId = ctx().getCurrentChatId?.() } = {}, done) {
+    const { touched } = done;
     const gen = feedState.gen;
-    if (!todo.length) return touched;
+    if (!todo.length) return;
     const system = fillTpl(getPrompt('translate_separate'), { translation: target });
     const batches = [];
     let cur = [];
@@ -2376,8 +2683,10 @@ async function translateItems(feedId, todo, { target, conn, model, mark = null, 
     }
     if (cur.length) batches.push(cur);
     for (const batch of batches) {
-        if (ctx().getCurrentChatId?.() !== chatId || feedState.gen !== gen || !getFeed(feedId)) return touched;
+        if (ctx().getCurrentChatId?.() !== chatId || feedState.gen !== gen || !getFeed(feedId)) return;
         batch.forEach(t => mark?.(t, true));
+        // as sent: an item edited (or its translation fixed by hand) before the answer comes keeps the edit
+        for (const t of batch) { t.sent = String(t.o[t.field] ?? ''); t.was = trTextOf(t); }
         const user = JSON.stringify({ items: batch.map((t, id) => ({ id, text: t.o[t.field] })) });
         let raw;
         try {
@@ -2386,7 +2695,7 @@ async function translateItems(feedId, todo, { target, conn, model, mark = null, 
             batch.forEach(t => mark?.(t, false));   // the request failed: try these again next time
             throw e;
         }
-        if (ctx().getCurrentChatId?.() !== chatId || feedState.gen !== gen) return touched;
+        if (ctx().getCurrentChatId?.() !== chatId || feedState.gen !== gen) return;
         let data;
         try { data = extractJson(raw); } catch { data = null; }
         const list = Array.isArray(data) ? data : (Array.isArray(data?.items) ? data.items : null);
@@ -2398,9 +2707,11 @@ async function translateItems(feedId, todo, { target, conn, model, mark = null, 
         const answered = new Set();
         for (const r of list) {
             const t = batch[Number(r?.id)];
-            if (t && typeof r?.text === 'string') answered.add(t);   // "" = already in that language: done
+            if (!t) continue;
+            if (String(t.o[t.field] ?? '') !== t.sent || trTextOf(t) !== t.was) { done.changed++; continue; }   // left out: tried again later
+            if (typeof r?.text === 'string') answered.add(t);   // "" = already in that language: done
             const text = typeof r?.text === 'string' ? r.text.trim() : '';
-            if (!t || !text || text === String(t.o[t.field]).trim()) continue;
+            if (!text || text === String(t.o[t.field]).trim()) continue;
             if (t.field === 'title') t.o.title_tr = text.slice(0, 500);
             else if (t.field === 'desc') t.o.desc_tr = text.slice(0, 1000);
             else { t.o.body_tr = text.slice(0, 8000); delete t.o.body_ko; }
@@ -2408,7 +2719,6 @@ async function translateItems(feedId, todo, { target, conn, model, mark = null, 
         }
         batch.forEach(t => { if (!answered.has(t)) mark?.(t, false); });   // left out of the answer: try again later
     }
-    return touched;
 }
 
 /** Automatic pass after a generation (translation connection set, "자동 번역"). */
@@ -2429,14 +2739,23 @@ async function translateFeed(feedId) {
     if (!todo.length) return;
     const mark = (t, on) => { const set = t.field === 'title' ? trTriedTitle : t.field === 'desc' ? trTriedImage : trTried; if (on) set.add(t.o); else set.delete(t.o); };
     const chatId = ctx().getCurrentChatId?.();
-    const touched = await translateItems(feedId, todo, { target, ...trConnection(), mark, chatId });
-    if (!touched.size || ctx().getCurrentChatId?.() !== chatId) return;   // chat switched meanwhile: don't save into the new one
-    await saveChatStore();
-    if (isOpen() && view === 'feed' && currentFeedId === feedId) {
-        // the 번역 button appears with the first translation; afterwards update only the posts that changed
-        if (!document.getElementById('stcm_tr_toggle')) showFeed(feedId, { keepScroll: true });
-        else for (const i of touched) updatePost(feedId, i);
+    let touched;
+    let failed = null;
+    try {
+        ({ touched } = await translateItems(feedId, todo, { target, ...trConnection(), mark, chatId }));
+    } catch (e) {
+        touched = e.touched ?? new Set();   // what was translated before it failed is kept too
+        failed = e;
     }
+    if (touched.size && ctx().getCurrentChatId?.() === chatId) {   // chat switched meanwhile: don't save into the new one
+        await saveChatStore();
+        if (isOpen() && view === 'feed' && currentFeedId === feedId) {
+            // the 번역 button appears with the first translation; afterwards update only the posts that changed
+            if (!document.getElementById('stcm_tr_toggle')) showFeed(feedId, { keepScroll: true });
+            else for (const i of touched) updatePost(feedId, i);
+        }
+    }
+    if (failed) throw failed;
 }
 
 // ---------------------------------------------------------------------------
@@ -2489,12 +2808,14 @@ async function translatePost(feedId, idx, { force = false } = {}) {
     updatePost(feedId, idx);   // shows "번역 중…"
     const chatId = ctx().getCurrentChatId?.();
     try {
-        const touched = await translateItems(feedId, todo, { target: trTarget(), ...trConnection(), chatId });
+        const { touched, changed } = await translateItems(feedId, todo, { target: trTarget(), ...trConnection(), chatId });
         if (ctx().getCurrentChatId?.() !== chatId) return;   // chat switched meanwhile
         if (touched.size) await saveChatStore();
-        else toastr.info('번역할 내용이 없거나, 이미 그 언어예요.');
+        else if (!changed) toastr.info('번역할 내용이 없거나, 이미 그 언어예요.');
         trView.set(post, true);
     } catch (e) {
+        // what was translated before it failed is kept
+        if (e?.touched?.size && ctx().getCurrentChatId?.() === chatId) await saveChatStore();
         toastr.error(`번역 실패: ${esc(truncate(String(e?.message ?? e), 300))}`, '커뮤니티');
     } finally {
         trBusy.delete(post);
@@ -2599,7 +2920,8 @@ async function addFeed(feed, opts = {}) {
 function addFeedNow(feed, { remember = true } = {}) {
     const store = getChatStore();
     store.feeds.push(feed);
-    pruneFeeds(store, feed.id);   // pinned feeds and the new one are kept, so the 📌 list never changes here
+    const dropped = pruneFeeds(store, feed.id);   // pinned feeds and the new one are kept, so the 📌 list never changes here
+    if (dropped) toastr.warning(`지난 피드 개수 제한(${getSettings().maxFeeds}개) 때문에 오래된 피드 ${dropped}개를 지웠어요. 📌 반영·👁 지켜보기 중인 피드는 남겨 뒀어요.`, '커뮤니티');
     if (remember) {   // background (auto) feeds don't change which board the panel opens on
         store.lastMode = feed.mode;
         store.lastPlatform = feed.platform;
@@ -3458,10 +3780,7 @@ async function deletePicked() {
     if (!posts.length && !comments) { toastr.info('고른 게 없어요.'); return; }
     const kind = postKindLabel(feed, posts[0]);
     const what = [posts.length ? `${kind} ${posts.length}개` : '', comments ? `${PLATFORMS[feed.platform]?.res ? '레스' : '댓글'} ${comments}개` : ''].filter(Boolean).join(', ');
-    const { Popup, POPUP_RESULT } = ctx();
-    const ok = Popup?.show?.confirm
-        ? (await Popup.show.confirm('선택 삭제', `${esc(what)}를 지울까요?${posts.length ? `<br><small>${esc(kind)}을(를) 지우면 달린 댓글도 함께 지워지고, 본 채팅 반영에서도 빠져요.</small>` : ''}`)) === POPUP_RESULT.AFFIRMATIVE
-        : confirm(`${what}를 지울까요?`);
+    const ok = await askYes('선택 삭제', `${esc(what)}를 지울까요?${posts.length ? `<br><small>${esc(kind)}을(를) 지우면 달린 댓글도 함께 지워지고, 본 채팅 반영에서도 빠져요.</small>` : ''}`, `${what}를 지울까요?`);
     if (!ok || !pickMode || getFeed(feed.id) !== feed) return;
     // by the objects themselves: what was ticked is what goes, wherever it is now
     for (let pi = feed.data.posts.length - 1; pi >= 0; pi--) {
@@ -3685,12 +4004,13 @@ function pinDepth(s) {
 async function togglePin(feedId, postIdx) {
     const store = getChatStore();
     const feed = store.feeds.find(f => f.id === feedId);
-    if (!feed) return;
     const idx = store.pins.findIndex(p => p.feedId === feedId && p.postIdx === postIdx);
     if (idx >= 0) {
+        // also a pin whose feed is gone (its file was missing and the chat started anew): only its cached text is left
         store.pins.splice(idx, 1);
         toastr.info('반영을 해제했어요.');
     } else {
+        if (!feed) return;
         const post = feed.data.posts[postIdx];
         store.pins.push({
             feedId, postIdx,
@@ -5554,11 +5874,10 @@ async function showWorldInfo() {
     });
 }
 
-async function setBookPicks(book, uids) {
+function setBookPicks(book, uids) {   // saved by the caller, once with whatever else it changes
     const store = getChatStore();
     if (uids.length) store.wi.picks[book] = uids.map(String);
     else delete store.wi.picks[book];
-    await saveChatStore();
 }
 
 async function onFeedChange(e) {
@@ -5595,18 +5914,13 @@ async function onFeedChange(e) {
         const book = t.dataset.book;
         const set = new Set((store.wi.picks[book] ?? []).map(String));
         if (t.checked) set.add(String(t.dataset.uid)); else set.delete(String(t.dataset.uid));
-        await setBookPicks(book, [...set]);
-        if (t.checked && store.wi.mode === 'auto') {
-            store.wi.mode = 'both';
-            await saveChatStore();
-            toastr.info('참고 방식을 "자동 + 직접 고른 항목"으로 바꿨어요.');
-            showWorldInfo();
-            return;
-        }
-        if (t.checked && store.wi.mode === 'off') {
-            store.wi.mode = 'manual';
-            await saveChatStore();
-            toastr.info('참고 방식을 "직접 고른 항목만"으로 바꿨어요.');
+        setBookPicks(book, [...set]);
+        let note = '';   // a pick also turns picking on: said so
+        if (t.checked && store.wi.mode === 'auto') { store.wi.mode = 'both'; note = '참고 방식을 "자동 + 직접 고른 항목"으로 바꿨어요.'; }
+        else if (t.checked && store.wi.mode === 'off') { store.wi.mode = 'manual'; note = '참고 방식을 "직접 고른 항목만"으로 바꿨어요.'; }
+        await saveChatStore();   // once, for the pick and the mode
+        if (note) {
+            toastr.info(note);
             showWorldInfo();
             return;
         }
@@ -5639,7 +5953,7 @@ async function onWorldInfoClick(el) {
         const book = el.dataset.book;
         const entries = await loadBookEntries(book);
         const uids = act === 'wi-none' ? [] : entries.filter(e => act === 'wi-all' || !e.disable).map(e => e.uid);
-        await setBookPicks(book, uids);
+        setBookPicks(book, uids);
         const store = getChatStore();
         if (uids.length && store.wi.mode === 'auto') store.wi.mode = 'both';
         if (uids.length && store.wi.mode === 'off') store.wi.mode = 'manual';
@@ -6054,13 +6368,18 @@ async function onFeedClick(e) {
         const withPins = document.getElementById('stcm_import_pins')?.checked ?? false;
         const withSpaces = document.getElementById('stcm_import_spaces')?.checked ?? false;
         if (act === 'import-replace') {
-            const { Popup, POPUP_RESULT } = ctx();
-            const ok = Popup?.show?.confirm
-                ? (await Popup.show.confirm('피드 바꾸기', '이 채팅의 지금 피드와 반영 목록을 지우고 파일 내용으로 바꿀까요? (먼저 내보내기로 백업해 두면 안전해요)')) === POPUP_RESULT.AFFIRMATIVE
-                : confirm('지금 피드를 파일 내용으로 바꿀까요?');
+            const ok = await askYes('피드 바꾸기', '이 채팅의 지금 피드와 반영 목록을 지우고 파일 내용으로 바꿀까요? (먼저 내보내기로 백업해 두면 안전해요)', '지금 피드를 파일 내용으로 바꿀까요?');
             if (!ok) return;
         }
         await applyImport(act === 'import-replace' ? 'replace' : 'merge', withPins, withSpaces);
+        return;
+    }
+    if (act === 'missing-retry') {   // the chat's feed file was missing: look again (and ask again if it still is)
+        missingLater.clear();
+        feedState.chatId = null;
+        showLoadingFeed();
+        await ensureFeedsReady();
+        if (isOpen() && view === 'feed') showFeed();
         return;
     }
     if (act === 'goto-post') { scrollToPostSmooth(Number(el.dataset.idx)); return; }
@@ -6549,16 +6868,13 @@ async function onFeedClick(e) {
     if (act === 'edit-cancel') { const t = editTarget; editTarget = null; showFeed(t?.feedId ?? currentFeedId, { keepScroll: true }); return; }
     if (act === 'edit-save') { await saveEditItem(el.closest('.stcm-edit-view')); return; }
     if (act === 'del-post') {
-        const { Popup, POPUP_RESULT } = ctx();
         const f = getFeed(feedId);
         const post = f?.data.posts[idx];
         if (!post) return;
         const kind = postKindLabel(f, post);
         const name = post.kind === 'dm' ? dmPartnerLabel(post) : (post.title || truncate(stripMediaMarks(post.body), 30));
         const what = kind === 'DM' ? `이 DM 대화(${name})를 모두` : kind === '채널' ? `#${name} 채널과 메시지를 모두` : `"${name}" ${kind === '스레' ? '스레와 레스를' : '글과 댓글을'} 모두`;
-        const ok = Popup?.show?.confirm
-            ? (await Popup.show.confirm(`${kind} 삭제`, esc(`${what} 지울까요?`) + (isPinned(feedId, idx) ? '<br><small>본 채팅에 반영 중인 내용도 함께 빠져요.</small>' : ''))) === POPUP_RESULT.AFFIRMATIVE
-            : confirm(`${what} 지울까요?`);
+        const ok = await askYes(`${kind} 삭제`, esc(`${what} 지울까요?`) + (isPinned(feedId, idx) ? '<br><small>본 채팅에 반영 중인 내용도 함께 빠져요.</small>' : ''), `${what} 지울까요?`);
         if (ok) await deleteItem(feedId, idx, null, null);
         return;
     }
@@ -6573,10 +6889,7 @@ async function onFeedClick(e) {
         const kind = pf?.chat ? '메시지' : pf?.res ? '레스' : (ri == null ? '댓글' : '답글');
         const obj = { 댓글: '댓글을', 답글: '답글을', 레스: '레스를', 메시지: '메시지를' }[kind];
         const extra = ri == null && item.replies?.length && !pf?.flat ? `<br><small>달린 답글 ${item.replies.length}개도 함께 지워져요.</small>` : '';
-        const { Popup, POPUP_RESULT } = ctx();
-        const ok = Popup?.show?.confirm
-            ? (await Popup.show.confirm(`${kind} 삭제`, esc(`${item.author || '익명'}: ${truncate(item.body, 60)}`) + `<br>이 ${obj} 지울까요?` + extra)) === POPUP_RESULT.AFFIRMATIVE
-            : confirm(`이 ${obj} 지울까요?`);
+        const ok = await askYes(`${kind} 삭제`, esc(`${item.author || '익명'}: ${truncate(item.body, 60)}`) + `<br>이 ${obj} 지울까요?` + extra, `이 ${obj} 지울까요?`);
         if (ok) await deleteItem(feedId, idx, ci, ri);
         return;
     }
@@ -6599,10 +6912,7 @@ async function onFeedClick(e) {
         const d = v ? readComposeForm(v) : null;
         const written = d && (d.title.trim() || d.body.trim() || d.inst.trim() || d.media.some(m => m.desc));
         if (written) {
-            const { Popup, POPUP_RESULT } = ctx();
-            const ok = Popup?.show?.confirm
-                ? (await Popup.show.confirm('쓰던 글', '쓰던 내용을 버릴까요?<br><small>"아니요"를 누르면 그대로 보관해 두고, 다음에 글쓰기를 열면 다시 채워져요.</small>')) === POPUP_RESULT.AFFIRMATIVE
-                : confirm('쓰던 내용을 버릴까요? (취소를 누르면 보관해 둬요)');
+            const ok = await askYes('쓰던 글', '쓰던 내용을 버릴까요?<br><small>"아니요"를 누르면 그대로 보관해 두고, 다음에 글쓰기를 열면 다시 채워져요.</small>', '쓰던 내용을 버릴까요? (취소를 누르면 보관해 둬요)');
             if (ok) {
                 forgetComposeForm(v.dataset.chat);
                 if (v.dataset.draft) dropUnposted(v.dataset.chat, v.dataset.draft);   // a kept post thrown away too
@@ -6629,6 +6939,15 @@ async function onFeedClick(e) {
     if (el.dataset.delFeed) {
         const store = getChatStore();
         const id = el.dataset.delFeed;
+        const feed = store.feeds.find(f => f.id === id);
+        if (!feed) return;
+        // a whole feed (board) at once: tens or hundreds of posts, so ask like for one post
+        const nPosts = feed.data?.posts?.length ?? 0;
+        const nComments = (feed.data?.posts ?? []).reduce((a, p) => a + commentTotal(p), 0);
+        const pinned = store.pins.some(p => p.feedId === id);
+        const what = `글 ${nPosts}개${nComments ? `와 댓글·답글 ${nComments}개` : ''}`;
+        if (!(await askYes('피드 삭제', `이 피드의 ${esc(what)}를 모두 지울까요?${pinned ? '<br><small>본 채팅에 반영 중인 글도 함께 빠져요.</small>' : ''}<br><small>지운 피드는 되돌릴 수 없어요.</small>`, `이 피드의 ${what}를 모두 지울까요?`))) return;
+        if (!getChatStore()?.feeds.some(f => f.id === id)) return;   // chat switched or already gone meanwhile
         store.feeds = store.feeds.filter(f => f.id !== id);
         store.pins = store.pins.filter(p => p.feedId !== id);
         if (currentFeedId === id) currentFeedId = null;
@@ -6793,7 +7112,7 @@ async function onLocaleChange(sel) {
     if (!st) return;
     const chatAtStart = ctx().getCurrentChatId?.();
     const v = sel.value;
-    const { Popup, POPUP_RESULT } = ctx();
+    const { Popup } = ctx();
     if (v === 'custom') {
         // a new one (the ones written before stay in the list)
         const text = Popup?.show?.input
@@ -6818,7 +7137,7 @@ async function onLocaleChange(sel) {
         if (text == null || ctx().getCurrentChatId?.() !== chatAtStart) { renderLocaleSelect(); return; }
         const t = String(text).trim().slice(0, 600);
         if (!t) {
-            const ok = Popup?.show?.confirm ? (await Popup.show.confirm('배경 지우기', `"${truncate(old, 40)}"을(를) 목록에서 지울까요?`)) === POPUP_RESULT.AFFIRMATIVE : confirm('목록에서 지울까요?');
+            const ok = await askYes('배경 지우기', `"${truncate(old, 40)}"을(를) 목록에서 지울까요?`, '목록에서 지울까요?');
             if (!ok || ctx().getCurrentChatId?.() !== chatAtStart) { renderLocaleSelect(); return; }
             st.localeCustoms = st.localeCustoms.filter(x => x !== old);
             if (st.locale.mode === 'custom' && st.locale.custom === old) st.locale = { mode: 'story', country: '', custom: '' };
@@ -6897,10 +7216,7 @@ async function onSpaceAction(el) {
     if (act === 'space-del') {
         const sp = spaceById(el.dataset.id);
         if (!sp) return;
-        const { Popup, POPUP_RESULT } = ctx();
-        const ok = Popup?.show?.confirm
-            ? (await Popup.show.confirm(`${spaceUnit(sp.platform)} 지우기`, `"${esc(sp.name)}"을(를) 목록에서 지울까요?<br><small>이미 만든 글은 🕘 지난 피드에 남아요.</small>`)) === POPUP_RESULT.AFFIRMATIVE
-            : confirm('지울까요?');
+        const ok = await askYes(`${spaceUnit(sp.platform)} 지우기`, `"${esc(sp.name)}"을(를) 목록에서 지울까요?<br><small>이미 만든 글은 🕘 지난 피드에 남아요.</small>`, '지울까요?');
         if (!ok) return;
         s.customSpaces = s.customSpaces.filter(x => x.id !== sp.id);
         if (s.spaceSelected?.[sp.platform] === sp.id) setCurrentSpace(sp.platform, '');
@@ -7200,6 +7516,11 @@ function showFeed(feedId, opts = {}) {
     if (!store) {
         bar.innerHTML = '';
         el.innerHTML = `<div class="stcm-empty">채팅을 열면 커뮤니티를 볼 수 있어요.</div>`;
+        return;
+    }
+    if (!feedState.ready && feedState.missingId) {   // its feed file is gone and the user chose not to open it yet
+        bar.innerHTML = '';
+        el.innerHTML = `<div class="stcm-empty">이 채팅의 커뮤니티 피드 파일을 서버에서 찾을 수 없어서 열지 않았어요.<br><small>서버의 <code>user/files</code> 폴더에 파일을 되돌려 놓았거나 빈 피드로 새로 시작하려면 <a class="stcm-link" data-act="missing-retry">다시 확인</a>을 눌러 주세요.</small></div>`;
         return;
     }
     // An explicit feed (history, new generation…) wins and moves the selectors to it;
@@ -8344,10 +8665,7 @@ async function onApiClick(act, el) {
     if (act === 'api-del') {
         const a = customApis().find(x => x.id === el.dataset.api);
         if (!a) return true;
-        const { Popup, POPUP_RESULT } = ctx();
-        const ok = Popup?.show?.confirm
-            ? (await Popup.show.confirm('API 삭제', `"${esc(a.name)}"을(를) 지울까요? 저장된 키도 함께 지워져요.`)) === POPUP_RESULT.AFFIRMATIVE
-            : confirm('지울까요?');
+        const ok = await askYes('API 삭제', `"${esc(a.name)}"을(를) 지울까요? 저장된 키도 함께 지워져요.`, '지울까요?');
         if (!ok) return true;
         s.customApis = s.customApis.filter(x => x.id !== a.id);
         apiModelCache.delete(`api:${a.id}`);
@@ -8917,6 +9235,7 @@ function addSettingsPanel() {
             <summary><i class="fa-solid fa-server"></i> 피드 저장 · 정리</summary>
             <div class="stcm-sec-body">
           <small class="stcm-help"><i class="fa-solid fa-server"></i> 피드는 채팅 파일이 아니라 서버의 사용자 파일 폴더(<code>data/사용자/user/files/stcm-feed-*.json</code>)에 저장돼요.</small>
+          <small class="stcm-help stcm-warn"><i class="fa-solid fa-triangle-exclamation"></i> 실리태번의 <b>Clean-Up</b>(데이터 정리) 도구에서 <b>Files</b> 항목을 지우면 이 피드 파일도 <b>모두 지워져요</b>. 채팅에 첨부한 파일이 아니라서 "쓰지 않는 파일"로 잡혀요. 실리태번 자동 백업에도 들어가지 않으니, 🕘 지난 피드의 <b>내보내기</b>나 실리태번 계정의 <b>백업 다운로드</b>(전체 데이터)로 따로 보관해 두세요.</small>
           <label>채팅당 지난 피드 최대 개수 <small>(0 = 제한 없음. 넘으면 오래된 것부터 지우지만, 📌 반영·👁 지켜보기 중인 피드는 남겨요)</small>
             <input id="stcm_set_maxfeeds" type="number" min="0" max="1000" class="text_pole">
           </label>
@@ -9028,7 +9347,28 @@ function addSettingsPanel() {
     document.getElementById('stcm_set_theme')?.addEventListener('change', applyTheme);
     bind('stcm_set_mode', 'defaultMode');
     bind('stcm_set_npc', 'npcPosts');
-    bind('stcm_set_maxfeeds', 'maxFeeds');
+    {
+        // a lower limit deletes old feeds in every chat (on its next new feed): ask before it applies
+        const el = document.getElementById('stcm_set_maxfeeds');
+        if (el) {
+            el.value = s.maxFeeds;
+            el.addEventListener('change', async () => {
+                const old = Math.floor(Number(s.maxFeeds) || 0);
+                let v = Number(el.value);
+                if (el.value === '' || !Number.isFinite(v)) { el.value = old; return; }
+                v = Math.min(1000, Math.max(0, Math.floor(v)));
+                el.value = v;
+                if (v === old) return;
+                if (v > 0 && (old === 0 || v < old)) {
+                    const here = hasChat() ? (getChatStore()?.feeds.length ?? 0) : 0;
+                    const ok = await askYes('지난 피드 개수 제한', `모든 채팅에서 피드가 ${v}개를 넘으면, 그 채팅에서 다음에 피드를 만들 때 오래된 피드부터 <b>지워져요</b> (📌 반영·👁 지켜보기 중인 피드는 남겨요).${here > v ? `<br>이 채팅은 지금 ${here}개라, 다음 생성 때 ${here - v}개쯤 지워질 수 있어요.` : ''}<br>지운 피드는 되돌릴 수 없어요. 이렇게 바꿀까요?`, `모든 채팅에서 피드가 ${v}개를 넘으면 오래된 피드부터 지워져요. 바꿀까요?`);
+                    if (!ok) { el.value = old; return; }
+                }
+                s.maxFeeds = v;
+                saveSettings();
+            });
+        }
+    }
     bind('stcm_set_mention', 'mentionScope');
     bind('stcm_set_metadislike', 'metaDislike');
     bind('stcm_set_nickmode', 'nickMode');
@@ -9116,10 +9456,7 @@ function addSettingsPanel() {
             return;
         }
         if (act === 'del') {
-            const { Popup, POPUP_RESULT } = ctx();
-            const ok = Popup?.show?.confirm
-                ? (await Popup.show.confirm('저장한 프롬프트 삭제', `"${esc(x.name)}"을(를) 지울까요?${s.promptUse[x.key] === x.id ? '<br><small>지금 적용 중이라, 지우면 원래 항목이 다시 쓰여요.</small>' : ''}`)) === POPUP_RESULT.AFFIRMATIVE
-                : confirm(`"${x.name}"을(를) 지울까요?`);
+            const ok = await askYes('저장한 프롬프트 삭제', `"${esc(x.name)}"을(를) 지울까요?${s.promptUse[x.key] === x.id ? '<br><small>지금 적용 중이라, 지우면 원래 항목이 다시 쓰여요.</small>' : ''}`, `"${x.name}"을(를) 지울까요?`);
             if (!ok) return;
             s.promptSaves = s.promptSaves.filter(v => v !== x);
             if (s.promptUse[x.key] === x.id) delete s.promptUse[x.key];
@@ -9175,10 +9512,7 @@ function addSettingsPanel() {
         load();
     });
     document.getElementById('stcm_set_prompt_reset_all').addEventListener('click', async () => {
-        const { Popup, POPUP_RESULT } = ctx();
-        const ok = Popup?.show?.confirm
-            ? (await Popup.show.confirm('프롬프트 초기화', '수정한 프롬프트를 모두 기본값으로 되돌릴까요?<br><small>따로 저장한 프롬프트는 지우지 않고, 적용만 풀어요.</small>')) === POPUP_RESULT.AFFIRMATIVE
-            : confirm('모두 기본값으로 되돌릴까요? (따로 저장한 프롬프트는 지우지 않고 적용만 풀어요)');
+        const ok = await askYes('프롬프트 초기화', '수정한 프롬프트를 모두 기본값으로 되돌릴까요?<br><small>따로 저장한 프롬프트는 지우지 않고, 적용만 풀어요.</small>', '모두 기본값으로 되돌릴까요? (따로 저장한 프롬프트는 지우지 않고 적용만 풀어요)');
         if (!ok) return;
         s.prompts = {};
         s.promptUse = {};
@@ -9241,8 +9575,7 @@ async function onMessageReceived(messageId, type) {
         store.counterReply = (store.counterReply || 0) + 1;
         if (store.counterReply >= Math.max(1, Number(s.autoReplyEvery) || 1)) { store.counterReply = 0; runReplies = true; }
     }
-    const c = ctx();
-    if (c.saveMetadataDebounced) c.saveMetadataDebounced(); else await c.saveMetadata();
+    // the counters go with the next save of the chat (SillyTavern saves it right after this event)
 
     if (runReplies) {
         // watched posts first, so a full thread gets its follow-up before brand-new threads
@@ -9276,6 +9609,7 @@ async function onMessageReceived(messageId, type) {
 
 async function onChatChanged() {
     abortCtl?.abort();
+    missingLater.clear();   // opening a chat looks at a missing feed file again (put back meanwhile?)
     captureDraft();   // a kept comment / post being edited: its edits stay with it
     if (view === 'compose') syncComposeDraft(document.querySelector('#stcm_feed .stcm-compose-view'));
     composer = null;
@@ -9333,9 +9667,17 @@ function onChatRenamed(data) {
     const from = String(data?.oldFileName ?? '').replace(/\.jsonl$/, '');
     const to = String(data?.newFileName ?? '').replace(/\.jsonl$/, '');
     if (!from || !to) return;
-    const idx = storeIndex();
-    for (const info of Object.values(idx)) if (info.chat === from) info.chat = to;
-    saveSettings();
+    // another character / group may have a chat of the same name: only this one's entries change. An entry that
+    // doesn't say whose it is (older versions) stays as it is — it is put right when that chat is opened.
+    const scope = data?.groupId ? `g:${data.groupId}` : data?.avatarId ? `a:${data.avatarId}` : '';
+    let changed = false;
+    for (const info of Object.values(storeIndex())) {
+        if (info.chat !== from) continue;
+        if (scope && info.scope !== scope) continue;
+        info.chat = to;
+        changed = true;
+    }
+    if (changed) saveSettings();
 }
 
 /** Every chat that exists now (all characters' and groups'), with its file name, character / group and metadata.
@@ -9390,9 +9732,8 @@ async function cleanupDeletedStores() {
     const idx = storeIndex();
     const targets = Object.entries(idx).filter(([, i]) => i.deletedAt);
     if (!targets.length) { toastr.info('정리할 파일이 없어요.'); return; }
-    const { Popup, POPUP_RESULT } = ctx();
     const msg = `삭제된 채팅의 피드 파일 ${targets.length}개를 지울까요?<br><small>지우기 전에 채팅마다 정말 지워졌는지 확인해서, 아직 있는 채팅(다른 캐릭터의 같은 이름 채팅, 아직 열지 않은 브랜치·체크포인트 등)이 쓰는 파일이나 확인이 안 되는 파일은 남겨요.</small>`;
-    const ok = Popup?.show?.confirm ? (await Popup.show.confirm('피드 파일 정리', msg)) === POPUP_RESULT.AFFIRMATIVE : confirm('삭제된 채팅의 피드 파일을 지울까요?');
+    const ok = await askYes('피드 파일 정리', msg, '삭제된 채팅의 피드 파일을 지울까요?');
     if (!ok) return;
     toastr.info('채팅 목록을 확인하는 중…', '', { timeOut: 2000 });
     const chats = await listAllChats();
@@ -9473,7 +9814,7 @@ async function cleanupDeletedStores() {
         }
         if (gone && !(await scanAll()).complete) gone = false;   // a chat that may point at it couldn't be read
         if (!gone) { unsure++; continue; }   // stays marked: checked again next time
-        if (await deleteStoreFile(id)) { delete idx[id]; done++; }
+        if (await deleteStoreFile(id)) { delete idx[id]; dropLocalCopy(id); done++; }   // a copy of it left in this browser goes too
     }
     saveSettings();
     updateCleanupLabel();
@@ -9542,6 +9883,7 @@ function registerCommands() {
     });
     eventSource.on(event_types.APP_READY, () => {
         getSettings();
+        moveOldLocalCopies();
         addSettingsPanel();
         addWandButton();
         buildOverlay();

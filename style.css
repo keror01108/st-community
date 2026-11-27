@@ -1446,3 +1446,6 @@ dialog#stcm_overlay { overscroll-behavior: contain; touch-action: manipulation; 
 #stcm_pick_toggle.on { background: var(--s-accent); color: var(--s-accent-text, #fff); border-color: transparent; font-weight: 700; }
 .stcm-picking .stcm-psum, .stcm-picking .stcm-td-row { padding-right: 96px; }
 .stcm-picking [data-k] { padding-right: 34px; }
+
+/* warnings in the settings (data that can be lost) */
+.stcm-help.stcm-warn, .stcm-settings-view .stcm-help.stcm-warn { opacity: 1; color: #d9822b; }
