@@ -9080,8 +9080,6 @@ function addSettingsPanel() {
             <label>새로 생성할 글 개수 <input id="stcm_set_posts" type="number" min="1" max="10" class="text_pole"></label>
             <label>글당 댓글 수 <input id="stcm_set_comments" type="number" min="0" max="20" class="text_pole"></label>
             <label>이어서/반응 댓글 수 <input id="stcm_set_continue" type="number" min="1" max="30" class="text_pole"></label>
-            <label>참고할 최근 메시지 <input id="stcm_set_ctx" type="number" min="1" max="100" class="text_pole"></label>
-            <label>메시지당 최대 글자 수 <small>(0 = 자르지 않음)</small> <input id="stcm_set_msgchars" type="number" min="0" max="1000000" step="1" class="text_pole"></label>
             <label>최대 응답 토큰 <input id="stcm_set_tokens" type="number" min="500" max="32000" step="100" class="text_pole"></label>
             <label>2ch·레딧 스레드 최대 레스 <input id="stcm_set_cap" type="number" min="10" max="10000" step="10" class="text_pole"></label>
             <label>반영 글 삽입 깊이 <input id="stcm_set_depth" type="number" min="0" max="50" class="text_pole"></label>
@@ -9115,8 +9113,10 @@ function addSettingsPanel() {
             </div>
           </details>
           <details class="stcm-sec" data-sec="reading">
-            <summary><i class="fa-solid fa-book-open"></i> 본 채팅에서 읽는 것 <small>캐릭터 설명, 태그, 월드 인포, 장기기억</small></summary>
+            <summary><i class="fa-solid fa-book-open"></i> 본 채팅에서 읽는 것 <small>최근 메시지, 캐릭터 설명, 태그, 월드 인포, 장기기억</small></summary>
             <div class="stcm-sec-body">
+          <label>참고할 최근 메시지 <input id="stcm_set_ctx" type="number" min="1" max="100" class="text_pole"></label>
+          <label>메시지당 최대 글자 수 <small>(0 = 자르지 않음)</small> <input id="stcm_set_msgchars" type="number" min="0" max="1000000" step="1" class="text_pole"></label>
           <label class="checkbox_label"><input id="stcm_set_card" type="checkbox"><span>캐릭터·페르소나 설명 포함</span></label>
           <label>본 채팅에서 읽지 않을 태그 <small>(쉼표로 구분, 태그와 안의 내용을 통째로 빼요. 숨긴 메시지는 항상 빼요)</small></label>
           <textarea id="stcm_set_excludetags" class="text_pole" rows="3"></textarea>
